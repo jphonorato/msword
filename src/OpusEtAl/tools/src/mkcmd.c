@@ -10,12 +10,36 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "opus_host_compat.h"
+#endif
 #define strcmpi _stricmp
 /* MKCMD writes structures consumed by 16-bit Opus. Preserve the original
  * two-byte word layout even though this copy of the tool runs on x64. */
 #define OPUS_WORD unsigned short
 #define OPUS_SWORD short
 #pragma pack(push, 1)
+
+/* MKCMD advances a variable-length cursor with the nonstandard
+ * "*((TYPE *) ptr)++" idiom: cast to a wider pointer type, then postfix-
+ * increment through the cast. Old Microsoft C tolerated incrementing
+ * through a cast as an extension; the effect is that ptr itself advances by
+ * sizeof(TYPE) bytes and the expression evaluates to the value at ptr's
+ * original position. ISO C does not allow incrementing a cast expression
+ * (it is not an lvalue), so GCC rejects it outright. These two macros
+ * reproduce the exact same read-then-advance / write-then-advance
+ * semantics in standard C, isolated to the five call sites that used the
+ * original idiom; MSVC keeps compiling Microsoft's original spelling
+ * unchanged. */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#define OPUS_POSTINC_READ(type, ptr) \
+	(*(type *)((ptr) += sizeof(type), (ptr) - sizeof(type)))
+#define OPUS_POSTINC_WRITE(type, ptr, value) \
+	(*(type *)((ptr) += sizeof(type), (ptr) - sizeof(type)) = (value))
+#else
+#define OPUS_POSTINC_READ(type, ptr) (*((type *) (ptr))++)
+#define OPUS_POSTINC_WRITE(type, ptr, value) (*((type *) (ptr))++ = (value))
+#endif
 #else
 #define OPUS_WORD unsigned
 #define OPUS_SWORD int
@@ -1164,7 +1188,7 @@ WriteAsmFile()
 			}
 		else
 			{
-			fprintf(pflAsm, "\n\tdw\t%d", *((OPUS_SWORD *) pch)++);
+			fprintf(pflAsm, "\n\tdw\t%d", OPUS_POSTINC_READ(OPUS_SWORD, pch));
 			}
 		fprintf(pflAsm, "\n");
 
@@ -1172,10 +1196,10 @@ WriteAsmFile()
 		if (mct == mctSdm)
 			{
 			bsy += 4;
-			fprintf(pflAsm, "\tdw\t%d\t; cabi\n", 
-					*((OPUS_SWORD *) pch)++);
+			fprintf(pflAsm, "\tdw\t%d\t; cabi\n",
+					OPUS_POSTINC_READ(OPUS_SWORD, pch));
 			fprintf(pflAsm, "\tdw\t%d\t; ieldi\n",
-					*((OPUS_SWORD *) pch)++);
+					OPUS_POSTINC_READ(OPUS_SWORD, pch));
 			}
 		else  if (mct != mctCmd) /* mct == mctEl */
 			{
@@ -1733,7 +1757,7 @@ int w1, w2, mct;
 
 	if (fChain)
 		{
-		*((OPUS_SWORD *) pch)++ = bsyChain; /* back pointer */
+		OPUS_POSTINC_WRITE(OPUS_SWORD, pch, bsyChain); /* back pointer */
 		}
 	else
 		{
@@ -1763,7 +1787,7 @@ int w1, w2, mct;
 
 	case mctSdm:
 		psy->u.ssdm.iidstr = 0;
-		*((OPUS_SWORD *) pch)++ = w1; /* cabi */
+		OPUS_POSTINC_WRITE(OPUS_SWORD, pch, w1); /* cabi */
 		*((OPUS_SWORD *) pch) = w2; /* ieldi */
 		break;
 

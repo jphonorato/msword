@@ -702,6 +702,127 @@ valores caben en 32 bits y los sitios de uso (`Opus/eldlg.c:1132,1166`) conviert
 
 ---
 
+## Fase 1 — ejecutada el 2026-08-09
+
+### Alcance y entregables
+
+Las cinco herramientas de host —`mkcmd`, `mkdlg`, `mergeelx`, `bitapp`,
+`opus_dibapp_tool`— compilan y se ejecutan como binarios Linux nativos, con `gcc`/`g++`
+directos (sin CMake todavía; el andamiaje Ninja es Fase 2).
+
+| Archivo | Cambio | Alcance |
+|---|---|---|
+| `src/OpusEtAl/tools/src/mkcmd.c` | 5 sitios de *cast as lvalue* reemplazados por las macros `OPUS_POSTINC_READ`/`OPUS_POSTINC_WRITE`, definidas bajo `#if defined(__GNUC__) && !defined(_MSC_VER)` con reproducción exacta del idioma original de Microsoft para MSVC. Un `#include "opus_host_compat.h"` guardado igual. | `src/OpusEtAl/`, aislado |
+| `src/OpusEtAl/tools/src/mkdlg.c` | Un `#include` guardado + `#define strcmpi _stricmp`, mismo patrón que ya usaba `mkcmd.c` para el mismo hueco de la CRT de Microsoft. | `src/OpusEtAl/`, aislado |
+| `src/OpusEtAl/tools/src/bitapp.h` | `DWORD` pasa a `uint32_t` bajo `#if defined(OPUS_X64_TOOL) && defined(__GNUC__) && !defined(_MSC_VER)`; MSVC conserva `unsigned long` sin cambios. | `src/OpusEtAl/`, aislado |
+| `src/port/tools/opus_host_compat.h` | Nuevo. Define `_stricmp` como `strcasecmp` para GCC. | `src/port/` |
+
+`src/Opus/` no fue tocado. `src/OpusEtAl/mergeelx.c` y `opus_dibapp_tool.cpp` no
+necesitaron ningún cambio: compilan y corren tal cual.
+
+### Un problema no anticipado: `mkdlg.c` tenía el mismo hueco de `_stricmp` que `mkcmd.c`, con otro nombre
+
+El plan aprobado sólo mencionaba `_stricmp` en `mkcmd.c`. Al enlazar `mkdlg` apareció
+`referencia a 'strcmpi' sin definir`: `mkdlg.c:718` llama a `strcmpi()` directamente,
+confiando en que el CRT de MSVC lo declare como alias obsoleto de `_stricmp()` — cosa
+que hace sin que el código fuente lo pida. GCC no tiene ninguno de los dos nombres. Es
+el mismo hueco de la CRT de Microsoft, en otra grafía. Se resolvió con el mismo patrón
+que ya usaba `mkcmd.c` (`#define strcmpi _stricmp`), y `opus_host_compat.h` quedó
+diseñado para exponer únicamente el primitivo real de Microsoft (`_stricmp`), dejando
+que cada archivo mapee su propia grafía sobre él — así se evita que dos archivos que
+incluyen la misma cabecera compartida se pisen la macro `strcmpi` entre sí.
+
+### Un bug real encontrado y corregido: `bitapp.h:29`, no sólo diagnosticado
+
+La Fase 0 había señalado `typedef unsigned long DWORD;` (`bitapp.h`, entonces línea 29)
+como sospechoso pero sin confirmar. Al ejecutar BITAPP de verdad sobre los 51 recursos
+de mapa de bits, **46 de 51 fallaron** con `Unexpected End Of File Reached in Input
+file!`, produciendo además datos corruptos (no vacíos) antes de fallar — una regresión
+silenciosa peligrosa si no se hubiera detectado por código de salida.
+
+Causa confirmada: `struct BITMAP` (`bitapp.h:40-51`) serializa `bmBits` como `DWORD`,
+campo Win16 de 4 bytes que el código siempre descarta. Bajo MSVC x64 (LLP64), `long`
+sigue siendo de 4 bytes y el `typedef` es exacto. Bajo GCC x64 (LP64), `long` es de 8
+bytes: `sizeof(BITMAP)` pasaba de 14 a 18 bytes, y `fread(&bm, sizeof(BITMAP), 1,
+fpOrig)` leía 4 bytes de más en cada recurso, desalineando todo lo que venía después.
+
+Corrección: `DWORD` pasa a `uint32_t` sólo bajo `OPUS_X64_TOOL` **y** GCC no-MSVC — el
+build MSVC x64 (Windows) queda byte por byte sin cambios, porque ahí el bug no existe.
+
+**Verificación independiente, sin depender de BITAPP mismo:** se re-leyeron los 46
+`.bmp` con Python usando `struct.unpack` directo sobre los bytes crudos del archivo
+(`<hhhhBB` en el desplazamiento 2, es decir el layout Win16 real de 14 bytes), y se
+comprobó que `2 (firma) + 14 (cabecera) + bmWidthBytes×bmHeight` coincide **exactamente**
+con el tamaño de cada uno de los 46 archivos — cero discrepancias. Esta prueba no usa
+BITAPP en absoluto; deriva la corrección desde el formato de archivo documentado en el
+propio código de `DumpBitmapParameters`. Se hizo lo mismo para los 5 íconos/cursores de
+figura (`RCI`, 12 bytes, todos campos `short`, sin `DWORD` — nunca tuvieron el bug) y
+para los 7 cursores de `Opus/resource/*.cur`, confirmando que el consumo de bytes de
+`DumpFigureParameters` + dos llamadas a `DumpBits` (máscaras AND/XOR) no excede el
+tamaño de archivo en ninguno de los 12 casos.
+
+### Por qué la comparación sha256 contra la Fase 0 no cubre BITAPP igual que el resto
+
+Al revisar qué había quedado en el directorio de reconocimiento de la Fase 0, resultó
+que **no era una referencia válida para BITAPP**: contenía 38 archivos con nombres
+truncados que no coinciden con ninguno de los 58 nombres reales que exige
+`CMakeLists.txt` (p. ej. `8iparal3.hb` en vez de `8paralig.hg`), y el único nombre que
+sí coincidía (`8hdr.hb`) resultó ser precisamente una salida generada por el mismo
+build defectuoso — 1418 bytes de datos corruptos, no la salida correcta. Se confirmó
+reconstruyendo un binario `bitapp` desde el `bitapp.h` anterior al parche de esta fase
+(`git show HEAD:...`) y ejecutándolo contra el mismo `.bmp`: produce el mismo archivo
+corrupto de 1418 bytes, byte a byte idéntico al que había en el directorio de
+reconocimiento. Es decir, la Fase 0 nunca llegó a generar una ejecución de referencia
+limpia para BITAPP — sólo para MKCMD, MENUHELP y el bloque STID de MERGEELX, donde la
+comparación sha256 sí es válida y se reconfirmó sin regresión (ver más abajo).
+
+Por eso, para BITAPP la verificación de esta fase no es "coincide con la Fase 0" sino
+las tres pruebas independientes ya descritas: derivación byte a byte desde el formato
+de archivo documentado (arriba), y reproducibilidad determinista (abajo).
+
+### Verificación del criterio de éxito
+
+**9 cabeceras de comandos (MKCMD + `menuhelp.h`):** las 9 —`opuscmd.h`, `IBCM.H`,
+`RGBCM.H`, `OPUSCMD2.H`, `OPUSMENU.H`, `MENUHELP.TXT`, `opuscmd.asm`,
+`opuscmd_native.inc`, `menuhelp.h`— dan **sha256 idéntico** contra la ejecución de
+referencia de la Fase 0. El parche de los 5 sitios *cast as lvalue* no alteró un solo
+byte de la salida.
+
+**58 archivos de BITAPP (51 cabeceras + 7 cursores):** los 58 se generan sin fallos
+(antes del fix: 46/51 cabeceras de mapa de bits fallaban). Verificados por derivación
+independiente desde el formato de archivo crudo (arriba) y por reproducibilidad: dos
+ejecuciones completas desde binarios independientes dan `diff -rq` vacío.
+
+**37 `.hb` de DIBAPP:** los 37 se generan sin fallos, sin necesidad de ningún cambio en
+`opus_dibapp_tool.cpp`. Dos ejecuciones dan `diff -rq` vacío. No hay una herramienta
+DIBAPP original de Microsoft con la que comparar — el archivo nunca la incluyó
+(§2 de esta misma sección de reconocimiento); `opus_dibapp_tool.cpp` es una
+reimplementación del autor del port, no un port de código heredado.
+
+**MKDLG:** compila y enlaza; invocado sin argumentos imprime su mensaje de uso y sale
+con código 1, comportamiento correcto. Su ejecución funcional completa (`mkdlg @elx.txt
+dlgcheck.h`) sigue bloqueada por la ausencia de los `.elx` de entrada — el mismo hueco
+documentado en §3.1, no un problema nuevo de esta fase.
+
+**MERGEELX:** reconstruido y ejecutado con el mismo arnés de verificación de la Fase 0;
+el bloque STID que produce coincide con el de `GenerateElxInfoHeader.cmake` salvo la
+traducción de `StringMap` ya documentada. Sin regresión.
+
+### Estado del árbol tras esta fase
+
+```
+ M src/OpusEtAl/tools/src/bitapp.h   (+15/-0, aislado bajo __GNUC__)
+ M src/OpusEtAl/tools/src/mkcmd.c    (+36/-6, aislado bajo __GNUC__)
+ M src/OpusEtAl/tools/src/mkdlg.c    (+9/-0,  aislado bajo __GNUC__)
+?? src/port/tools/opus_host_compat.h (nuevo)
+```
+
+`src/Opus/` sin cambios. Las tres ediciones a `src/OpusEtAl/` están justificadas en
+esta sección, aisladas con guardas de preprocesador, y no alteran el binario que
+produciría MSVC.
+
+---
+
 ## Apéndice: qué no está en el árbol
 
 Para evitar que se busque lo que no existe:

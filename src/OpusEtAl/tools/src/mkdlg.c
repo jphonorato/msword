@@ -52,6 +52,15 @@ Strings		-32768..32767
 #include <stdio.h>
 #include <ctype.h>
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* MKDLG calls strcmpi() (below) relying on MSVC's CRT to supply it as a
+ * deprecated alias for _stricmp(). GCC's CRT has neither name; see
+ * port/tools/opus_host_compat.h. Mapped locally with the same
+ * "#define strcmpi _stricmp" spelling OpusEtAl/tools/src/mkcmd.c already
+ * uses for the same original gap. */
+#include "opus_host_compat.h"
+#define strcmpi _stricmp
+#endif
 
 typedef unsigned char CHAR;
 typedef unsigned uns;
