@@ -553,9 +553,24 @@ adicional). Compilar `port/word1.rc` con `wrc` en un `add_custom_command` y pasa
 
 Recorrer los usos de `long` que participan de estructuras serializadas, tablas PLC y
 cálculos de `sizeof`: `Opus/wordtech/plc.c`, `savefast.c`, `file.h`, `CLIPBRD2.C`,
-`port/original/opus_asm_native_adapters.cpp`, y las dos redefiniciones de `DWORD`
-(`qwindows.h:119`, `bitapp.h:29`). Sanear la barrera de cadenas anchas de libstdc++ en
-los ~5 archivos de `src/port/`.
+`port/original/opus_asm_native_adapters.cpp`, y la redefinición de `DWORD` en
+`qwindows.h:119`. Sanear la barrera de cadenas anchas de libstdc++ en los ~5 archivos
+de `src/port/`.
+
+> **Precedente concreto, no advertencia genérica:** `OpusEtAl/tools/src/bitapp.h:29`
+> ya rompió en la práctica por este patrón exacto — `typedef unsigned long DWORD;` sin
+> condicionar por arquitectura, 4 bytes bajo MSVC x64 (LLP64) pero 8 bajo GCC x64
+> (LP64). No fue una deducción teórica: al ejecutar BITAPP en la Fase 1, `sizeof(BITMAP)`
+> pasó de 14 a 18 bytes, `fread()` leyó 4 bytes de más en cada recurso, y 46 de 51
+> cabeceras de mapa de bits salieron corruptas antes de fallar con «Unexpected End Of
+> File». Se corrigió allí (`DWORD` → `uint32_t` sólo bajo `OPUS_X64_TOOL` + GCC, MSVC
+> intacto) — ver la sección «Fase 1» más abajo. `Opus/lib/qwindows.h:119` es la misma
+> construcción textual (`typedef unsigned long DWORD;`), en el árbol que sí importa
+> tocar con más cuidado por su alcance (`Opus/interp/sym.c` la alcanza). Buscar primero
+> cualquier campo `DWORD`/`long` desnudo que participe de un `fread`/`fwrite` o de un
+> `sizeof` comparado contra una constante de formato de archivo — ese fue exactamente
+> el mecanismo de falla en BITAPP, y es más probable que se repita en `plc.c` y
+> `savefast.c` (tablas PLC serializadas) que en código que sólo cuenta o itera.
 
 > **Éxito:** una prueba de aserciones estáticas nueva en `src/port/` verifica el
 > `sizeof` de las estructuras de formato de archivo de Word contra los valores del
