@@ -1,0 +1,31 @@
+name: Build Motor (Winelib/Linux)
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:44
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          dnf install -y \
+            wine wine-devel \
+            cmake ninja-build \
+            gcc-c++ git make
+
+      - name: Configure
+        working-directory: src
+        run: cmake --preset linux-winelib-debug
+
+      - name: Build (motor only, -k 0 to report all errors)
+        run: ninja -k 0 -C out/linux-winelib-debug opus_original_engine
+
+      - name: Verify artifacts
+        run: |
+          test -f build/lib/Debug/libopus_original_engine.a
+          ls -la build/lib/Debug/libopus_original_engine.a
+          echo "Motor build successful: libopus_original_engine.a"
