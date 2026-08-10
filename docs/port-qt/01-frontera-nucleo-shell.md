@@ -558,13 +558,80 @@ target. Se migraron igual, por consistencia y para no dejar una mezcla de
 API vieja y nueva si algún día se activan.
 
 **Qué queda:** el cuarto issue para `print2.c:833` (ampliar el contrato con
-una función de enumeración, o tratarlo aparte). Memoria Win16 (B3) es el
-siguiente ítem de la secuencia recomendada. Integrar `opus_shell_config`
-(Qt6, toolchain nativo) en el enlace final de `WORD1` (toolchain
-winegcc/wineg++) es una pregunta de integración cross-toolchain todavía
-abierta y no resuelta aquí: este paso solo verificó que los 41 sitios
-compilan bajo GNUC como parte de la biblioteca estática
-`opus_original_engine`, que no fuerza esa resolución de símbolos.
+una función de enumeración, o tratarlo aparte). La pregunta de si
+`opus_shell_config` realmente enlaza contra un binario Winelib quedó
+abierta al cerrar este paso — se resolvió por separado, ver más abajo.
+
+---
+
+## Verificación de la frontera física: ¿enlaza de verdad?
+
+Hasta B5.2 solo se había confirmado que `opus_shell_config` compila de
+forma aislada (§B5.1) y que los 41 call sites compilan bajo GNUC dentro de
+`opus_original_engine`, una biblioteca **estática** que no fuerza la
+resolución de símbolos externos. Nunca se había probado el enlace real:
+un binario Winelib (winegcc/wineg++) enlazando contra una biblioteca nativa
+gcc/g++ que depende de Qt6. Esa prueba es la que sostiene la arquitectura
+de frontera completa, no solo el contrato de configuración — si no
+enlazara, los otros tres contratos (B2, B3, B4) heredarían el mismo
+problema el día que se implementen.
+
+**Veredicto: enlaza, con dos ajustes menores, ninguno estructural.**
+Sonda en `docs/port-qt/scripts/link-check/` (`link_check.c`, compilado con
+winegcc, llamando a `OpusShellProfileWrite`/`OpusShellProfileString` reales
+contra la `libopus_shell_config.a` que produce `opus_core_build`).
+
+1. **`-fPIC` en la biblioteca nativa.** El primer intento de enlace directo
+   dio `relocation R_X86_64_PC32 ... can not be used when making a shared
+   object; recompile with -fPIC`. Causa, verificada con `winegcc -v`: el
+   paso final de enlace de winegcc es literalmente
+   `gcc -m64 -shared -Wl,-Bsymbolic -o foo.exe.so ...` — así arma Winelib
+   sus "ejecutables" (el `.exe` es un stub que Wine carga, el código real
+   vive en `.exe.so`). Un binario `-shared` no admite objetos sin código
+   independiente de posición. No es un detalle de header: es cómo Winelib
+   construye binarios, con o sin Qt de por medio. Ajuste: `opus_shell_config`
+   pasa a compilarse con `POSITION_INDEPENDENT_CODE ON`
+   (`src/core/CMakeLists.txt`), con nota para que los tres contratos
+   restantes hereden la misma propiedad cuando se implementen.
+2. **`-lstdc++` explícito, solo con `winegcc` puro.** Con `-fPIC` aplicado,
+   el segundo intento dio `undefined reference to __gxx_personality_v0`
+   (la rutina de manejo de excepciones de C++). `winegcc` es un driver de
+   C: no enlaza `libstdc++` por defecto, y `opus_shell_config.cpp` es C++
+   (usa `QString`, que internamente puede lanzar). Con `-lstdc++` agregado
+   al comando de enlace, resuelve. **Dato adicional que reduce el impacto
+   real de este punto:** `WORD1` no enlaza con `winegcc` sino con
+   `wineg++` — lo obliga `target_compile_features(WORD1 PRIVATE
+   cxx_std_20)`, porque el target ya mezcla fuentes `.cpp`
+   (`port/original/opus_asm_*.cpp`, etc.). Probado explícitamente: con
+   `wineg++` como enlazador, el enlace funciona **sin** agregar
+   `-lstdc++` a mano, porque el driver de C++ ya lo enlaza por diseño. El
+   ajuste con `-lstdc++` sigue documentado por si algún target futuro usa
+   `winegcc` puro para enlazar contra estas bibliotecas.
+
+**Prueba de ejecución, no solo de enlace.** El binario resultante corre
+bajo Wine y ejecuta la llamada real: `OpusShellProfileWrite("LinkCheck",
+"Saludo", "hola desde winegcc")` seguido de `OpusShellProfileString` sobre
+la misma clave devuelve `cch=18`, valor `"hola desde winegcc"` — la cadena
+completa, intacta, de vuelta a través de la frontera. Confirmado con los
+dos enlazadores (`wineg++` y `winegcc + -lstdc++`) y con la biblioteca real
+que construye `opus_core_build`, no una copia de scratch.
+
+**Descartados por no ser la causa:** mangling de C++ (los cuatro headers
+`OpusShell*` ya declaraban `extern "C"` desde que se escribieron, verificado
+antes de tocar nada) y convención de llamada/ABI Win32 (el objeto que
+produce `winegcc -c` es ELF x86-64 SysV estándar, igual que el de `gcc`;
+Winelib no cambia la ABI de llamada en modo x64, solo provee los headers y
+tipos de Win32 — la única fricción real fue de generación de código
+(`-fPIC`) y de runtime enlazado (`libstdc++`), no de ABI de llamada).
+
+**Consecuencia para B3/B4/B2:** la arquitectura de frontera —núcleo nativo
+Qt6/gcc + shell winegcc/wineg++ enlazados en el mismo binario— queda
+confirmada, no solo asumida. Los tres contratos que faltan implementar
+pueden proceder sobre este mismo esquema sin rediseño; cuando cada uno
+tenga su primera implementación, aplicar `POSITION_INDEPENDENT_CODE ON` a
+su biblioteca en `src/core/CMakeLists.txt` desde el primer commit, y si el
+target consumidor llega a enlazar con `winegcc` puro en vez de `wineg++`,
+agregar `-lstdc++` a su línea de enlace.
 
 ---
 

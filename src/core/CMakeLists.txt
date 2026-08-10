@@ -11,8 +11,20 @@ set(CMAKE_AUTOMOC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Core)
 
+# -fPIC: verificado como necesario en docs/port-qt/scripts/link-check/ --
+# winegcc siempre enlaza el binario final como -shared (así arma los .exe.so
+# de Winelib, incluso para lo que conceptualmente es un ejecutable), y un
+# .a estático sin código independiente de posición no puede entrar ahí
+# ("relocation ... can not be used when making a shared object"). Aplica a
+# esta biblioteca y a cualquier otra que se agregue aquí para los tres
+# contratos OpusShell* restantes (memoria, espina, medición de texto):
+# ninguna tiene implementación todavía, pero cuando la tengan deben
+# heredar esta propiedad, no descubrirlo de nuevo.
 add_library(opus_shell_config STATIC
     src/OpusShellConfig.cpp
+)
+set_target_properties(opus_shell_config PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
 )
 target_include_directories(opus_shell_config PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
