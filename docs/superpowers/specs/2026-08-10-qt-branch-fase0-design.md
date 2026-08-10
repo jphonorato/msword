@@ -40,6 +40,11 @@ Win32. Regex es suficiente para dimensionar; falsos positivos aislados
 filtran en la revisión manual de la tabla, no bloquean el objetivo de la
 fase.
 
+Cada patrón se ancla con límites de palabra explícitos (`\b<símbolo>\b`).
+Sin ese anclaje, un identificador como `hwndParent` contaría como hit de
+`HWND` e infla el conteo de sitios con coincidencias parciales que no son
+usos reales del símbolo.
+
 ### Diccionario de símbolos
 
 Organizado en las mismas categorías que usa la clasificación final, como
@@ -62,6 +67,13 @@ final — ver más abajo):
   `GetClipboardData`, `EmptyClipboard`.
 - **Impresión:** `StartDoc`, `EndDoc`, `StartPage`, `EndPage`,
   `CreateDC` (rama impresora).
+- **Tipos primitivos:** `WORD`, `DWORD`, `BOOL`, `BYTE`, `LPSTR`, `LPCSTR`,
+  `LPVOID`, `FARPROC`, `far`, `near`, `pascal`, `CALLBACK`, `WINAPI`.
+  Clasificados como **frontera**, no núcleo puro: son typedefs y
+  convenciones de llamada de la ABI Win32/C89 de la época, omnipresentes en
+  firmas de función. Un archivo que solo usa `WORD`/`BOOL` en firmas, sin
+  tocar GDI ni mensajes, sigue acoplado a esa ABI y necesitará typedef
+  propio en Qt-1 — no puede clasificarse como núcleo puro por exclusión.
 
 Punto de partida ampliable: se cruza contra hallazgos ya existentes en
 `docs/port-linux/00-reconocimiento.md` (dktString, empaquetado
@@ -101,6 +113,18 @@ Por símbolo, no por archivo:
   árbol es núcleo puro candidato hoy?" y "¿qué familia de API concentra más
   sitios de presentación?".
 
+## Restricción heredada por Qt-2 y Qt-7
+
+Decisión de proyecto (2026-08-10), asentada aquí para que no se pierda entre
+fases: la paginación del shell Qt debe ser **idéntica byte a byte** respecto
+del oráculo Winelib. Por tanto la interfaz de medición de texto de la
+frontera **debe reproducir el redondeo entero de GDI**; no se admiten
+métricas independientes de dispositivo de Qt sin una capa de compatibilidad
+explícita que reproduzca ese redondeo. Qt-0 no la resuelve; su aporte es
+delimitar la superficie donde la restricción se hace o se rompe (categoría
+*GDI texto/fuentes* del inventario, con `GetTextExtent` como símbolo a
+vigilar).
+
 ## Riesgos de este spec puntual
 
 - El diccionario de símbolos es curado a mano y puede tener huecos
@@ -110,3 +134,13 @@ Por símbolo, no por archivo:
 - Regex sobre texto puede contar falsos positivos dentro de comentarios o
   strings. Se acepta como ruido de bajo impacto dado que el objetivo es
   dimensionar, no exhaustividad certificada.
+- El método es textual por símbolo y no sigue la cadena de `#include`: un
+  archivo shim puro (p. ej. `Opus/windows.h`, que solo reexporta
+  `qwindows.h` y `toolbox.h` sin usar ningún símbolo directamente) puede
+  aparecer sin hits directos pese a estar funcionalmente acoplado a Win32
+  a través del header que incluye. Mitigación aplicada: se verifica un
+  solo salto de `#include` sobre los archivos sin hits directos, separando
+  "núcleo puro confirmado" de "núcleo puro candidato — acoplamiento
+  transitivo vía include". No se sigue la cadena completa de includes —
+  eso exige leer código real para diseñar la frontera y es scope de Qt-1,
+  no de este inventario.
