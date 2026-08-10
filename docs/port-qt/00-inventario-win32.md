@@ -1,6 +1,6 @@
 # Fase Qt-0 v2 — Inventario de acoplamiento Win32
 
-**Árbol medido:** commit `a3c81ac` (2026-08-10) — con cambios sin comitear en el árbol de trabajo
+**Árbol medido:** commit `9df9ab4` (2026-08-10) — con cambios sin comitear en el árbol de trabajo
 **Generado por:** `docs/port-qt/scripts/audit_win32_v2.py`
 **Spec:** `docs/superpowers/specs/2026-08-10-qt-branch-fase0-design.md`
 
@@ -972,7 +972,7 @@ Los headers no son unidades de portabilidad: un header con `BOOL` en una firma s
 
 ## Vista 5 — Triage individual de `OpusEtAl/`
 
-58 archivos, veredicto individual (decisión de proyecto: no excluir en bloque). Propuestas: **6 diferir**, **52 excluir**.
+58 archivos, veredicto individual (decisión de proyecto: no excluir en bloque). Propuestas: **4 diferir**, **54 excluir**.
 
 Ninguno aparece en `OPUS_ORIGINAL_ENGINE_SOURCES`: el motor no compila nada de `OpusEtAl/`. La propuesta es sugerencia para revisión humana, no decisión tomada.
 
@@ -1025,8 +1025,8 @@ La columna *v1* marca los archivos que el inventario anterior listaba como «nú
 | `OpusEtAl/tools/src/onresult.c` | sí | — | portable | **excluir** | utilidad de build de época sin target en CMake; no enlaza en WORD1 ni aporta al núcleo Qt |
 | `OpusEtAl/tools/src/onwait.c` | sí | — | portable | **excluir** | utilidad de build de época sin target en CMake; no enlaza en WORD1 ni aporta al núcleo Qt |
 | `OpusEtAl/tools/src/opl.h` | sí | — | portable | **excluir** | utilidad de build de época sin target en CMake; no enlaza en WORD1 ni aporta al núcleo Qt |
-| `OpusEtAl/tools/src/opustlbx/opustlbx.c` |  | — | portable | **diferir** | toolbox de época, sin target; posible relación con port/original/toolbox.h |
-| `OpusEtAl/tools/src/opustlbx/opustlbx.h` |  | — | portable | **diferir** | toolbox de época, sin target; posible relación con port/original/toolbox.h |
+| `OpusEtAl/tools/src/opustlbx/opustlbx.c` |  | — | portable | **excluir** | generador de época confirmado: produce el .h/.asm original de toolbox a partir de Opus/resource/toolbox.txt (mecanismo `tlbx` de llamada lejana entre segmentos, tabla `mptlbxpfn`/`tlbxMac` consumida por Opus/asm/int3f.asm y por CkTlbx en Opus/debug/debugstr.c); sin target en CMake. port/original/toolbox.h es su sucesor de mano, no su salida generada, y lo dice en su propio comentario de cabecera; el acoplamiento real de opustlbx es con Opus/asm/, ya fuera de alcance |
+| `OpusEtAl/tools/src/opustlbx/opustlbx.h` |  | — | portable | **excluir** | generador de época confirmado: produce el .h/.asm original de toolbox a partir de Opus/resource/toolbox.txt (mecanismo `tlbx` de llamada lejana entre segmentos, tabla `mptlbxpfn`/`tlbxMac` consumida por Opus/asm/int3f.asm y por CkTlbx en Opus/debug/debugstr.c); sin target en CMake. port/original/toolbox.h es su sucesor de mano, no su salida generada, y lo dice en su propio comentario de cabecera; el acoplamiento real de opustlbx es con Opus/asm/, ya fuera de alcance |
 | `OpusEtAl/tools/src/revcnt.c` | sí | — | portable | **excluir** | utilidad de build de época sin target en CMake; no enlaza en WORD1 ni aporta al núcleo Qt |
 | `OpusEtAl/tools/src/rtfgen.c` | sí | — | portable | **excluir** | utilidad de build de época sin target en CMake; no enlaza en WORD1 ni aporta al núcleo Qt |
 | `OpusEtAl/tools/src/rtfline.c` | sí | — | portable | **excluir** | utilidad de build de época sin target en CMake; no enlaza en WORD1 ni aporta al núcleo Qt |

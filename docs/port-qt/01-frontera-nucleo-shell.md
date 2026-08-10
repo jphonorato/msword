@@ -6,7 +6,10 @@ fase; eso empieza en Qt-2.
 exclusión de comentarios y literales.
 **Decisiones de alcance cerradas:** fidelidad de paginación idéntica byte a
 byte contra el oráculo Winelib; `Opus/interp/` es núcleo; `OpusEtAl/` por
-veredicto individual (52 excluir, 6 diferir); `Opus/debug/` se porta.
+veredicto individual (54 excluir, 4 diferir); `Opus/debug/` se porta.
+**API de frontera:** cuatro headers de solo declaración en
+`src/core/include/` — `OpusShellFontMetrics.h`, `OpusShellMemory.h`,
+`OpusShellSpine.h`, `OpusShellConfig.h`.
 
 ---
 
@@ -151,7 +154,8 @@ paginación byte a byte por construcción. La restricción no se distribuye por
 
 ### B2.2 Contrato
 
-Interfaz en C, implementada por el shell, consumida por el núcleo:
+Declarado en `src/core/include/OpusShellFontMetrics.h`. Interfaz en C,
+implementada por el shell, consumida por el núcleo:
 
 ```c
 /* Identidad de fuente tal como el núcleo la conoce: los mismos campos que
@@ -338,7 +342,7 @@ un entero de 16 bits, y `struct FTI` guarda un
 bits, en una estructura que el código serializa.
 
 De ahí el contrato: **los handles son de tiempo de ejecución y no se
-serializan nunca.**
+serializan nunca.** Declarado en `src/core/include/OpusShellMemory.h`.
 
 ```c
 /* Handle opaco de ancho completo. Nunca se empaqueta en 16 bits, nunca se
@@ -377,6 +381,9 @@ Notas de diseño, en orden de riesgo:
 ## B4 — Contrato de espina de mensajes y ventanas
 
 287 sitios, 47 TUs: `Opus/` raíz 38, `Opus/wordtech/` 6, `Opus/debug/` 3.
+Los dos fragmentos con firma concreta hoy (§B4.3) están declarados en
+`src/core/include/OpusShellSpine.h`; el resto de esta sección sigue siendo
+tabla conceptual, no API.
 
 ### B4.1 La inversión de control es el cambio estructural mayor
 
@@ -412,9 +419,19 @@ Exigen extracción, no mapeo. Por orden de dificultad creciente:
   línea 1618, más dos `Yield`. Se sustituye por un callback de error en la API
   de frontera: el núcleo entrega código y contexto, el shell decide la
   presentación.
-- **`editspec.c`, `undo.c`** — notifican cambios de documento por mensajes. Se
-  sustituyen por el callback de notificación de cambio, una de las piezas que
-  Qt-1 tenía previstas desde el principio.
+- **`editspec.c`, `undo.c`** — **corrección sobre una lectura anterior de este
+  documento.** No notifican cambios de documento por mensajes: el símbolo que
+  los clasifica en esta categoría es `MessageBeep(MB_OK)`
+  (`editspec.c:1855,2075`, `undo.c:97`), verificado independientemente por
+  grep, no un mecanismo de notificación. En los tres sitios es el mismo
+  patrón — pila de deshacer vacía (`undo.c:97`, `vuab.uac == uacNil`) o rango
+  de bloque inválido (`editspec.c`, `LRetFalse`) — señal audible de "operación
+  rechazada", con `Beep()` bajo la rama `!OPUS_X64` ya presente en el propio
+  archivo. Se sustituye por un callback de alerta trivial, sin texto, del
+  mismo tipo que el de `error.c` pero sin mensaje que resolver. La
+  notificación real de cambio de documento —si existe como mecanismo
+  distinto— no está localizada todavía; no se afirma que exista solo porque
+  Qt-1 la previó en abstracto.
 - **`scroll.c`, `disp3.c`, `pagevw.c`** — mezclan cálculo de qué es visible
   (núcleo) con repintado (shell). Requieren la separación por función descrita
   en §B1.3 y no deberían intentarse antes de que el contrato de medición de
@@ -427,7 +444,8 @@ Exigen extracción, no mapeo. Por orden de dificultad creciente:
 43 sitios, 12 TUs. Símbolos: `GetProfileString`, `GetProfileInt`,
 `WriteProfileString`.
 
-El más simple de los cuatro, y se deja simple. La semántica de `WIN.INI`
+El más simple de los cuatro, y se deja simple. Declarado en
+`src/core/include/OpusShellConfig.h`. La semántica de `WIN.INI`
 —sección, clave, valor por omisión— corresponde uno a uno con `QSettings`:
 
 ```c
@@ -477,13 +495,36 @@ El orden no es arbitrario: cada paso deja verificable el siguiente.
 ## Preguntas abiertas
 
 Las dos que este documento tenía sobre fidelidad quedaron cerradas en §B2.3 y
-§B2.5. Quedan dos, ninguna bloqueante para empezar Qt-2:
+§B2.5. Las dos que quedaban tras esa ronda —ubicación de la API de frontera y
+el veredicto de `opustlbx/`— quedan cerradas aquí:
 
-1. **Nombre y ubicación de la API de frontera.** Este documento usa el prefijo
-   `OpusShell*` para lo que el shell implementa. Falta decidir si vive en
-   `src/core/` con un `include/` público, o si se mantiene la disposición
-   actual con un header nuevo en `port/`.
-2. **Los 6 archivos «diferir» de `OpusEtAl/`** (`cashmere/fldexp/` 4,
-   `tools/src/opustlbx/` 2) siguen sin veredicto. No bloquean Qt-2, pero
-   `opustlbx` podría estar relacionado con `port/original/toolbox.h`, que sí es
-   capa activa del port.
+1. **Ubicación de la API de frontera: `src/core/include/`.** No `port/`: ese
+   directorio es andamiaje de compatibilidad temporal (LP64 sobre Winelib,
+   build de host), semánticamente distinto de la API estable del núcleo
+   nuevo. Los cuatro headers de contrato (`OpusShellFontMetrics.h`,
+   `OpusShellMemory.h`, `OpusShellSpine.h`, `OpusShellConfig.h`) viven ahí; ver
+   inventario de headers en la sección siguiente.
+2. **`opustlbx/` resuelto: excluir, no incluir.** Sí hay relación real con
+   `port/original/toolbox.h` — el propio comentario de cabecera de
+   `toolbox.h` lo dice: es el sucesor escrito a mano del `toolbox.h`
+   *generado*, y `opustlbx.c` es precisamente ese generador (lee
+   `Opus/resource/toolbox.txt` y emite el `.h` con el mecanismo `tlbx` de
+   llamada lejana entre segmentos más el `.asm` con la tabla `mptlbxpfn` /
+   `tlbxMac` que consumen `Opus/asm/int3f.asm` y `CkTlbx` en
+   `Opus/debug/debugstr.c`). Pero la relación es de linaje textual, no de
+   acoplamiento activo: `opustlbx` no tiene target en CMake, no genera nada
+   que el build actual use, y lo que genera pertenece al mecanismo de
+   llamada de `Opus/asm/`, ya fuera de alcance de esta rama. `toolbox.h` sí
+   es capa activa del port —lo incluyen `Opus/windows.h` y trece TUs de
+   `wordtech/`/`interp/` directamente— pero eso no arrastra a `opustlbx`
+   consigo: el sucesor no depende del generador de su predecesor.
+   Consecuencia: `opustlbx.c`/`.h` pasan de «diferir» a «excluir» en el
+   triage; `cashmere/fldexp/` (4 archivos) se mantiene «diferir» sin cambios,
+   no apareció nada en esta investigación que lo justifique. Triage cerrado:
+   4 diferir, 54 excluir.
+
+   Nota lateral, no una tarea nueva: `CkTlbx` (`Opus/debug/debugstr.c:2039`)
+   referencia `tlbxMac`/`mptlbxpfn`, símbolos definidos solo en
+   `Opus/asm/int3f.asm`. `Opus/debug/` está en alcance por decisión de
+   proyecto y `Opus/asm/` no; esa TU ya tenía un hueco de enlace conocido
+   antes de esta investigación, independiente del veredicto de `opustlbx`.

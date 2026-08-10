@@ -521,8 +521,16 @@ def opusetal_triage(files, per_file, resolved):
             proposal = "diferir"
             why = "árbol cashmere, sin target en CMake; procedencia por confirmar"
         elif rel.startswith("OpusEtAl/tools/src/opustlbx/"):
-            proposal = "diferir"
-            why = "toolbox de época, sin target; posible relación con port/original/toolbox.h"
+            proposal = "excluir"
+            why = ("generador de época confirmado: produce el .h/.asm original de "
+                   "toolbox a partir de Opus/resource/toolbox.txt (mecanismo `tlbx` "
+                   "de llamada lejana entre segmentos, tabla `mptlbxpfn`/`tlbxMac` "
+                   "consumida por Opus/asm/int3f.asm y por CkTlbx en "
+                   "Opus/debug/debugstr.c); sin target en CMake. "
+                   "port/original/toolbox.h es su sucesor de mano, no su salida "
+                   "generada, y lo dice en su propio comentario de cabecera; el "
+                   "acoplamiento real de opustlbx es con Opus/asm/, ya fuera de "
+                   "alcance")
         elif rel.startswith("OpusEtAl/tools/src/convtest/"):
             proposal = "excluir"
             why = "banco de pruebas de conversión, sin target; no es núcleo"
