@@ -1,6 +1,6 @@
 # Fase Qt-0 v2 — Inventario de acoplamiento Win32
 
-**Árbol medido:** commit `9a7a034` (2026-08-10) — con cambios sin comitear en el árbol de trabajo
+**Árbol medido:** commit `a3c81ac` (2026-08-10) — con cambios sin comitear en el árbol de trabajo
 **Generado por:** `docs/port-qt/scripts/audit_win32_v2.py`
 **Spec:** `docs/superpowers/specs/2026-08-10-qt-branch-fase0-design.md`
 
@@ -27,7 +27,7 @@ Esta es la tabla que Qt-1 debe leer primero: dice dónde está la frontera.
 
 ### Corrección frente al reconteo previo
 
-El reconteo manual que motivó esta revisión daba `wordtech/` 26/40, `interp/` 6/7 y `Opus/` raíz 32/124. Esta corrida da **21/40**, **3/7** y **26/124**: más estricta, y la diferencia es explicable por método, no por error de una u otra medición. Aquel reconteo usó unos 30 símbolos elegidos a mano (GDI, mensajes, memoria, handles). El diccionario de v2 tiene 1618 símbolos derivados de la superficie completa del SDK Win16 e incorpora tres categorías que aquel conteo no tenía: *Geometría* (`RECT`, `POINT`, `IntersectRect`…), *Entrada/cursor* (`LoadCursor`, `SetCursor`, caret) y *Persistencia de configuración*. TUs que antes pasaban como portables ahora se reclasifican por esos ejes. La cifra de v2 es la que debe usarse.
+El reconteo manual que motivó esta revisión daba `wordtech/` 26/40, `interp/` 6/7 y `Opus/` raíz 32/124. Esta corrida da **22/40**, **3/7** y **27/124**: más estricta en `interp/` y en la raíz, y la diferencia es explicable por método, no por error de una u otra medición. Aquel reconteo usó unos 30 símbolos elegidos a mano (GDI, mensajes, memoria, handles). El diccionario de v2 tiene 1618 símbolos derivados de la superficie completa del SDK Win16 e incorpora tres categorías que aquel conteo no tenía: *Geometría* (`RECT`, `POINT`, `IntersectRect`…), *Entrada/cursor* (`LoadCursor`, `SetCursor`, caret) y *Persistencia de configuración*. TUs que antes pasaban como portables se reclasifican por esos ejes. La cifra de v2 es la que debe usarse.
 
 ## Vista 2 — Por TU del motor
 

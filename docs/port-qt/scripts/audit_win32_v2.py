@@ -660,17 +660,23 @@ def main():
     A("")
     A("### Corrección frente al reconteo previo")
     A("")
-    A("El reconteo manual que motivó esta revisión daba `wordtech/` 26/40, "
-      "`interp/` 6/7 y `Opus/` raíz 32/124. Esta corrida da **21/40**, "
-      "**3/7** y **26/124**: más estricta, y la diferencia es explicable por "
-      "método, no por error de una u otra medición. Aquel reconteo usó unos 30 "
-      "símbolos elegidos a mano (GDI, mensajes, memoria, handles). El "
-      "diccionario de v2 tiene 1618 símbolos derivados de la superficie "
-      "completa del SDK Win16 e incorpora tres categorías que aquel conteo no "
-      "tenía: *Geometría* (`RECT`, `POINT`, `IntersectRect`…), "
-      "*Entrada/cursor* (`LoadCursor`, `SetCursor`, caret) y *Persistencia de "
-      "configuración*. TUs que antes pasaban como portables ahora se "
-      "reclasifican por esos ejes. La cifra de v2 es la que debe usarse.")
+    wt = region_stats.get("Opus/wordtech/ (documento y layout)", {})
+    it = region_stats.get("Opus/interp/ (intérprete de macros)", {})
+    rz = region_stats.get("Opus/ raíz (presentación)", {})
+    A(f"El reconteo manual que motivó esta revisión daba `wordtech/` 26/40, "
+      f"`interp/` 6/7 y `Opus/` raíz 32/124. Esta corrida da "
+      f"**{wt.get('portable', 0)}/{wt.get('total', 0)}**, "
+      f"**{it.get('portable', 0)}/{it.get('total', 0)}** y "
+      f"**{rz.get('portable', 0)}/{rz.get('total', 0)}**: más estricta en "
+      f"`interp/` y en la raíz, y la diferencia es explicable por método, no "
+      f"por error de una u otra medición. Aquel reconteo usó unos 30 símbolos "
+      f"elegidos a mano (GDI, mensajes, memoria, handles). El diccionario de "
+      f"v2 tiene {len(dictionary)} símbolos derivados de la superficie "
+      f"completa del SDK Win16 e incorpora tres categorías que aquel conteo "
+      f"no tenía: *Geometría* (`RECT`, `POINT`, `IntersectRect`…), "
+      f"*Entrada/cursor* (`LoadCursor`, `SetCursor`, caret) y *Persistencia "
+      f"de configuración*. TUs que antes pasaban como portables se "
+      f"reclasifican por esos ejes. La cifra de v2 es la que debe usarse.")
     A("")
 
     # ---------------- Vista 2: por TU ----------------

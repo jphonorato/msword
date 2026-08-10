@@ -227,14 +227,25 @@ fuente ajusta el avance a la rejilla de píxeles. Ninguna aritmética de
 envoltorio puede cerrar un desplazamiento de medio píxel que proviene de las
 instrucciones de hinting de la propia fuente.
 
-**Por qué la coincidencia exacta sí es alcanzable.** Porque el oráculo del
-proyecto es la GDI de **Wine**, y Wine rasteriza con FreeType, igual que Qt.
-Pedir el mismo modo de hinting al mismo ppem entero produce los mismos
-enteros porque debajo corre el mismo motor. Esto es una dependencia de la
-conclusión y hay que enunciarla: **el resultado no se transfiere a la GDI de
-Microsoft sobre Windows**, cuyo rasterizador es otro. El oráculo declarado del
-proyecto es el binario Winelib, así que la comparación es la correcta, pero la
-equivalencia vale contra ese oráculo y no contra Windows.
+**Por qué la coincidencia exacta sí es alcanzable, y por qué eso confirma el
+alcance en lugar de limitarlo.** Porque el oráculo del proyecto es la GDI de
+**Wine**, y Wine rasteriza con FreeType, igual que Qt. Pedir el mismo modo de
+hinting al mismo ppem entero produce los mismos enteros porque debajo corre el
+mismo motor.
+
+Conviene ser explícito en cómo se lee esto. La restricción fijada al abrir la
+rama fue «paginación idéntica byte a byte **respecto del oráculo Winelib**», no
+respecto de Windows real. Que la equivalencia se apoye en que ambos lados
+rasterizan con FreeType no es una salvedad sobre el resultado: es la definición
+del objetivo, tal como quedó decidida antes de este experimento. El
+experimento confirma que ese objetivo es alcanzable y con qué estrategia
+concreta.
+
+De ahí se sigue, y queda asentado como alcance y no como pendiente: la
+equivalencia vale contra el binario Winelib. No se afirma nada sobre la GDI de
+Microsoft sobre Windows, cuyo rasterizador es otro, porque reproducir esa no
+es —ni fue— un objetivo de esta rama. Si alguna vez se quisiera, sería un
+cambio de alcance con su propia decisión, no un defecto de este diseño.
 
 **Estrategia que rige.** El shell obtiene los avances así:
 

@@ -26,6 +26,8 @@ WINEDEBUG=-all ./gdi_metrics.exe "Liberation Serif" 14
 QT_QPA_PLATFORM=offscreen ./qt_full /usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf 14 96
 ```
 
-Medido con Wine 10.0 y Qt 6.8.2 sobre Debian trixie. El resultado depende de
-que ambos lados rastericen con FreeType; ver la advertencia de §B2.3 sobre no
-extrapolar a la GDI de Microsoft.
+Medido con Wine 10.0 y Qt 6.8.2 sobre Debian trixie. La equivalencia se apoya
+en que ambos lados rasterizan con FreeType, lo cual es la definición del
+objetivo —la restricción del proyecto es fidelidad contra el oráculo Winelib,
+no contra Windows real— y no una salvedad del resultado. Ver §B2.3 del
+documento de frontera.
