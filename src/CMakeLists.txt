@@ -182,6 +182,35 @@ else()
     set(OPUS_DIBAPP_TOOL_DEP opus_dibapp_tool)
 endif()
 
+# Núcleo Qt (rama Qt-2, docs/port-qt/01-frontera-nucleo-shell.md): código
+# nuevo, sin windows.h, que nunca pasa por winegcc/wineg++. Bajo el
+# toolchain Winelib se construye con el mismo esquema de sub-proyecto nativo
+# que los host tools de arriba, porque necesita su propio compilador y su
+# propio Qt6, no el de la capa de compatibilidad del motor. Solo se
+# construye bajo OPUS_WINELIB_BUILD: es trabajo de la rama Qt en desarrollo
+# activo sobre el preset Linux, no algo que el build de MSVC deba conocer.
+if(OPUS_WINELIB_BUILD)
+    set(OPUS_CORE_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/core")
+    ExternalProject_Add(opus_core_build
+        SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/core"
+        CMAKE_ARGS
+            -DCMAKE_C_COMPILER=gcc
+            -DCMAKE_CXX_COMPILER=g++
+            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_INSTALL_PREFIX=${OPUS_CORE_PREFIX}
+            -DOPUS_CORE_BUILD_TESTS=ON
+        BUILD_ALWAYS 1
+        USES_TERMINAL_CONFIGURE 1
+        USES_TERMINAL_BUILD 1
+    )
+    set_target_properties(opus_core_build PROPERTIES
+        FOLDER "Qt port/core")
+    add_executable(opus_shell_config_test IMPORTED GLOBAL)
+    set_target_properties(opus_shell_config_test PROPERTIES
+        IMPORTED_LOCATION "${OPUS_CORE_PREFIX}/bin/opus_shell_config_test")
+    add_dependencies(opus_shell_config_test opus_core_build)
+endif()
+
 # Rebuild the command constants from Microsoft's checked-in command compiler
 # and resource sources. The tool runs natively on x64 but preserves MKCMD's
 # original 16-bit serialized word layout.
@@ -1321,6 +1350,9 @@ add_test(NAME opus_original_sttb_test COMMAND $<TARGET_FILE:opus_original_sttb_t
 add_test(NAME opus_original_plc_test COMMAND $<TARGET_FILE:opus_original_plc_test>)
 add_test(NAME opus_sdm_cab_test COMMAND $<TARGET_FILE:opus_sdm_cab_test>)
 add_test(NAME opus_original_command_test COMMAND $<TARGET_FILE:opus_original_command_test>)
+if(OPUS_WINELIB_BUILD)
+    add_test(NAME opus_shell_config_test COMMAND $<TARGET_FILE:opus_shell_config_test>)
+endif()
 
 # The tests below all launch the WORD1 binary itself (directly or via
 # opus_word1_ui_test). WORD1 currently hits heap corruption during

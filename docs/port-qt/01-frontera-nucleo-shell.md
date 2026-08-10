@@ -461,6 +461,59 @@ Tres funciones, traducción directa a `QSettings::value` y `setValue` con
 `QSettings` ya resuelve formato y ubicación por plataforma. Confirmado como el
 contrato completo; no hay nada más que diseñar aquí.
 
+### B5.1 Implementación (Qt-2, paso 1) — cerrado
+
+Lado shell implementado en `src/core/src/OpusShellConfig.cpp`, sub-proyecto
+nativo `src/core/` (siempre gcc/g++ y Qt6 reales, nunca winegcc/wineg++;
+construido bajo `OPUS_WINELIB_BUILD` vía `ExternalProject_Add`, mismo esquema
+que los host tools de `src/port/tools/host/`). Nada de `Opus/` se tocó: los
+43 sitios de llamada siguen sobre `GetProfileString`/`GetProfileInt`/
+`WriteProfileString`; ese es el trabajo del paso siguiente, no de este.
+
+**Prueba:** `src/core/src/OpusShellConfig_test.cpp`, registrada como
+`opus_shell_config_test` en ctest. Verificado con `ctest -R
+opus_shell_config_test` sobre el preset `linux-winelib-debug` real (no solo
+en un build aislado): 9 verificaciones, todas en verde. `QSettings::setPath`
+redirige a un directorio temporal antes de la primera llamada, así que la
+prueba no toca la configuración real de quien la corre — confirmado
+revisando `~/.config` después de correrla.
+
+**Lo que la prueba cubre, y por qué así:** antes de escribirla se buscó en
+el árbol de pruebas existente (`src/port/original/opus_*_test.c*`) algún
+sitio que ya ejerciera estas tres funciones, tal como pedía el encargo. No
+hay ninguno — cero coincidencias de `GetProfileString`/`GetProfileInt`/
+`WriteProfileString` en los archivos de prueba actuales. No hay, entonces,
+un comportamiento previo puntual que igualar; la prueba verifica la
+implementación contra la semántica documentada del `Profile` Win16 que
+`Opus/*.c` sigue llamando hoy:
+
+- Ida y vuelta de cadena, con verdad sobre el valor por omisión cuando la
+  clave no existe, y truncamiento correcto cuando el buffer de salida es
+  más chico que el valor (mismo contrato que `cbMax` en `GetProfileString`).
+- Ida y vuelta de entero, incluyendo negativos.
+- La distinción que de verdad importaba verificar: `GetProfileInt` usa el
+  valor por omisión **solo cuando la clave no existe**; si existe pero no es
+  numérica, el valor real es `0`, no el valor por omisión. `QString::toInt()`
+  exige la cadena completa como número válido y no reproduce eso, así que la
+  implementación usa una conversión propia estilo `atoi` (`AtoiLike`,
+  `OpusShellConfig.cpp`). La prueba fija este caso explícitamente para que
+  una futura simplificación no lo pierda en silencio.
+
+**Encontrado al revisar los call sites reales, no inventado:**
+`Opus/print2.c:833,848` llama `GetProfileString(..., key = NULL, ...)` para
+enumerar todas las claves de la sección `"devices"` de una sola vez —una
+forma de uso que el contrato de tres funciones de §B5 no cubre. No se toca
+en este paso porque migrar ese sitio exige ampliar el contrato, no solo
+traducir la llamada, y ese trabajo es del paso "migración de los 43 call
+sites", no de este.
+
+**Qué queda para el paso siguiente:** migrar los 43 sitios de llamada de
+`Opus/` a `OpusShellProfileString`/`OpusShellProfileInt`/
+`OpusShellProfileWrite`, TU por TU, y decidir ahí cómo cubrir el caso de
+enumeración de `print2.c` (extender el contrato con una cuarta función, o
+tratarlo aparte). Después de eso, memoria Win16 (B3) es el siguiente ítem de
+la secuencia recomendada.
+
 ---
 
 ## Secuencia recomendada para Qt-2
