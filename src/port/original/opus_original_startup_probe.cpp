@@ -1,6 +1,11 @@
 #include <Windows.h>
+#if defined(_MSC_VER)
 #include <DbgHelp.h>
 #include <rtcapi.h>
+#else
+/* Wine/Winelib: headers are lowercase; MSVC runtime checks are unavailable. */
+#include <dbghelp.h>
+#endif
 #include <algorithm>
 #include <cstdarg>
 #include <cstdio>
@@ -142,6 +147,7 @@ void WriteCurrentStack(HANDLE file, unsigned frames_to_skip) {
     SymCleanup(process);
 }
 
+#if defined(_MSC_VER)
 int __cdecl WriteRtcFailure(int error_type, const wchar_t* file_name,
                             int line, const wchar_t* module_name,
                             const wchar_t* format, ...) {
@@ -172,6 +178,7 @@ int __cdecl WriteRtcFailure(int error_type, const wchar_t* file_name,
     CloseHandle(file);
     return 0;
 }
+#endif
 
 LONG WINAPI WriteCrashStack(EXCEPTION_POINTERS* exception) {
     char crash_path[MAX_PATH] = {};
@@ -257,6 +264,7 @@ LONG WINAPI WriteCrashStack(EXCEPTION_POINTERS* exception) {
         }
         WriteCrashText(file, line_text);
 
+#if defined(_MSC_VER)
         DWORD64 image_base = 0;
         PRUNTIME_FUNCTION runtime_function =
             RtlLookupFunctionEntry(control_pc, &image_base, nullptr);
@@ -266,7 +274,9 @@ LONG WINAPI WriteCrashStack(EXCEPTION_POINTERS* exception) {
             RtlVirtualUnwind(0, image_base, control_pc, runtime_function,
                              &unwind_context, &handler_data,
                              &establisher_frame, nullptr);
-        } else {
+        } else
+#endif
+        {
             if (unwind_context.Rsp < stack_low ||
                 unwind_context.Rsp + sizeof(DWORD64) > stack_high) {
                 break;
@@ -401,12 +411,49 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous,
     if ((command_line != nullptr &&
          std::wcsstr(command_line, L"--self-test") != nullptr) ||
         std::wcsstr(GetCommandLineW(), L"--self-test") != nullptr) {
+        /* Fase 4 smoke: same lookup ResolveCommandAddress uses
+           (GetModuleHandleW(NULL) + GetProcAddress).  Requires the winebuild
+           .spec exports on Winelib; on MSVC the /export: list from
+           opuscmd_native.inc.  Result is also written to a side file so a
+           wine teardown crash after return cannot hide the probe outcome. */
+        HMODULE module = GetModuleHandleW(nullptr);
+        FARPROC cmd_help =
+            module != nullptr ? GetProcAddress(module, "CmdHelp") : nullptr;
+        FARPROC cmd_about =
+            module != nullptr ? GetProcAddress(module, "CmdAbout") : nullptr;
+        /* Prefer a fixed Wine path so a bad BuildDiagnosticPath layout
+           cannot hide the probe result. */
+        HANDLE report = CreateFileA("Z:\\tmp\\word1_self_test.txt", GENERIC_WRITE,
+                                    FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
+                                    FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (report != INVALID_HANDLE_VALUE) {
+            char line[256] = {};
+            std::snprintf(
+                line, sizeof(line),
+                "module=%p CmdHelp=%p CmdAbout=%p\r\n",
+                static_cast<void*>(module),
+                reinterpret_cast<void*>(cmd_help),
+                reinterpret_cast<void*>(cmd_about));
+            WriteCrashText(report, line);
+            CloseHandle(report);
+        }
+        if (module == nullptr) {
+            return 2;
+        }
+        if (cmd_help == nullptr) {
+            return 3;
+        }
+        if (cmd_about == nullptr) {
+            return 4;
+        }
         return 0;
     }
 
     SetUnhandledExceptionFilter(WriteCrashStack);
     AddVectoredExceptionHandler(1, ObserveVectoredException);
+#if defined(_MSC_VER)
     _RTC_SetErrorFuncW(WriteRtcFailure);
+#endif
     ResetRibbonTrace();
 
     /* The native SDM shim owns the controls, while Microsoft's original
