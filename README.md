@@ -24,6 +24,23 @@ This is **not** a reimplementation with a modern editor control, and it is
 **Known blocker:** `WORD1` still hits heap corruption during startup/constructors
 (Phase 6 / e2e). Engine link and export smoke tests are green.
 
+**CI blocker:** `cmake --preset linux-winelib-debug` fails at Configure in a
+clean clone/CI, before building anything. `src/CMakeLists.txt` requires
+`src/port/tools/host/` (a native-gcc sub-build for `opus_mkcmd_tool`,
+`opus_mkdlg_tool`, `opus_bitapp_tool`, `opus_dibapp_tool` — see line ~150,
+`ExternalProject_Add(opus_host_tools_build ...)`), but that directory is
+excluded by `.gitignore` (`src/port/tools/host/`) and was never committed, so
+it doesn't exist outside whichever machine it was developed on. Everything
+this table claims (motor compiling to 0 errors, `WORD1` linking, the 15
+registered `ctest` tests) was validated locally against that uncommitted
+directory, not from a fresh clone. Confirmed reproducing on every CI run to
+date, including the run that introduced the workflow itself:
+[run #1](https://github.com/jphonorato/msword/actions/runs/31350308217),
+[run #2](https://github.com/jphonorato/msword/actions/runs/31389677288).
+Fix: narrow the `.gitignore` rule to whatever build output lives under that
+path (not the source dir itself) and commit `src/port/tools/host/`'s actual
+contents from wherever they currently exist.
+
 Full technical history: [`docs/port-linux/00-reconocimiento.md`](docs/port-linux/00-reconocimiento.md).
 
 ## Requirements (Linux)
