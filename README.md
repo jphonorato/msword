@@ -1,131 +1,95 @@
-# Microsoft Word for Windows 1.1a - Native x64 Port
+# Word 1.1a for Linux (Winelib)
 
-This project is a fully working native Windows x64 port of Microsoft Word for
-Windows 1.1a, whose historical codename was **Opus**. It builds the original
-Word source and resources together with modern replacements for the 16-bit
-assembly, segmented-memory, and Win16 platform boundaries.
+Fork of [jmarshall23/msword](https://github.com/jmarshall23/msword): a historical
+port of **Microsoft Word for Windows 1.1a** (codename **Opus**) toward a
+**native ELF binary on Linux** via Winelib (`winegcc`, `wrc`, `winebuild`).
 
-The result is the original Word application and user experience running as a
-64-bit Windows executable. This is not an emulator or a reimplementation using
-a modern editor control.
+This is **not** a reimplementation with a modern editor control, and it is
+**not** “Word under Wine as a PE `.exe`”. The goal is a Winelib app
+(`WORD1.exe` stub + `WORD1.exe.so` ELF) linked against Wine’s Win32 APIs.
 
-## Requirements
+> **Fork model:** unidirectional. Linux/Winelib work lives only in this
+> repository. Changes are not contributed back to the upstream Windows/MSVC
+> project.
 
-- 64-bit Windows
-- Visual Studio 2022 with **Desktop development with C++**
-- A Windows 10 or Windows 11 SDK installed through Visual Studio
-- CMake 3.25 or newer
-- PowerShell
+## Status (2026-08-09)
 
-## Build and run
+| Phase | Result |
+| --- | --- |
+| 0–1 | Resource generators and host tools for Linux |
+| 3 | Motor compiles to **0 errors** (207 TUs → `libopus_original_engine.a`) |
+| 4 | `WORD1` linked with **427** exports (`.spec` + `wrc`) |
+| 5 | LP64 audit documented (inventory; selective fixes already in tree) |
 
-Clone the repository, configure the included CMake preset, and build it from a
-PowerShell prompt:
+**Known blocker:** `WORD1` still hits heap corruption during startup/constructors
+(Phase 6 / e2e). Engine link and export smoke tests are green.
 
-```powershell
-git clone https://github.com/jmarshall23/msword.git
-Set-Location msword\src
+Full technical history: [`docs/port-linux/00-reconocimiento.md`](docs/port-linux/00-reconocimiento.md).
 
-cmake --preset x64-debug
-cmake --build --preset x64-debug
+## Requirements (Linux)
 
-& ..\bin\WORD1.exe
+- Fedora 40+ (developed on Fedora 44) or similar x86-64 distro
+- `wine` / `wine-devel` (provides `winegcc`, `wineg++`, `wrc`, `winebuild`)
+- CMake ≥ 3.25, Ninja, GCC/G++
+- Wine prefix initialized once (`wineboot` / `~/.wine`)
+
+## Build (Linux / Winelib)
+
+```bash
+git clone https://github.com/jphonorato/msword.git
+cd msword/src
+
+cmake --preset linux-winelib-debug
+cmake --build --preset linux-winelib-debug --target opus_original_engine
+cmake --build --preset linux-winelib-debug --target WORD1
 ```
 
-For an optimized build, use the release preset instead:
+Artifacts (local, not committed):
 
-```powershell
-cmake --preset x64-release
-cmake --build --preset x64-release
-& ..\bin\WORD1.exe
+- `build/lib/Debug/libopus_original_engine.a`
+- `bin/WORD1.exe` + `bin/WORD1.exe.so` (or paths set by the CMake install layout)
+
+Full rebuild / error dump:
+
+```bash
+ninja -k 0 -C out/linux-winelib-debug opus_original_engine
 ```
 
-The presets use the Visual Studio 2022 x64 generator. After configuration, the
-generated solution can also be opened directly from
-`out\MicrosoftWordX64Port.sln`; use `WORD1` as the startup project.
+## Windows (upstream capability, retained)
 
-## Test
+MSVC presets (`x64-debug` / `x64-release`) from the original port remain in
+`src/CMakePresets.json`. Linux changes in `src/Opus/` are behind
 
-Run the complete Debug test suite from the repository root:
-
-```powershell
-ctest --test-dir .\out -C Debug --output-on-failure
+```c
+#if defined(__GNUC__) && !defined(_MSC_VER)
 ```
 
-Or, when your current directory is `src`:
-
-```powershell
-ctest --test-dir ..\out -C Debug --output-on-failure
-```
-
-For a release build, replace `Debug` with `Release`. The suite covers the
-ported x64 runtime, original Word data structures and command tables, process
-startup, and automated UI workflows including typing, selection, formatting,
-dialogs, and saving.
+so the Windows build path is intended to stay intact. Primary development and
+CI for **this** fork target Linux/Winelib.
 
 ## Project layout
 
 | Path | Purpose |
 | --- | --- |
-| `src/Opus/` | Original Microsoft Word/Opus application source and resources |
-| `src/OpusEtAl/` | Original supporting tools, libraries, and build inputs |
-| `src/OpusProg/` | Historical program documentation |
-| `src/port/original/` | x64 compatibility layer, translated routines, and tests |
-| `src/port/tools/` | Native replacements for historical build-time tools |
-| `src/cmake/` | Resource and source-generation helpers |
-| `out/` | CMake cache and generated Visual Studio solution |
-| `build/` | Intermediate tools, tests, probes, PDBs, and diagnostics |
-| `bin/` | Final executable and runtime files |
-
-`out`, `build`, and `bin` are generated locally during configuration and
-compilation.
-
-## How the port works
-
-The original C and resource files remain the authoritative implementation.
-The port adds only the platform work needed to build and run that code safely
-on 64-bit Windows:
-
-- 16-bit x86 assembly entry points are translated to fixed-width C or C++.
-- Segmented and double-indirect memory handles are mapped to an x64-safe native
-  runtime.
-- Win16-specific startup, messaging, graphics, file, and resource behavior is
-  adapted to current Win32 APIs.
-- Original command, dialog, cursor, bitmap, and other generated assets are
-  rebuilt by native host tools as part of the CMake graph.
-- Unit, runtime, smoke, and UI tests guard compatibility with the original
-  algorithms and application behavior.
-
-CMake inventories the legacy assembly tree but does not compile those modules
-into native targets. This keeps the historical implementation available as a
-reference while ensuring all shipped code is valid for AMD64.
-
-## Useful targets
-
-| Target | Description |
-| --- | --- |
-| `WORD1` | The native x64 Microsoft Word executable |
-| `opus_original_engine` | Original Word application engine compiled for x64 |
-| `opus_x64_runtime` | Native runtime and translated assembly behavior |
-| `opus_word1_ui_test` | Automated end-to-end UI test driver |
-| `legacy_sources` | IDE-visible reference collection of the original assembly |
-
-Build a specific target with:
-
-```powershell
-cmake --build --preset x64-debug --target WORD1
-```
+| `src/Opus/` | Original Microsoft Word/Opus sources (guarded edits only) |
+| `src/OpusEtAl/` | Original tools, libraries, and build inputs |
+| `src/port/` | Platform layer (Winelib, x64 runtime, probes) |
+| `src/cmake/` | Toolchain, `.spec` generation, helpers |
+| `docs/port-linux/` | Port history and decisions (source of truth) |
+| `out/`, `build/`, `bin/` | Local build outputs (gitignored) |
 
 ## Contributing
 
-Changes should preserve the original Word behavior while keeping all native
-interfaces pointer-width safe. Prefer source-equivalent translations of
-historical routines, isolate unavoidable Windows API adaptation at the port
-boundary, and add focused tests for newly translated behavior.
+See [CONTRIBUTING.md](CONTRIBUTING.md). File issues against **this** repo only;
+do not open PRs against jmarshall23/msword for Linux work.
 
-## Copyright
+## License
 
-The historical source files retain their original Microsoft and third-party
-copyright notices. This repository does not currently include a top-level
-license file; review the applicable rights before redistributing the source or
-binaries.
+See [LICENSE](LICENSE). Historical Word 1.1a sources retain their original
+provenance; port modifications are under MIT as stated there.
+
+## Credits
+
+- Original Word 1.1a / Opus: Microsoft (1989)
+- Windows x64 port baseline: [jmarshall23/msword](https://github.com/jmarshall23/msword)
+- Linux/Winelib port: jphonorato
