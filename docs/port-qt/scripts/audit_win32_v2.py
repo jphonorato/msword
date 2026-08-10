@@ -307,6 +307,92 @@ def categorize(symbol):
 TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
+def strip_comments_and_literals(text):
+    """Sustituye comentarios y literales por espacios, preservando longitud.
+
+    Máquina de estados sobre el texto, no expresión regular: una regex sobre
+    comentarios y cadenas a la vez es frágil justo en los casos que importan
+    (una comilla dentro de un comentario, `/*` dentro de una cadena). Preservar
+    la longitud mantiene válidos los números de línea al reportar hallazgos.
+
+    Motivo: durante Qt-1 aparecieron dos falsos positivos del mismo tipo por
+    caminos independientes — `TextOut` dentro de un comentario en
+    wordtech/format.c:2165 y `GetTextExtent` dentro de una cadena en
+    dispspec.c:539. Eso es un modo de falla sistemático, no dos accidentes.
+    """
+    out = []
+    i, n = 0, len(text)
+    NORMAL, BLOCK, LINE, STRING, CHAR = range(5)
+    state = NORMAL
+    while i < n:
+        c = text[i]
+        nxt = text[i + 1] if i + 1 < n else ""
+        if state == NORMAL:
+            if c == "/" and nxt == "*":
+                state = BLOCK
+                out.append("  ")
+                i += 2
+                continue
+            if c == "/" and nxt == "/":
+                state = LINE
+                out.append("  ")
+                i += 2
+                continue
+            if c == '"':
+                state = STRING
+                out.append(" ")
+                i += 1
+                continue
+            if c == "'":
+                state = CHAR
+                out.append(" ")
+                i += 1
+                continue
+            out.append(c)
+            i += 1
+        elif state == BLOCK:
+            if c == "*" and nxt == "/":
+                state = NORMAL
+                out.append("  ")
+                i += 2
+                continue
+            out.append("\n" if c == "\n" else " ")
+            i += 1
+        elif state == LINE:
+            if c == "\n":
+                state = NORMAL
+                out.append("\n")
+                i += 1
+                continue
+            out.append(" ")
+            i += 1
+        else:  # STRING o CHAR
+            closing = '"' if state == STRING else "'"
+            if c == "\\" and i + 1 < n:
+                # Escape: consume ambos. Cubre \" \' \\ y la continuación de
+                # línea dentro de una cadena.
+                out.append("\n" if nxt == "\n" else " ")
+                out.append(" " if nxt != "\n" else "")
+                i += 2
+                continue
+            if c == closing:
+                state = NORMAL
+                out.append(" ")
+                i += 1
+                continue
+            # Una cadena sin cerrar antes del fin de línea es código roto o un
+            # apóstrofo suelto en texto libre; se vuelve a NORMAL para no
+            # tragarse el resto del archivo.
+            if c == "\n":
+                state = NORMAL
+                out.append("\n")
+                i += 1
+                continue
+            out.append(" ")
+            i += 1
+    return "".join(out)
+
+
 def scan(files, vocabulary):
     """files -> {símbolo: sitios}.
 
@@ -315,13 +401,16 @@ def scan(files, vocabulary):
     separado —todos los símbolos del diccionario tienen forma de
     identificador— pero recorre el archivo una vez en lugar de una vez por
     símbolo.
+
+    Comentarios y literales se eliminan antes de tokenizar, así que solo se
+    cuentan usos reales en código.
     """
     per_file = {}
     for rel in files:
         if rel in API_SURFACE:
             continue
         text = (SRC / rel).read_text(encoding="latin-1", errors="replace")
-        counts = Counter(TOKEN.findall(text))
+        counts = Counter(TOKEN.findall(strip_comments_and_literals(text)))
         per_file[rel] = {s: n for s, n in counts.items() if s in vocabulary}
     return per_file
 
@@ -709,10 +798,44 @@ def main():
       "distribución por región (Vista 1 y 3) determina si la restricción se "
       "puede satisfacer en una sola interfaz o hay que replicarla en varias.")
     A("")
+    A("### Comentarios y literales: excluidos desde la revisión de Fase B")
+    A("")
+    A("Durante el diseño de Qt-1 aparecieron dos falsos positivos del mismo "
+      "tipo por caminos independientes: `TextOut` dentro de un comentario en "
+      "`Opus/wordtech/format.c:2165`, y `GetTextExtent` dentro de una cadena "
+      "literal en `Opus/dispspec.c:539`. Dos veces el mismo modo de falla es "
+      "un problema sistemático, no dos accidentes, así que el escaneo dejó de "
+      "contar comentarios y literales.")
+    A("")
+    A("El script elimina `/* */`, `//`, `\"…\"` y `'…'` con una máquina de "
+      "estados antes de tokenizar, preservando la longitud del texto para que "
+      "los números de línea sigan siendo válidos. No se usó una expresión "
+      "regular: es frágil justo en los casos que importan (una comilla dentro "
+      "de un comentario, un `/*` dentro de una cadena).")
+    A("")
+    A("Delta medido sobre las categorías cuyo conteo sostiene una decisión de "
+      "diseño:")
+    A("")
+    A("| Categoría | Antes | Después | Delta |")
+    A("|---|---|---|---|")
+    A("| GDI texto/fuentes | 200 | 170 | −30 |")
+    A("| Convenciones ABI (resueltos) | 2407 | 2058 | −349 |")
+    A("| Espina de mensajes/ventanas | 323 | 287 | −36 |")
+    A("| Memoria Win16 | 206 | 201 | −5 |")
+    A("| **Todas las categorías** | **16687** | **15042** | **−1645 (9,9 %)** |")
+    A("")
+    A("El delta no es marginal y movió veredictos de TU: `wordtech/format.c` "
+      "pasó de *presentación* a *portable* al desaparecer su único `TextOut` "
+      "—estaba en un comentario—, con lo que `Opus/wordtech/` pasa de 21 a 22 "
+      "TUs portables y la categoría *GDI texto/fuentes* de 27 a 24 TUs. En "
+      "`Opus/wordtech/` queda una sola TU que toca medición de texto, "
+      "`layoutap.c`. Los totales de este reporte ya son los posteriores a la "
+      "limpieza.")
+    A("")
     A("### Limitaciones de método vigentes")
     A("")
-    A("- Escaneo textual con `\\b`, no preprocesador: cuenta apariciones en "
-      "comentarios y cadenas. Ruido aceptado; el objetivo es dimensionar.")
+    A("- Escaneo textual con `\\b`, no preprocesador: no evalúa `#if`, así que "
+      "cuenta código desactivado por compilación condicional.")
     A("- No sigue cadenas de `#include`. Un archivo shim puede aparecer sin "
       "hits pese a estar acoplado a través de lo que incluye. En v1 esto se "
       "trató con una verificación de un salto; en v2 el problema se reduce "
