@@ -7,9 +7,10 @@ exclusión de comentarios y literales.
 **Decisiones de alcance cerradas:** fidelidad de paginación idéntica byte a
 byte contra el oráculo Winelib; `Opus/interp/` es núcleo; `OpusEtAl/` por
 veredicto individual (54 excluir, 4 diferir); `Opus/debug/` se porta.
-**API de frontera:** cuatro headers de solo declaración en
-`src/core/include/` — `OpusShellFontMetrics.h`, `OpusShellMemory.h`,
-`OpusShellSpine.h`, `OpusShellConfig.h`.
+**API de frontera:** cuatro headers en `src/core/include/` —
+`OpusShellFontMetrics.h`, `OpusShellSpine.h` (solo declaración);
+`OpusShellConfig.h`, `OpusShellMemory.h` (declaración e implementación,
+ambas verificadas con enlace cross-toolchain real).
 
 ---
 
@@ -334,28 +335,105 @@ para el port Winelib, y este diseño se apoya en eso sin reimplementarlo:
 Qt-2 usa esas macros tal como están. Lo que sigue es lo que **no** está
 resuelto.
 
-### B3.2 El problema que queda: el handle mide 16 bits por definición
+### B3.2 Corrección de fondo: `HANDLE` no mide 16 bits en este build
 
-`Opus/lib/qwindows.h:630` declara `typedef WORD HANDLE`. Un handle Win16 **es**
-un entero de 16 bits, y `struct FTI` guarda un
-`struct FONTREC far * far *qqftr` —un puntero a puntero— junto a campos de 16
-bits, en una estructura que el código serializa.
+Una versión anterior de esta sección afirmaba, citando
+`Opus/lib/qwindows.h:630` (`typedef WORD HANDLE`), que "un handle Win16 es
+un entero de 16 bits" y que de ahí salía el problema del contrato. Medido
+antes de diseñar nada más: **falso para este build.**
 
-De ahí el contrato: **los handles son de tiempo de ejecución y no se
-serializan nunca.** Declarado en `src/core/include/OpusShellMemory.h`.
+```c
+#include "word.h"
+printf("sizeof(HANDLE)=%zu\n", sizeof(HANDLE));   /* → 8 */
+```
+
+`qwindows.h` es el SDK Win16 vendorizado, pero esa rama de `word.h` está
+detrás de `#ifdef OPUS_X64 ... #else ... #include "qwindows.h" ... #endif`
+—y `OPUS_X64` está definido en este build—. La rama que sí se compila
+incluye `opus_x64_compat.h`, que arrastra el `windows.h` real de Wine
+(`winnt.h: typedef void *HANDLE`). `qwindows.h:630` es código muerto para
+este target; la cita original nunca se verificó contra lo que realmente
+compila.
+
+Esto no vuelve trivial el contrato, cambia por qué existe. No hace falta
+un allocator opaco porque un handle no entre en un campo de 16 bits —ya
+entra, mide lo mismo que un puntero—. Hace falta porque un handle sigue
+siendo indirección de tiempo de ejecución que el núcleo no debe fijar por
+diseño (independencia del shell) ni serializar nunca (§B3.3).
+
+### B3.3 Fase 1 — Estructuras persistidas con campo handle: ninguna encontrada
+
+Se recorrieron, antes de escribir una sola línea del header, todos los
+campos de tipo `HANDLE`/`GLOBALHANDLE`/`HGLOBAL`/`LOCALHANDLE` en `Opus/`.
+De los que son campos de struct (no variables locales ni parámetros —la
+mayoría de las ~90 coincidencias de `HANDLE` en el árbol son eso), estos
+son los que aparecieron y por qué ninguno se persiste:
+
+| Struct | Campo(s) | Qué es | Por qué no se serializa |
+|---|---|---|---|
+| `Opus/core.h` | `rghcdModules[]` | caché de handles de módulo de código (`GetCodeHandle`, `wproc.c`) | vive y muere con la sesión; ninguna escritura a archivo la toca |
+| `Opus/dde.h` (`DDLI`) | `hData` | último mensaje DDE | IPC en vivo entre procesos, no hay "DDE guardado" |
+| `Opus/dde.h` (`DRVDATA`) | `hrgbKeyState` | registro de teclas para reproducción de macros | estado de sesión de `eldde.c`/`quit.c`, `GlobalAlloc`/`Free` en memoria |
+| `Opus/filecvt.h` (`EXCR`) | `hLib`, `ghszFn`, `ghszSubset`, `ghBuff`, `ghszVersion` | carga de DLL conversora externa | scratch de `filecvt.c` mientras dura la conversión, `GlobalAlloc`/`Free` puros |
+| `Opus/el.h` (`CABX`) | `rgh[]` | contenedor genérico "SDM privado" | comentario propio del código: "necessary for CAB access... internal"; sin escritura a archivo |
+| `Opus/el.h` (`DKD`) | `hLib` | biblioteca de add-in cargada | no referenciado por nombre en ningún `.c`; huérfano |
+| `Opus/grstruct.h` (`PICT`) | `hbm` | bitmap de GDI para repintar | único uso real es `SelectObject` (`rsb.c:601`); el formato de imagen en disco (`PIC.H`) no tiene campos handle |
+| `Opus/wordtech/file.h` (`ELOF`) | `hFile` | handle de SO de un archivo abierto por el lenguaje de macros | por definición no sobrevive a un reinicio; nunca se escribe a sí mismo |
+
+Cruzado contra las estructuras que sí son el formato de archivo real —FIB,
+FIB30, DOP, STSH, PAP, CHP, SEP, BKF, FFN, STTB— **ninguna tiene un campo
+handle.** Coincide con la práctica ya esperada de la época: el formato de
+Word 1.1a guarda índices (FTC, STC, desplazamientos de FKP) precisamente
+porque un handle no sobrevive a un guardado, no es un cuidado que este
+port haya introducido.
+
+**Veredicto de Fase 1: ninguna estructura persistida con campo handle.**
+No cambia la forma del contrato —sigue siendo el handle opaco de
+§B3.2— y no bloquea la Fase 2.
+
+**Hallazgo colateral, fuera de alcance de este documento pero que no se
+puede callar:** al verificar `struct FTI` para esta fase se encontró que
+la cita central de §B2.1 (`Opus/wordtech/format.h:379-410`, con
+`dxuFrac`/`bmpchdxu`/`struct FONTREC far * far *qqftr`) describe una
+estructura que está **dentro de `#ifdef MAC`** —muerta en este build,
+igual que le pasaba a `qwindows.h`—. El `struct FTI` que sí se compila
+bajo `WIN`/`OPUS_X64` vive en `Opus/fontwin.h:126-152`: sin acumulador de
+fracción, con `int rgdxp[256]` (tabla de anchos inline, no un puntero a
+tabla externa) y `HFONT hfont`. No se toca el contrato de medición de
+texto (B2) en este documento —fuera de alcance de este prompt—, pero
+queda anotado: **B2.1 describe la estructura equivocada** y necesita
+revisión propia antes de implementarse.
+
+### B3.4 Contrato
+
+Declarado en `src/core/include/OpusShellMemory.h`, con `OpusMemHandle`
+(equivalente de `GlobalHandle`) agregado en la Fase 2 de este contrato:
 
 ```c
 /* Handle opaco de ancho completo. Nunca se empaqueta en 16 bits, nunca se
    escribe a disco, nunca se compara contra un literal. */
 typedef struct OpusHandleImpl *OpusHandle;
 
+#define OPUS_MEM_ZEROINIT 0x0001u
+
 OpusHandle    OpusMemAlloc(unsigned long cb, unsigned flags);
 void         *OpusMemLock(OpusHandle h);     /* fija y devuelve puntero */
 void          OpusMemUnlock(OpusHandle h);   /* libera la fijación */
 OpusHandle    OpusMemRealloc(OpusHandle h, unsigned long cb, unsigned flags);
 unsigned long OpusMemSize(OpusHandle h);
+OpusHandle    OpusMemHandle(void *ptr);      /* puntero → handle dueño */
 void          OpusMemFree(OpusHandle h);
 ```
+
+Un solo contrato cubre `Global*` y `Local*`: bajo este port ambos heaps
+Win16 ya son el mismo heap nativo, así que la distinción no tiene nada que
+preservar. `LocalHandle` no aparece (0 coincidencias por grep independiente
+en todo `Opus/`+`OpusEtAl/`); el resto de la familia sí (`GlobalHandle`: 11,
+`LocalAlloc`: 5, `LocalReAlloc`: 3, `LocalLock`/`LocalUnlock`/`LocalSize`:
+1 cada uno) pese a no estar en la tabla de símbolos del inventario Qt-0
+—`debugwin.h` no intercepta esos nombres puntuales, así que el mecanismo
+de derivación del diccionario no los capturó; confirmado con grep directo,
+no asumido ausente—.
 
 Notas de diseño, en orden de riesgo:
 
@@ -365,16 +443,65 @@ Notas de diseño, en orden de riesgo:
    núcleo puede fijar todo permanentemente —la memoria de un proceso de 64 bits
    lo permite— pero **los pares deben conservarse en el código**: eliminarlos
    como no-operaciones haría imposible detectar un uso de puntero tras mover,
-   si más adelante se introdujera compactación.
+   si más adelante se introdujera compactación. Verificado en la
+   implementación (§B3.5): `OpusMemLock` tras `OpusMemFree` devuelve `NULL`
+   en vez de un puntero colgante.
 2. **`GlobalLockClip`.** Variante de bloqueo específica de portapapeles. Va al
    contrato de portapapeles de Qt-6, no a este. Se anota aquí para que no se
    resuelva dos veces.
 3. **Todo campo de estructura serializada con tipo handle necesita
-   indirección.** Antes de tocar código, Qt-2 debe enumerar qué estructuras
-   persistidas contienen campos de tipo `HANDLE` y sustituirlos por un índice
-   en una tabla, dejando el handle fuera del formato de archivo. Esto conecta
-   con la limitación ya documentada del port Winelib sobre cambios de formato
-   bajo LP64, y es la parte de este contrato con más probabilidad de sorpresas.
+   indirección.** Resuelto por la Fase 1 (§B3.3): no hay ninguno hoy. Si
+   algún día se agrega uno, ese es el momento de diseñar la indirección, no
+   antes.
+
+### B3.5 Implementación y verificación — cerrado
+
+Lado núcleo implementado en `src/core/src/OpusShellMemory.cpp`: handle
+opaco sobre `malloc`/`realloc`/`free` con contador de fijación y una
+marca de "liberado" que se conserva después de `OpusMemFree` —a propósito,
+para poder detectar mal uso en vez de leer memoria ya reciclada—.
+`OpusMemHandle` usa un registro `puntero → handle` (`std::unordered_map`),
+no aritmética de punteros, porque la dirección que devuelve `malloc` no
+tiene relación fija con la del `OpusHandleImpl` que la posee. No depende
+de Qt: es la primera implementación de los tres contratos restantes, y no
+necesitaba Qt para nada.
+
+**No alcanza con que compile ni enlace** —eso ya lo probó
+`link-check/` para paso de valores por copia (commit `7760a28`)—.
+Lo que este contrato cruza es un handle/puntero real, así que la prueba
+tiene que demostrar que sobrevive la frontera, no solo que se puede pasar.
+
+Sonda en `docs/port-qt/scripts/handle-check/` (`handle_check.c`),
+compilada y enlazada con **wineg++** —el driver real de `WORD1`, no
+`winegcc`— contra `libopus_shell_memory.a`:
+
+1. `OpusMemAlloc` → handle real.
+2. `OpusMemLock` → puntero válido.
+3. Escribe el patrón `"OpusMemHandleRoundTrip-2026"` a través del puntero.
+4. `OpusMemUnlock`, `OpusMemLock` de nuevo: **el patrón sigue ahí**, no
+   solo "el puntero es no nulo".
+5. `OpusMemHandle(puntero)` devuelve el mismo handle original.
+6. `OpusMemFree`, luego `OpusMemLock` sobre el handle liberado: `NULL`,
+   fallo controlado, no puntero colgante.
+7. Modo aparte `--double-free`: `OpusMemAlloc` → `OpusMemFree` →
+   `OpusMemFree` otra vez. La segunda llamada hace `abort()`. Bajo Wine
+   esto se ve como el volcado de WineDbg capturando el `SIGABRT` —ruidoso,
+   pero es exactamente Wine reaccionando a una terminación anormal real,
+   no un error de la sonda—; el proceso termina con exit 134
+   (128+SIGABRT), nunca con exit 0.
+
+Las siete verificaciones pasaron en la corrida real (`run.sh`, sobre la
+biblioteca que construye `opus_core_build`, no una copia de scratch); el
+proceso de doble liberación terminó con exit 134, no 0. Sin regresión:
+`ctest -R opus_shell_config_test` sigue en verde después de agregar
+`opus_shell_memory` al mismo `CMakeLists.txt`.
+
+**Consecuencia:** la frontera física ya probó pasar valores por copia
+(configuración) y ahora pasar ownership de un bloque de memoria real
+(handles). Los dos modos de cruce que necesitan los contratos restantes
+—espina de mensajes (callbacks, sin estado que cruce la frontera más que
+el valor de retorno) y medición de texto (arrays de anchos por valor,
+igual que configuración)— no introducen una tercera categoría nueva.
 
 ---
 
@@ -648,11 +775,16 @@ El orden no es arbitrario: cada paso deja verificable el siguiente.
    real de los nombres de época a archivos físicos. Es barato, es un
    prerrequisito de cualquier prueba de fidelidad, y hoy no está escrito en
    ninguna parte.
-3. **Memoria (B3), sin tocar serialización.** Sustituir `Global*` por el
-   allocator opaco, conservando los pares de fijación. Verificable: el motor
-   sigue enlazando y las pruebas de humo del port Winelib siguen pasando.
-4. **Enumeración de handles serializados (§B3.2).** Solo inventario, sin
-   cambios. Es la compuerta antes de cualquier trabajo de formato de archivo.
+3. **Memoria (B3) — implementación y verificación cerradas, migración de
+   call sites pendiente.** El allocator opaco existe
+   (`src/core/src/OpusShellMemory.cpp`) y probó, con un handle real, que
+   sobrevive Alloc/Lock/escritura/Unlock/Lock/Free a través de
+   winegcc/wineg++ (§B3.5). Falta sustituir los 201 sitios de `Global*` en
+   `Opus/` por `OpusMem*` — issue previo por `CONTRIBUTING.md`, igual que
+   configuración.
+4. **Enumeración de handles serializados (§B3.3) — cerrada.** Ninguna
+   estructura persistida tiene campo handle. No quedó como inventario
+   pendiente: se hizo antes de diseñar el header, no después.
 5. **Medición de texto (B2)** con la comparación contra el oráculo activa desde
    el primer commit, usando la estrategia de §B2.3. Es la pieza de la que
    depende la restricción de fidelidad, y la que hace que `wordtech/` compile
@@ -702,3 +834,20 @@ el veredicto de `opustlbx/`— quedan cerradas aquí:
    `Opus/asm/int3f.asm`. `Opus/debug/` está en alcance por decisión de
    proyecto y `Opus/asm/` no; esa TU ya tenía un hueco de enlace conocido
    antes de esta investigación, independiente del veredicto de `opustlbx`.
+
+**Nueva, abierta, no resuelta en este documento — encontrada al hacer
+Fase 1 de B3 (§B3.3), no buscada a propósito:**
+
+3. **§B2.1 describe la estructura equivocada.** La cita central del
+   contrato de medición de texto (`Opus/wordtech/format.h:379-410`,
+   `dxuFrac`/`bmpchdxu`/`struct FONTREC far * far *qqftr`) es código
+   `#ifdef MAC`, muerto en este build. El `struct FTI` real que se compila
+   bajo `WIN`/`OPUS_X64` está en `Opus/fontwin.h:126-152` y es
+   estructuralmente distinto: sin acumulador de fracción, con
+   `int rgdxp[256]` inline en vez de un puntero a tabla externa, y
+   `HFONT hfont`. No se sabe todavía si esto invalida la estrategia de
+   §B2.3 (ppem entero + `PreferFullHinting`, medida contra el
+   comportamiento observable de `GetTextExtent`/`GetTextMetrics`, no
+   contra el layout interno de `struct FTI`) o si solo invalida la
+   narrativa de acompañamiento. Bloqueante para *empezar a implementar*
+   B2, no para lo que ya se cerró de B3 o B5.
