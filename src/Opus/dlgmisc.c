@@ -62,6 +62,9 @@
 
 #include "word.h"
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "OpusShellConfig.h"    /* Qt-2 B5: OpusShellProfile* */
+#endif
 #include "heap.h"
 #include "doc.h"
 #include "props.h"
@@ -2333,8 +2336,14 @@ ForceKeyboardSpeed()
 
 	/* first change the WIN.INI so windows will do this for us from
 		now on (won't effect this windows session) */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusShellProfileWrite((const char *)SzFrameKey("windows",WindowsWININI),
+			(const char *)SzFrameKey("KeyboardSpeed",KBSpeedWININI),
+			(const char *)SzFrame("31"));
+#else
 	WriteProfileString(SzFrameKey("windows",WindowsWININI),
 			SzFrameKey("KeyboardSpeed",KBSpeedWININI), SzFrame("31"));
+#endif
 
 	/* now change it for this session */
 	/* NOTE: code stolen from USERs wininit1.c */

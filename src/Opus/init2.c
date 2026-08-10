@@ -21,6 +21,9 @@
 #define SBMGR
 #include "word.h"
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "OpusShellConfig.h"    /* Qt-2 B5: OpusShellProfile* */
+#endif
 #include "version.h"
 #include "heap.h"
 #define NOSPECMSG
@@ -564,10 +567,17 @@ BOOL fTutorial;
 
 #ifdef MKTGPRVW  /* timebomb */
 /* warn users to get the real product/next beta.  hard coded for 14Feb90 */
-	if (((LONG)DttmCur() & 0x1FFFFFFFL) >= 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if (((LONG)DttmCur() & 0x1FFFFFFFL) >=
+			/* DttmOfMDY(((nMonthBuilt-1)+7)%12+1,nDayBuilt,nYearBuilt+(nMonthBuilt>5)) */
+	DttmOfMDY(2,14,90)
+			&& OpusShellProfileInt((const char *)szApp, (const char *)SzShared(szDisableWarningDef), 1))
+#else
+	if (((LONG)DttmCur() & 0x1FFFFFFFL) >=
 			/* DttmOfMDY(((nMonthBuilt-1)+7)%12+1,nDayBuilt,nYearBuilt+(nMonthBuilt>5)) */
 	DttmOfMDY(2,14,90)
 			&& GetProfileInt(szApp, SzShared(szDisableWarningDef), 1))
+#endif
 		ErrorEid(eidBetaVersion, "FInitPart2");
 #endif /* MKTGPRVW */
 

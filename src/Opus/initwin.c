@@ -22,6 +22,9 @@
 #define SBMGR
 #include "word.h"
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "OpusShellConfig.h"    /* Qt-2 B5: OpusShellProfile* */
+#endif
 #include "version.h"
 #include "heap.h"
 #define NOSPECMSG
@@ -506,7 +509,11 @@ BOOL *pfTutorial;
 		/* we need to know what device we are running on to decide whether
 			or not to do Win3Stuff, so do this here */
 		HDC hdc;
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		int wNewLook = OpusShellProfileInt( (const char *)szApp, (const char *)SzShared("NewLook"), 2);
+#else
 		int wNewLook = GetProfileInt( szApp, SzShared("NewLook"), 2);
+#endif
 		vsci.fWin3 = fTrue;
 		if ((hdc = GetDC(NULL)) == NULL)
 			goto InzFailed0;
@@ -527,7 +534,11 @@ BOOL *pfTutorial;
 #ifdef DEBUG
 	/* This should also be very early in initialization!  (i.e., second) */
 	ReadDebugStateInfo();
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	vdbs.fReports |= OpusShellProfileInt( (const char *)szApp, (const char *)SzShared("fReports"), 0);
+#else
 	vdbs.fReports |= GetProfileInt( szApp, SzShared("fReports"), 0);
+#endif
 	Debug(vdbs.fCkStruct ? CkStruct() : 0);
 #endif /* DEBUG */
 
@@ -575,8 +586,13 @@ BOOL *pfTutorial;
 #endif /* DEBUG */
 #ifdef HYBRID
 	/* Turn off automatic filling of stack frame variables by DWINTER */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		fFillBlock = OpusShellProfileInt( (const char *)szApp, (const char *)SzShared("HybridfFillBlock"), fFalse);
+		wFillBlock = OpusShellProfileInt( (const char *)szApp, (const char *)SzShared("HybridwFillBlock"), 0xCCCC);
+#else
 		fFillBlock = GetProfileInt( szApp, SzShared("HybridfFillBlock"), fFalse);
 		wFillBlock = GetProfileInt( szApp, SzShared("HybridwFillBlock"), 0xCCCC);
+#endif
 #endif /* HYBRID */
 		}
 
@@ -1006,7 +1022,11 @@ STATIC int NEAR FRegisterWinInfo ()
 	cfRTF = RegisterClipboardFormat( (LPSTR)SzNear(szClipRTF) );
 	cfLink = RegisterClipboardFormat( (LPSTR)SzNear(szClipLink) );
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if (OpusShellProfileInt((const char *)szApp, (const char *)SzShared("AskForPrinterPicture"), 1))
+#else
 	if (GetProfileInt(szApp, SzShared("AskForPrinterPicture"), 1))
+#endif
 		/* some users might not like this format (esp JohnPa) */
 		cfPrPic = RegisterClipboardFormat( (LPSTR)SzNear(szClipPrPic) );
 
@@ -1133,7 +1153,11 @@ FInitStructs()
 	vbptbExt.cqbpspn = 3 * 4;
 #else
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	vrf.fExtendedMemory = OpusShellProfileInt( (const char *)szApp, (const char *)SzShared("ExtendedMemory"), 1);
+#else
 	vrf.fExtendedMemory = GetProfileInt( szApp, SzShared("ExtendedMemory"), 1);
+#endif
 #ifndef NO_DIALOG_HACK
 	if (vrf.fExtendedMemory)
 		CacheCodeSegment( GetCodeHandle( clsplc_q ), 1);
@@ -1195,7 +1219,11 @@ FInitStructs()
 
 	if (csbMaxAvail >= csbEmmMin)
 		{
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		int cKEmm = OpusShellProfileInt((const char *)szApp, (const char *)SzShared("EmmLimit"), -1);
+#else
 		int cKEmm = GetProfileInt(szApp, SzShared("EmmLimit"), -1);
+#endif
 
 		if (cKEmm >= 0)
 /* take what the user specified */

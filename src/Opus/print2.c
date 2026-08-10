@@ -1,5 +1,8 @@
 #include "word.h"
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "OpusShellConfig.h"    /* Qt-2 B5: OpusShellProfile* */
+#endif
 #include "heap.h"
 
 #include "idd.h"
@@ -845,9 +848,15 @@ struct STTB ***phsttb;
 	while (*pchPrinters != '\0')
 		{
 		/* Get the corresponding printer driver and port. */
-		GetProfileString((LPSTR) SzShared("devices"), 
-				(LPSTR) pchPrinters, (LPSTR) &chNull, 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusShellProfileString((const char *) SzShared("devices"),
+				(const char *) pchPrinters, (const char *) &chNull,
+				(char *) szDevSpec, ichMaxProfileSz);
+#else
+		GetProfileString((LPSTR) SzShared("devices"),
+				(LPSTR) pchPrinters, (LPSTR) &chNull,
 				(LPSTR) szDevSpec, ichMaxProfileSz);
+#endif
 		szDevSpec[ichMaxProfileSz - 1] = '\0';
 
 		/* If there is no driver for this printer, then it 
@@ -1286,8 +1295,13 @@ char **ppchPort, **ppchDriver;
 		}
 
 	/* Get the driver name for this printer. */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusShellProfileString((const char *)SzShared("devices"), (const char *)szListEntry,
+			(const char *)&chNull, (char *)szDevSpec, ichMaxProfileSz);
+#else
 	GetProfileString((LPSTR)SzShared("devices"), (LPSTR)szListEntry,
 			(LPSTR)&chNull, (LPSTR)szDevSpec, ichMaxProfileSz);
+#endif
 	ParseDeviceSz(szDevSpec, &pch, &pchDriver);
 
 	*ppchDriver = pchDriver;
@@ -1371,8 +1385,13 @@ LCleanUp:
 	CchCopySz(*hszPort, pch);
 
 	/* change Windows' default printer */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusShellProfileWrite((const char *) SzFrame("windows"), (const char *) SzFrame("Device"),
+			(const char *) szWinDev);
+#else
 	WriteProfileString((LPSTR) SzFrame("windows"), (LPSTR) SzFrame("Device"),
 			(LPSTR) szWinDev);
+#endif
 	/* notify the world of said change */
 	SendMessage(0xffff, WM_WININICHANGE, 0, (LPSTR) SzShared("windows"));
 }
@@ -1403,8 +1422,13 @@ char (**hszDriver)[];
 		return fFalse;
 
 	/* Get the driver name for this printer. */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusShellProfileString((const char *)SzShared("devices"), (const char *)*hszPrinter,
+			(const char *)&chNull, (char *)szDevSpec, ichMaxProfileSz);
+#else
 	GetProfileString((LPSTR)SzShared("devices"), (LPSTR)*hszPrinter,
 			(LPSTR)&chNull, (LPSTR)szDevSpec, ichMaxProfileSz);
+#endif
 	if (szDevSpec[0] == chNull)
 		return fFalse;
 	cPort = ParseDeviceSz(szDevSpec, &pchPort, &pchDriver);

@@ -957,6 +957,7 @@ set(OPUS_ORIGINAL_INCLUDE_DIRS
     ${OPUS_CASE_SHIM_INCLUDE_DIRS}
     "${CMAKE_CURRENT_BINARY_DIR}/generated/original"
     "${CMAKE_CURRENT_SOURCE_DIR}/port/original"
+    "${CMAKE_CURRENT_SOURCE_DIR}/core/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/Opus/wordtech"
     "${CMAKE_CURRENT_SOURCE_DIR}/Opus/lib"
     "${CMAKE_CURRENT_SOURCE_DIR}/Opus/dlg"

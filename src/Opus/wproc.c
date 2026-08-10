@@ -23,6 +23,9 @@
 #define NOCOMM
 #include "word.h"
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "OpusShellConfig.h"    /* Qt-2 B5: OpusShellProfile* */
+#endif
 #include "version.h"
 #include "heap.h"
 #include "layout.h"
@@ -470,7 +473,11 @@ int    cmdShow;
 #endif
 #ifdef HYBRID
 	FInitCover(0);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	fCoverActive &= OpusShellProfileInt((const char *)szApp, (const char *)SzShared("HybridfCoverActive"), 0);
+#else
 	fCoverActive &= GetProfileInt(szApp, SzShared("HybridfCoverActive"), 0);
+#endif
 #endif
 
 /* Initialize our huge pointer info
@@ -494,8 +501,13 @@ int    cmdShow;
 #endif /* DEBUG */
 
 #ifdef HYBRID
-	vfShowSwapping = GetProfileInt((LPSTR)szApp, 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	vfShowSwapping = OpusShellProfileInt((const char *)szApp,
+			(const char *)SzFrameKey("HybridShowSwapping",HybridShowSwapping), 0);
+#else
+	vfShowSwapping = GetProfileInt((LPSTR)szApp,
 			(LPSTR)SzFrameKey("HybridShowSwapping",HybridShowSwapping), 0);
+#endif
 	if (vfShowSwapping) InstallInt3FHandler();
 #endif /* HYBRID */
 

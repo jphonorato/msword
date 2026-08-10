@@ -3,6 +3,9 @@
 
 #include "word.h"
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "OpusShellConfig.h"    /* Qt-2 B5: OpusShellProfile* */
+#endif
 #include "heap.h"
 #include "props.h"
 #include "format.h"
@@ -941,8 +944,13 @@ WriteDebugStateInfo()
 
 	vdbs.nDbsuVer = nDbsuVerCur;
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusShellProfileString( (const char *) szApp, (const char *) SzFrame("dbs"),
+			(const char *)SzFrame("opus.dbs"), (char *) sz, cchMaxFile - 1 );
+#else
 	GetProfileString( (LPSTR) szApp, (LPSTR) SzFrame("dbs"),
 			(LPSTR)SzFrame("opus.dbs"), (LPSTR) sz, cchMaxFile - 1 );
+#endif
 
 	if ((osfn = OpenFile(sz, &ofs, OF_CREATE+OF_READWRITE+bSHARE_DENYRDWR))
 			>= 0)
@@ -971,8 +979,13 @@ ReadDebugStateInfo()
 	char sz[cchMaxFile];
 	extern CHAR szApp[];
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusShellProfileString( (const char *) szApp, (const char *) SzFrame("dbs"),
+			(const char *)SzFrame("opus.dbs"), (char *) sz, cchMaxFile - 1 );
+#else
 	GetProfileString( (LPSTR) szApp, (LPSTR) SzFrame("dbs"),
 			(LPSTR)SzFrame("opus.dbs"), (LPSTR) sz, cchMaxFile - 1 );
+#endif
 
 	SetBytes( &vdbs, 0, sizeof (struct DBS) );
 	if ((osfn = OpenFile(sz, &ofs, 0)) >= 0)

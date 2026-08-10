@@ -4,6 +4,9 @@
 
 #include "word.h"
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "OpusShellConfig.h"    /* Qt-2 B5: OpusShellProfile* */
+#endif
 #include "heap.h"
 #include "dde.h"
 #include "doc.h"
@@ -471,8 +474,13 @@ LONG UsecDdeTimeOut ()
 {
 	if (!vddes.secTimeOut)
 		{
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		vddes.secTimeOut = OpusShellProfileInt ((const char *)szApp,
+				(const char *)SzSharedKey ("DdeTimeOut",DdeTimeOutDef), secDdeTimeOutDef);
+#else
 		vddes.secTimeOut = GetProfileInt ((LPSTR)szApp,
 				(LPSTR)SzSharedKey ("DdeTimeOut",DdeTimeOutDef), secDdeTimeOutDef);
+#endif
 		if (!vddes.secTimeOut)
 			vddes.secTimeOut++;
 		}

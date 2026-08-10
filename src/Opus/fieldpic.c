@@ -11,6 +11,9 @@
 
 #include "word.h"
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "OpusShellConfig.h"    /* Qt-2 B5: OpusShellProfile* */
+#endif
 #include "doc.h"
 #include "field.h"
 #include "props.h"
@@ -1970,26 +1973,46 @@ BOOL fDate;
 	if (vfCustomDTPic < 0)
 		/* we have not checked for a custom date/time pic yet */
 		{
-		GetProfileString ((LPSTR) szApp, 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusShellProfileString ((const char *) szApp,
+				(const char *)szDateFormat,
+				(const char *)szEmpty, (char *)szPicTemp, cchMaxPic);
+		vfCustomDTPic = szPicTemp [0] > 0;
+		OpusShellProfileString ((const char *) szApp,
+				(const char *)szTimeFormat,
+				(const char *)szEmpty, (char *)szPicTemp, cchMaxPic);
+		vfCustomDTPic |= szPicTemp [0] > 0;
+#else
+		GetProfileString ((LPSTR) szApp,
 				(LPSTR)szDateFormat,
 				(LPSTR)szEmpty, (LPSTR)szPicTemp, cchMaxPic);
 		vfCustomDTPic = szPicTemp [0] > 0;
-		GetProfileString ((LPSTR) szApp, 
+		GetProfileString ((LPSTR) szApp,
 				(LPSTR)szTimeFormat,
 				(LPSTR)szEmpty, (LPSTR)szPicTemp, cchMaxPic);
 		vfCustomDTPic |= szPicTemp [0] > 0;
+#endif
 		}
 
 	sz [0] = 0;
 
 	if (vfCustomDTPic)
 		{
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		if (fDate)
+			OpusShellProfileString ((const char *) szApp, (const char *)szDateFormat,
+					(const char *)szEmpty, (char *)sz, cchMaxPic);
+		else
+			OpusShellProfileString ((const char *) szApp, (const char *)szTimeFormat,
+					(const char *)szEmpty, (char *)sz, cchMaxPic);
+#else
 		if (fDate)
 			GetProfileString ((LPSTR) szApp, (LPSTR)szDateFormat,
 					(LPSTR)szEmpty, (LPSTR)sz, cchMaxPic);
 		else
 			GetProfileString ((LPSTR) szApp, (LPSTR)szTimeFormat,
 					(LPSTR)szEmpty, (LPSTR)sz, cchMaxPic);
+#endif
 		}
 
 	if (!sz [0])

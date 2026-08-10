@@ -441,8 +441,10 @@ Exigen extracción, no mapeo. Por orden de dificultad creciente:
 
 ## B5 — Contrato de persistencia de configuración
 
-43 sitios, 12 TUs. Símbolos: `GetProfileString`, `GetProfileInt`,
-`WriteProfileString`.
+42 sitios, 12 TUs (cifra corregida en §B5.2 al migrar; la categoría
+*Persistencia de configuración* del inventario suma 43 porque también
+incluye `GetEnvironmentVariableA`, fuera de este contrato). Símbolos:
+`GetProfileString`, `GetProfileInt`, `WriteProfileString`.
 
 El más simple de los cuatro, y se deja simple. Declarado en
 `src/core/include/OpusShellConfig.h`. La semántica de `WIN.INI`
@@ -466,9 +468,10 @@ contrato completo; no hay nada más que diseñar aquí.
 Lado shell implementado en `src/core/src/OpusShellConfig.cpp`, sub-proyecto
 nativo `src/core/` (siempre gcc/g++ y Qt6 reales, nunca winegcc/wineg++;
 construido bajo `OPUS_WINELIB_BUILD` vía `ExternalProject_Add`, mismo esquema
-que los host tools de `src/port/tools/host/`). Nada de `Opus/` se tocó: los
-43 sitios de llamada siguen sobre `GetProfileString`/`GetProfileInt`/
-`WriteProfileString`; ese es el trabajo del paso siguiente, no de este.
+que los host tools de `src/port/tools/host/`). Al cerrar este paso, nada de
+`Opus/` se tocaba todavía: los sitios de llamada seguían sobre
+`GetProfileString`/`GetProfileInt`/`WriteProfileString`. La migración de
+esos sitios es el trabajo de §B5.2, cerrado por separado.
 
 **Prueba:** `src/core/src/OpusShellConfig_test.cpp`, registrada como
 `opus_shell_config_test` en ctest. Verificado con `ctest -R
@@ -500,19 +503,68 @@ implementación contra la semántica documentada del `Profile` Win16 que
   una futura simplificación no lo pierda en silencio.
 
 **Encontrado al revisar los call sites reales, no inventado:**
-`Opus/print2.c:833,848` llama `GetProfileString(..., key = NULL, ...)` para
+`Opus/print2.c:833` llama `GetProfileString(..., key = NULL, ...)` para
 enumerar todas las claves de la sección `"devices"` de una sola vez —una
-forma de uso que el contrato de tres funciones de §B5 no cubre. No se toca
-en este paso porque migrar ese sitio exige ampliar el contrato, no solo
-traducir la llamada, y ese trabajo es del paso "migración de los 43 call
-sites", no de este.
+forma de uso que el contrato de tres funciones de §B5 no cubre. No se tocó
+en el paso de migración porque exige ampliar el contrato, no solo traducir
+la llamada.
 
-**Qué queda para el paso siguiente:** migrar los 43 sitios de llamada de
-`Opus/` a `OpusShellProfileString`/`OpusShellProfileInt`/
-`OpusShellProfileWrite`, TU por TU, y decidir ahí cómo cubrir el caso de
-enumeración de `print2.c` (extender el contrato con una cuarta función, o
-tratarlo aparte). Después de eso, memoria Win16 (B3) es el siguiente ítem de
-la secuencia recomendada.
+### B5.2 Migración de call sites — cerrado (issue #2)
+
+**Corrección sobre la cifra de B5.1**, hecha al migrar contra la tabla de
+símbolos del reporte en vez de grep manual: `GetProfileString`(17) +
+`GetProfileInt`(14) + `WriteProfileString`(11) = **42** sitios reales, no
+43. El símbolo restante que el reporte agrupa bajo *Persistencia de
+configuración* es `GetEnvironmentVariableA` (`dlgmisc.c:2145`), una API sin
+relación con `WIN.INI`/`QSettings`, fuera de alcance de este contrato.
+`profwin.c` no aparece en el inventario porque no está en
+`OPUS_ORIGINAL_ENGINE_SOURCES` — no compila en este build, y sus 3 sitios
+(`GetProfileIntPR`/`GetProfileStringPR`/`WriteProfileStringPR`, destino de
+la redirección de `debugwin.h` bajo `DEBUG`, ninguno definido aquí) nunca
+fueron parte del recuento. `print2.c:848` no es enumeración —tiene key real
+(`pchPrinters`)—, a diferencia de `print2.c:833`: solo ese queda excluido.
+
+**41 de 42 sitios migrados**, en 12 archivos: `ddesub.c`(1), `dlgmisc.c`(1),
+`elmisc.c`(2), `fieldpic.c`(4), `filecvt.c`(6), `filewin.c`(3), `init2.c`(1),
+`initwin.c`(7), `print2.c`(4 de 5), `quit.c`(8), `wproc.c`(2),
+`debug/debugcmd.c`(2). Cada sitio queda envuelto en
+`#if defined(__GNUC__) && !defined(_MSC_VER) / #else / #endif` por
+`CONTRIBUTING.md`: la rama GNUC llama `OpusShellProfile*`, la rama MSVC
+conserva la llamada original sin cambios — verificado por diff contra el
+árbol previo, cero deltas más allá del whitespace incidental de retipeo.
+`src/core/include` se agregó a `OPUS_ORIGINAL_INCLUDE_DIRS` para que el
+`#include "OpusShellConfig.h"` resuelva.
+
+**Verificación real, no solo la del target completo.** `ninja -k 0 -C
+build/linux-winelib-debug opus_original_engine` no llega a 0 FAILED —pero
+por el bloqueador ya documentado y preexistente a este trabajo:
+`Opus/wordtech/disp.h:248` y `Opus/rsb.h:38,73`, miembro flexible de arreglo
+bajo GCC 14.2, ajeno a esta migración. Para no dejar la verificación
+colgada de ese bloqueador, cada uno de los 12 archivos se compiló también de
+forma aislada con el comando real de `ninja -t commands`: los 12 llegan al
+mismo punto (`ddesub.c`, `filewin.c` y `debug/debugcmd.c` compilan limpio de
+punta a punta; los otros 9 fallan exactamente en `disp.h`/`rsb.h`, nunca en
+código de este cambio). Cero errores y cero warnings mencionan
+`OpusShellConfig`/`OpusShellProfile*` en ningún log.
+
+**Estados de compilación condicional relevados, no asumidos:** de los 41
+sitios, 6 están dentro de ramas hoy inactivas en este build —
+`initwin.c:530` y `wproc.c:473,497` bajo `#ifdef DEBUG`/`HYBRID` (ninguno
+definido), `initwin.c:578-579` bajo `#ifdef HYBRID`, `initwin.c:1136` bajo
+el `#else` de `#ifdef OPUS_X64` (que sí está definido, así que ese `#else`
+nunca compila), `init2.c:570` bajo `#ifdef MKTGPRVW`, y el bloque completo
+de `debug/debugcmd.c` bajo `#ifdef DEBUG` además de no estar en ningún
+target. Se migraron igual, por consistencia y para no dejar una mezcla de
+API vieja y nueva si algún día se activan.
+
+**Qué queda:** el cuarto issue para `print2.c:833` (ampliar el contrato con
+una función de enumeración, o tratarlo aparte). Memoria Win16 (B3) es el
+siguiente ítem de la secuencia recomendada. Integrar `opus_shell_config`
+(Qt6, toolchain nativo) en el enlace final de `WORD1` (toolchain
+winegcc/wineg++) es una pregunta de integración cross-toolchain todavía
+abierta y no resuelta aquí: este paso solo verificó que los 41 sitios
+compilan bajo GNUC como parte de la biblioteca estática
+`opus_original_engine`, que no fuerza esa resolución de símbolos.
 
 ---
 
@@ -520,9 +572,11 @@ la secuencia recomendada.
 
 El orden no es arbitrario: cada paso deja verificable el siguiente.
 
-1. **Configuración (B5).** 43 sitios, contrato trivial. Sirve para establecer
-   el mecanismo de frontera —cómo el núcleo llama al shell— sobre algo cuyo
-   fallo es visible al instante y cuyo riesgo es nulo.
+1. **Configuración (B5) — cerrado.** 42 sitios reales (no 43, ver §B5.2),
+   contrato trivial. Sirvió para establecer el mecanismo de frontera —cómo
+   el núcleo llama al shell— sobre algo cuyo fallo es visible al instante y
+   cuyo riesgo es nulo. 41 migrados; 1 (`print2.c:833`, enumeración) espera
+   una extensión del contrato en issue aparte.
 2. **Tabla de sustitución de fuentes (§B2.5).** Extraer del oráculo el mapeo
    real de los nombres de época a archivos físicos. Es barato, es un
    prerrequisito de cualquier prueba de fidelidad, y hoy no está escrito en

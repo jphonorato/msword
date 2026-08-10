@@ -3,6 +3,9 @@
 #define RSHDEFS
 #include "word.h"
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "OpusShellConfig.h"    /* Qt-2 B5: OpusShellProfile* */
+#endif
 #include "heap.h"
 #include "ch.h"
 #include "doc.h"
@@ -177,42 +180,75 @@ uns ac;
 	bltbx(szCSCmdLine, szCmdLine, sizeof(szCSCmdLine));
 	/* DOC */
 	bltb(szDoc, szExt, 5);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusShellProfileString((const char *)szExtensions, (const char *)&szExt[1], (const char *)szEmpty, szT, 2);
+#else
 	GetProfileString(szExtensions, &szExt[1], szEmpty, szT, 2);
+#endif
 	if (szT[0] == 0)
 		{
 		QszLower(szExt);
 		SzSzAppend(szCmdLine, szExt);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusShellProfileWrite((const char *)szExtensions, (const char *)&szExt[1], (const char *)szCmdLine);
+#else
 		WriteProfileString(szExtensions, &szExt[1], szCmdLine);
+#endif
 		szCmdLine[sizeof(szCSCmdLine)-1] = 0;
 		}
 	/* DOT */
 	bltb(szDot, szExt, 5);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusShellProfileString((const char *)szExtensions, (const char *)&szExt[1], (const char *)szEmpty, szT, 2);
+#else
 	GetProfileString(szExtensions, &szExt[1], szEmpty, szT, 2);
+#endif
 	if (szT[0] == 0)
 		{
 		QszLower(szExt);
 		SzSzAppend(szCmdLine, szExt);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusShellProfileWrite((const char *)szExtensions, (const char *)&szExt[1], (const char *)szCmdLine);
+#else
 		WriteProfileString(szExtensions, &szExt[1], szCmdLine);
+#endif
 		szCmdLine[sizeof(szCSCmdLine)-1] = 0;
 		}
 	/* RTF */
 	CopyCsSz(szCSRTF, szExt);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusShellProfileString((const char *)szExtensions, (const char *)&szExt[1], (const char *)szEmpty, szT, 2);
+#else
 	GetProfileString(szExtensions, &szExt[1], szEmpty, szT, 2);
+#endif
 	if (szT[0] == 0)
 		{
 		QszLower(szExt);
 		SzSzAppend(szCmdLine, szExt);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusShellProfileWrite((const char *)szExtensions, (const char *)&szExt[1], (const char *)szCmdLine);
+#else
 		WriteProfileString(szExtensions, &szExt[1], szCmdLine);
+#endif
 		}
 
 	/* put an Opus section in win.ini */
 	CopyCsSz(szCSConversion, szConversion);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusShellProfileString((const char *)szApp, (const char *)szConversion, (const char *)szEmpty, szT, 2);
+#else
 	GetProfileString(szApp, szConversion, szEmpty, szT, 2);
+#endif
 	if (szT[0] == 0)
 		{
 		Assert(vfConversion == fTrue || vfConversion == -1);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusShellProfileWrite((const char *)szApp, (const char *)szConversion,
+				(const char *)SzFrame("Yes"));
+#else
 		WriteProfileString(szApp, szConversion,
 				SzFrame("Yes"));
+#endif
 		}
 
 	/* windows bug work around */

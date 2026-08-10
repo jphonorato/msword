@@ -42,6 +42,9 @@
 #define NOKANJI
 #include "word.h"
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "OpusShellConfig.h"    /* Qt-2 B5: OpusShellProfile* */
+#endif
 
 
 #ifdef DEBUG
@@ -1047,7 +1050,11 @@ InitUa()
 		struct FNS fns;
 		CHAR *pch;
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		n = OpusShellProfileInt((const char *)szApp, (const char *)SzShared("RshNext"), 0);
+#else
 		n = GetProfileInt(szApp, SzShared("RshNext"), 0);
+#endif
 		if (n >= 10)	/* Check for log file limit */
 			{
 			/* Don't cycle */
@@ -1064,8 +1071,13 @@ InitUa()
 		SzToStInPlace(fns.stShortName);
 
 		/* If RshPath defined, use that directory, otherwise use program dir */
-		if (GetProfileString(szApp, SzShared("RshPath"), 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		if (OpusShellProfileString((const char *)szApp, (const char *)SzShared("RshPath"),
+				(const char *)szEmpty, fns.stPath, ichMaxPath))
+#else
+		if (GetProfileString(szApp, SzShared("RshPath"),
 				szEmpty, fns.stPath, ichMaxPath))
+#endif
 			{
 			SzToStInPlace(fns.stPath);
 			}
@@ -1141,7 +1153,11 @@ LError:
 			sz[1] = '0' + (n+1)%10;
 			sz[2] = 0;
 			}
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusShellProfileWrite((const char *)szApp, (const char *)SzShared("RshNext"), sz);
+#else
 		WriteProfileString(szApp, SzShared("RshNext"), sz);
+#endif
 		}
 
 	/* BLOCK - initialize timer */

@@ -5,6 +5,9 @@
 #include "inter.h"
 #include "error.h"
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "OpusShellConfig.h"    /* Qt-2 B5: OpusShellProfile* */
+#endif
 #include "heap.h"
 #include "debug.h"
 #include "doc.h"
@@ -1046,8 +1049,13 @@ char ** pst1, ** pst2;
 
 	StToSzInPlace(szKey);
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusShellProfileString((const char *) szAppName, (const char *) szKey,
+			(const char *) szEmpty, (char *) szBuf, sizeof (szBuf));
+#else
 	GetProfileString((LPSTR) szAppName, (LPSTR) szKey, (LPSTR) szEmpty,
 			(LPSTR) szBuf, sizeof (szBuf));
+#endif
 
 	return SdCopySz(szBuf);
 }
@@ -1082,7 +1090,12 @@ char ** pst1, ** pst2, ** pst3;
 	StToSzInPlace(szKey);
 	StToSzInPlace(szValue);
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusShellProfileWrite((const char *) szAppName, (const char *) szKey,
+			(const char *) szValue);
+#else
 	WriteProfileString((LPSTR) szAppName, (LPSTR) szKey, (LPSTR) szValue);
+#endif
 	SendMessage(0xffff, WM_WININICHANGE, 0, (LPSTR)szAppName); /* HM */
 }
 

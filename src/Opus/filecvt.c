@@ -3,6 +3,9 @@
 
 #include "word.h"
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "OpusShellConfig.h"    /* Qt-2 B5: OpusShellProfile* */
+#endif
 #include "heap.h"
 #include "disp.h"
 #include "screen.h"
@@ -136,7 +139,11 @@ LRetry:
 		Assert(cbCvtNum < ichMaxCvtKey);
 		bltbx((CHAR FAR *) szCvtNum, (CHAR FAR *) szKey, cbCvtNum);
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		iMac = OpusShellProfileInt((const char *) szApp, (const char *) szKey, 0);
+#else
 		iMac = GetProfileInt((CHAR FAR *) szApp, (CHAR FAR *) szKey, 0);
+#endif
 		bltbx((CHAR FAR *) szCvt, (CHAR FAR *) szKey, cbCvt);
 
 		if (iMac >= 0)
@@ -147,10 +154,17 @@ LRetry:
 				pchApnd = pchApndSv;
 				CchIntToPpch(i + 1, &pchApnd);
 				*pchApnd = '\0';
-				cch = GetProfileString((CHAR FAR *) szApp, 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+				cch = OpusShellProfileString((const char *) szApp,
+						(const char *) szKey,
+						(const char *) szEmpty,
+						(char *) szBuf, ichMaxCvt);
+#else
+				cch = GetProfileString((CHAR FAR *) szApp,
 						(CHAR FAR *) szKey,
 						(CHAR FAR *) szEmpty,
 						(CHAR FAR *) szBuf, ichMaxCvt);
+#endif
 #ifdef SHOWCVT
 				CommSzSz(SzShared("Converter String Read: "), szBuf);
 #endif
@@ -607,8 +621,14 @@ int dff, fn;
 #ifdef NOTUSED  /* feature removed bz 10/30/89 */
 		if (!(*hcab)->fConversion)
 			{
+#if defined(__GNUC__) && !defined(_MSC_VER)
+			OpusShellProfileWrite((const char *) szApp,
+					(const char *) SzFrameKey("Conversion",Conversion),
+					(const char *) SzFrameKey("No", ConversionNo));
+#else
 			WriteProfileString(szApp, SzFrameKey("Conversion",Conversion),
 					SzFrameKey("No", ConversionNo));
+#endif
 			vfConversion = fFalse;
 			}
 #endif /* NOTUSED */
@@ -1019,7 +1039,11 @@ CHAR *sz;
 
 	Assert(cbCvtNum < ichMaxCvtKey);
 	bltbx((CHAR FAR *) szCvtNum, (CHAR FAR *) szKey, cbCvtNum);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	iMac = OpusShellProfileInt((const char *) szApp, (const char *) szKey, 0);
+#else
 	iMac = GetProfileInt((CHAR FAR *) szApp, (CHAR FAR *) szKey, 0);
+#endif
 
 	iMac++;
 	pch = szNum;
@@ -1027,8 +1051,13 @@ CHAR *sz;
 	*pch = 0;
 
 	/* write "convnum=<iMac+1>" */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusShellProfileWrite((const char *)szApp, (const char *)szKey,
+			(const char *)szNum);
+#else
 	WriteProfileString((CHAR FAR *)szApp, (CHAR FAR *)szKey,
 			(CHAR FAR *)szNum);
+#endif
 
 	bltbx((CHAR FAR *) szCvt, (CHAR FAR *) szKey, cbCvt);
 
@@ -1037,8 +1066,13 @@ CHAR *sz;
 	*pch = 0;
 
 	/* write "conv<iMac+1>=<sz>" */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusShellProfileWrite((const char *)szApp, (const char *)szKey,
+			(const char *)sz);
+#else
 	WriteProfileString((CHAR FAR *)szApp, (CHAR FAR *)szKey,
 			(CHAR FAR *)sz);
+#endif
 }
 
 
