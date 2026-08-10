@@ -40,8 +40,8 @@ DEBUG.md
 .env
 .env.local
 
-# Port tools (host-only, not shipped)
-src/port/tools/host/
+# Port tools (host-only, not shipped) -- build output only, source stays tracked
+src/port/tools/host/build/
 src/port/tools/build/
 
 # IDE / Editor
