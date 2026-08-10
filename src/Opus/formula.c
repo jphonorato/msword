@@ -54,6 +54,12 @@ extern int		vdxuFrac;
 extern struct PREF      vpref;
 #endif /* MAC */
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* Called before the OPUS_X64 definition.  C89 invents int(); CP is long.
+   Wider return type wins on LP64. */
+NATIVE CP CpFirstNonBlank(int /*doc*/, CP /*cp*/);
+#endif
+
 struct CHP              *PchpSetChrDyp();
 
 

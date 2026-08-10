@@ -86,7 +86,13 @@ int istElk;
 	for (pist = mpelkistName; *pist != istElk; pist += 1)
 		/*Assert(pist < (char *) mpelkistName + sizeof (mpelkistName))*/;
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	/* mpelkistName is csconst unsigned[]; pist is int far *.
+	   Element size matches (4); cast base so GCC accepts the difference. */
+	return (int) (pist - (int far *)mpelkistName);
+#else
 	return (int) (pist - mpelkistName);
+#endif
 }
 
 

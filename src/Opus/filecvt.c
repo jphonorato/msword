@@ -489,7 +489,15 @@ char *pszFnLib;
 			!(vpexcr->ghszVersion = GlobalAlloc(gmemLibShare, 1L)))
 		goto NoMem;
 
-	/* call converter init routine */
+	#if defined(__GNUC__) && !defined(_MSC_VER)
+/* Converter INITCONVERTER entry.  Wine FARPROC is (void); real takes stack+hwnd. */
+typedef HANDLE (WINAPI *OPUS_PFN_INITCONVTR)(HANDLE, HWND);
+#define OpusCallInitConvtr(lpfn) (*(OPUS_PFN_INITCONVTR)(lpfn))
+#else
+#define OpusCallInitConvtr(lpfn) (*(lpfn))
+#endif
+
+/* call converter init routine */
 	/* NOTE: "INITCONVTR" is an entry point in converters pre 8/29/89
 	   they expect only one word of argument.  "INITCONVERTER"
 	   is the new entry point which expects two words of arguments. 
@@ -503,7 +511,7 @@ char *pszFnLib;
 	else
 		/* new call format */
 		{
-		if ((vpexcr->hStack = (*lpfnInitConvtr)(HstackMyData(),vhwndApp)) == 0)
+		if ((vpexcr->hStack = OpusCallInitConvtr(lpfnInitConvtr)(HstackMyData(),vhwndApp)) == 0)
 			/* init failed */
 			goto NoLoad;
 		}

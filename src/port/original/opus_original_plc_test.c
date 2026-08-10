@@ -27,6 +27,14 @@ long LPushMacroArgs(void *procedure, const int *arguments, int count)
 	return 0;
 }
 
+long LPushMacroArgsTyped(void *procedure, const int *arguments, int count,
+                         const unsigned char *dkts, int dkt_count)
+{
+	(void)dkts;
+	(void)dkt_count;
+	return LPushMacroArgs(procedure, arguments, count);
+}
+
 struct DR* N_PdrFetch(struct PLDR** hpldr, int idr, struct DRF* pdrf)
 {
 	(void)hpldr;

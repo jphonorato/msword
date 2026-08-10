@@ -24,6 +24,13 @@ DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
 #include "help.h"
 #include "rareflag.h"
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* Defined in elsubs3.c.  Block-scope "void ModeError();" at one call site
+   goes out of scope; a later call then invents int ModeError() and conflicts. */
+void ModeError(void);
+#endif
+
+
 extern struct MERR vmerr;
 extern struct SEL selCur;
 extern vfSeeSel;
@@ -287,7 +294,7 @@ int cmm;
 		pele->celpMac = psy->cagdMax;
 		pelpSrc = (ARD *) (&psy->stName[psy->stName[0] + 1]);
 		if (psy->stName[0] == 0)
-			(WORD *) pelpSrc += 1;
+			pelpSrc = (ARD *)((WORD *) pelpSrc + 1);
 		bltb(pelpSrc, pele->rgelp, psy->cagdMax);
 		}
 #ifdef DEBUG
@@ -566,7 +573,11 @@ int docDot;
 WORD imcr;
 {
 	extern int GetInfoElx();
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	/* el.h already prototypes HeliNew; a K&R "HeliNew()" redeclaration conflicts. */
+#else
 	extern ELI ** HeliNew();
+#endif
 	extern int vcElParams;
 	extern BOOL vfMcrRunning;
 

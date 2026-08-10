@@ -226,10 +226,16 @@ windows reopened and correctly placed, as soon as CBT is finished.    **/
 };
 
 #ifdef NOABOUT
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* Prototype form matches about.sdm's extern BOOL FDlgAbout(DLM,TMC,WORD,WORD,WORD).
+   K&R form is typed as BOOL() and conflicts with that prototype. */
+BOOL FDlgAbout(DLM dlm, TMC tmc, WORD wNew, WORD wOld, WORD wParam)
+#else
 BOOL FDlgAbout(dlm, tmc, wNew, wOld, wParam)
 DLM dlm;
 TMC tmc;
 WORD wOld, wNew, wParam;
+#endif
 {
 	/* make ESC close the dialog, as ok does */
 	if (dlm == dlmKey)

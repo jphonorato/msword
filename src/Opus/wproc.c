@@ -71,6 +71,11 @@ DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
 #define WPROC
 #include "core.h"
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* Called from WM_SETCURSOR before the definition.  C89 invents cdecl int();
+   the real symbol is PASCAL.  hc is HCURSOR at the definition site. */
+EXPORT PASCAL OurSetCursor(HCURSOR /*hc*/);
+#endif
 
 /* globals */
 #ifdef DEBUG

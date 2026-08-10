@@ -2311,6 +2311,14 @@ CHAR * stzInitl;
 }
 
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* KEYBOARD!SetSpeed by ordinal.  Wine FARPROC is (void); real takes one int. */
+typedef void (WINAPI *OPUS_PFN_SETSPEED)(int);
+#define OpusCallSetSpeed(lpfn) (*(OPUS_PFN_SETSPEED)(lpfn))
+#else
+#define OpusCallSetSpeed(lpfn) (*(lpfn))
+#endif
+
 /*  %%Function:  ForceKeyboardSpeed  %%Owner:  bobz       */
 
 ForceKeyboardSpeed()
@@ -2334,7 +2342,7 @@ ForceKeyboardSpeed()
 			(lpfnSetSpeed = GetProcAddress(hKeyboardModule,
 					MAKEINTRESOURCE(idoSetSpeed)))
 			!= NULL)
-		(*lpfnSetSpeed)((int)31);
+		OpusCallSetSpeed(lpfnSetSpeed)((int)31);
 }
 
 

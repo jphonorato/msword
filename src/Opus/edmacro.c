@@ -1745,7 +1745,11 @@ int imei;
 {
 	extern int ElaDebug();
 	extern int GetInfoElx();
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	/* el.h already prototypes HeliNew; a K&R "HeliNew()" redeclaration conflicts. */
+#else
 	extern ELI ** HeliNew();
+#endif
 
 	RERR rerr;
 	MEI * pmei;

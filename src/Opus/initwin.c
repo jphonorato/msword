@@ -64,6 +64,13 @@ DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
 #include "rareflag.h"
 #include "table.h"
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* Used before definition; C89 invents non-static int() that then conflicts.
+   After includes so STATIC/NEAR are defined (debug.h). */
+STATIC BOOL NEAR FRegisterWnd(void);
+STATIC int NEAR FRegisterWinInfo(void);
+#endif
+
 extern MUD ** HmudInit();
 
 extern BOOL             vfScratchFile;

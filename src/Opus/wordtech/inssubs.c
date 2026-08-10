@@ -649,7 +649,12 @@ int grpf;
 							!FNeHprgch((char HUGE *)pchProp, hpch + 1,
 							cchPropShare))
 						{ /* share existing property */
-						bCur = hpch - hpfkp;
+#if defined(__GNUC__) && !defined(_MSC_VER)
+					/* hpch is char HUGE*; hpfkp is struct FKP HUGE*. Byte offset. */
+					bCur = hpch - (char HUGE *)hpfkp;
+#else
+					bCur = hpch - hpfkp;
+#endif
 						cchPropShare = 0;
 						break;  /* exit while */
 						}
@@ -1684,7 +1689,7 @@ struct CHP *pchp, *pchpBase;
 		for (isprm = 0; w != 0; (uns)w <<= 1, isprm++)
 			if (w < 0 &&
 #else  /* WIN */			    
-					for (isprm = 0; w != 0; (uns)w >>= 1, isprm++)
+					for (isprm = 0; w != 0; w = (int)((uns)w >> 1), isprm++)
 					if (w & 1 &&
 #endif /* MAC */
 					(cbPrl = CbGenPrl(pchp, pchpBase, rgsprmChp[isprm], rgb))

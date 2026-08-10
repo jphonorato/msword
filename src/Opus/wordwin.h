@@ -457,7 +457,17 @@ typedef struct _kme
 	unsigned kc : 12;
 	unsigned kt : 3;
 	union {
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		/* First member was int, which matched pointer width on Win32.  Brace
+		   initializers of ktFunc rows (keys.h) target this first member with a
+		   function pointer; on LP64 that is only a load-time constant if the
+		   member is pointer-width.  long is pointer-width here and still holds
+		   bcm/int payloads in the low bits on little-endian (same layout rule
+		   as the Win32 "int == pointer width" assumption).  MSVC keeps int. */
+		long w;		/* generic */
+#else
 		int w;		/* generic */
+#endif
 		BCM bcm;	/* ktMacro */
 		int ibst;	/* (not used) */
 		int tmc;	/* (not used) */

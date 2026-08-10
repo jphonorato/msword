@@ -3010,7 +3010,7 @@ else  if (chrm == chrmFormula)
 
 #endif
 if (chrm == chrmEnd) break;
-(char *)pchr += CbFromChrm(chrm);
+pchr = (struct CHR *)((char *)pchr + CbFromChrm(chrm));
 				}
 			if ((CP) ich >= dcp)
 				{

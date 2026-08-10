@@ -86,6 +86,12 @@ CP cpFirstNextFetchVisi = cpNil;
 CP CpNextVisiInOutline();
 #endif /* DEBUG */
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* Called at ~574 before the OPUS_X64 definition.  C89 would invent int(),
+   which conflicts with CP (long) on LP64.  Wider return type wins. */
+HANDNATIVE CP CpNextVisiInOutline(int /*ww*/, int /*doc*/, CP /*cp*/);
+#endif
+
 #if defined(DEBUG) || defined(OPUS_X64)
 /* I F L D  F R O M  D O C  C P */
 /*  Searches the plcfld for the doc in reverse order.

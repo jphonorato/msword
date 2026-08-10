@@ -1377,7 +1377,12 @@ LTrimDrcl:
 					{
 					/* bad ghost dr - delete it */
 					FreezeHp();
-					DeleteFromPl(hpldr, pdr - PInPl(hpldr, 0));
+#if defined(__GNUC__) && !defined(_MSC_VER)
+				/* PInPl returns char*; pdr is struct DR*. Index in DR units. */
+				DeleteFromPl(hpldr, pdr - (struct DR *)PInPl(hpldr, 0));
+#else
+				DeleteFromPl(hpldr, pdr - PInPl(hpldr, 0));
+#endif
 					MeltHp();
 					if (pdrNew > pdr)
 						pdrNew--;

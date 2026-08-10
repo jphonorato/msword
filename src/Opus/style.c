@@ -2386,21 +2386,27 @@ CMB * pcmb;
 		if (pcmb->tmc == tmcTabsReset)
 			{
 			*pb++ = 1;
-			*((int *) pb)++ = 0;
-			*((int *) pb)++ = czaMax;
+			*(int *) pb = 0;
+			pb = (CHAR *)((int *) pb + 1);
+			*(int *) pb = czaMax;
+			pb = (CHAR *)((int *) pb + 1);
 			}
 		else  if (*pb++ = (pcmb->tmc == tmcTabsClear))
 			{
-			*((int *) pb)++ = dxaTabPos;
-			*((int *) pb)++ = dxaCloseMin;
+			*(int *) pb = dxaTabPos;
+			pb = (CHAR *)((int *) pb + 1);
+			*(int *) pb = dxaCloseMin;
+			pb = (CHAR *)((int *) pb + 1);
 			}
 
 		if (*pb++ = (pcmb->tmc == tmcTabsSet))
 			{
-			*((int *) pb)++ = dxaTabPos;
+			*(int *) pb = dxaTabPos;
+			pb = (CHAR *)((int *) pb + 1);
 			tbd.jc = JcFromI(pcab->iAlignment);
 			tbd.tlc = TlcFromI(pcab->iLeader);
-			*((struct TBD *) pb)++ = tbd;
+			*(struct TBD *) pb = tbd;
+			pb = (CHAR *)((struct TBD *) pb + 1);
 			}
 
 		cbGrpprl = pb - grpprl;

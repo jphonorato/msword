@@ -123,7 +123,12 @@ union RRU
 
 
 /* functions to/from NUM */
-LONG LWholeFromNum ();
+/* Declared "long" to agree with el.h:32, which is the form the interpreter
+   actually uses.  LONG is 32 bits under the Windows data model while long is
+   64 on this target, so the two spellings -- identical on Win32 -- now
+   disagree.  The wider one wins: this returns an interpreter integer value,
+   and narrowing it to 32 bits would truncate legitimate results. */
+long LWholeFromNum ();
 MakeNum ();
 CchSzWholeNum ();
 CchSzFractNum ();

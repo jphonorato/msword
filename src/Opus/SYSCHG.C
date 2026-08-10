@@ -50,6 +50,14 @@ DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
 #include "resource.h"
 #ifdef OPUS_X64
 #include <string.h>
+
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* Used before static definitions; C89 invents non-static int().
+   Definitions are K&R without return type (= int). */
+STATIC NEAR int GetAMPMFromProfile(BOOL /*fForceDefault*/);
+STATIC NEAR int FInvalidCharSetting(void);
+#endif
+
 #endif
 
 

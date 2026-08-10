@@ -1,6 +1,13 @@
 #include "opus_x64_compat.h"
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* <direct.h> is an MSVC CRT header with no counterpart on this toolchain.
+ * Only _getdcwd and _chdir were used, and both have direct Win32 equivalents
+ * that are available under Winelib -- which is also what the rest of this
+ * file already calls (GetFileAttributesA, CreateDirectoryA). */
+#else
 #include <direct.h>
+#endif
 
 #include <algorithm>
 #include <cstdint>
@@ -12,6 +19,39 @@
 /* AMD64 translation of the active FILE2N.ASM entry points. */
 
 namespace {
+
+/* Stand-ins for the two <direct.h> entry points this file used.  _getdcwd
+ * reports the working directory of a specific drive (0 meaning the current
+ * one), which Win32 expresses as GetFullPathNameA on a bare "X:" spec;
+ * _chdir maps to SetCurrentDirectoryA, inverting the return convention
+ * (0 on success for the CRT, non-zero on success for Win32). */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+char* opus_getdcwd(const int drive, char* const buffer, const int size) {
+    if (buffer == nullptr || size <= 0) {
+        return nullptr;
+    }
+    DWORD written;
+    if (drive == 0) {
+        written = GetCurrentDirectoryA(static_cast<DWORD>(size), buffer);
+    } else {
+        const char spec[3] = {static_cast<char>('A' + drive - 1), ':', '\0'};
+        written =
+            GetFullPathNameA(spec, static_cast<DWORD>(size), buffer, nullptr);
+    }
+    return (written != 0 && written < static_cast<DWORD>(size)) ? buffer
+                                                                : nullptr;
+}
+
+int opus_chdir(const char* const path) {
+    return SetCurrentDirectoryA(path) ? 0 : -1;
+}
+#else
+inline char* opus_getdcwd(int drive, char* buffer, int size) {
+    return _getdcwd(drive, buffer, size);
+}
+
+inline int opus_chdir(const char* path) { return _chdir(path); }
+#endif
 
 constexpr unsigned char kDaReadOnly = 0x01;
 constexpr unsigned char kDaHidden = 0x02;
@@ -144,7 +184,7 @@ int CchCurSzPathNat(char* path, const int drive) {
         return 0;
     }
     char current[MAX_PATH]{};
-    if (_getdcwd(drive, current, static_cast<int>(sizeof(current))) ==
+    if (opus_getdcwd(drive, current, static_cast<int>(sizeof(current))) ==
         nullptr) {
         path[0] = '\0';
         return 0;
@@ -165,7 +205,7 @@ int FSetCurStzPath(const unsigned char* stz_path) {
     if (stz_path == nullptr || stz_path[0] == 0) {
         return 1;
     }
-    return _chdir(counted_path(stz_path)) == 0;
+    return opus_chdir(counted_path(stz_path)) == 0;
 }
 
 int FMakeStzPath(const unsigned char* stz_path) {

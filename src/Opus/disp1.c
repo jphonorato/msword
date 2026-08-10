@@ -795,9 +795,9 @@ int		dxpToXw, ywLine;
 						&rcErase, fErased, eto);
 				ich++;
 				}
-			(char *) pchr = (char *)*vhgrpchr + bchrCur;
-			(char *) pchp = (char *)*vhgrpchr + bchpCur;
-			((struct CHRT *)pchr)++;
+			pchr = (struct CHR *)((char *)*vhgrpchr + bchrCur);
+			pchp = (struct CHP *)((char *)*vhgrpchr + bchpCur);
+			pchr = (struct CHR *)((struct CHRT *)pchr + 1);
 			}
 		else  if (chrm == chrmChp)
 			{
@@ -849,7 +849,7 @@ int		dxpToXw, ywLine;
 			{
 /* real cp can be calculated as vfli.cpMin + ich + dcpVanish */
 			dcpVanish += ((struct CHRV *)pchr)->dcp;
-			(char *)pchr += cbCHRV;
+			pchr = (struct CHR *)((char *)pchr + cbCHRV);
 			}
 		else  if (chrm == chrmDisplayField)
 			{
@@ -901,7 +901,7 @@ int		dxpToXw, ywLine;
 			pchp = (char *)*vhgrpchr + bchpCur;
 			dcpVanish += ((struct CHRDF *)pchr)->dcp -1;
 			ptPen.xp = xpNew;
-			(char *) pchr += cbCHRDF;
+			pchr = (struct CHR *)((char *)pchr + cbCHRDF);
 			}
 		else  if (chrm == chrmFormula)
 			{
@@ -956,7 +956,7 @@ int		dxpToXw, ywLine;
 			ptPen.xp = xpNew;
 			ptPen.yp = ypNew;
 			fNoSkip = vfli.fPrint;
-			(char *) pchr += cbCHRF;
+			pchr = (struct CHR *)((char *)pchr + cbCHRF);
 			}
 		else  if (chrm == chrmFormatGroup)
 			{
@@ -971,7 +971,7 @@ int		dxpToXw, ywLine;
 				}
 			/* note that rcOpaque and rcErase will no
 				longer change (rcErase not used) */
-			(char *) pchr += cbCHRFG;
+			pchr = (struct CHR *)((char *)pchr + cbCHRFG);
 			}
 		else  /*if (chrm == chrmEnd)*/
 			
@@ -1042,8 +1042,8 @@ LDacNop:
 						bchrCur = (char *) pchr - (char *)*vhgrpchr;
 						bchpCur = (char *) pchp - (char *)*vhgrpchr;
 						EndUL(&uls, &rcwClip);
-						(char *) pchr = (char *)*vhgrpchr + bchrCur;
-						(char *) pchp = (char *)*vhgrpchr + bchpCur;
+						pchr = (struct CHR *)((char *)*vhgrpchr + bchrCur);
+						pchp = (struct CHP *)((char *)*vhgrpchr + bchpCur);
 						}
 
 				if (!fErased && !fPrvwPrint)
@@ -1069,8 +1069,8 @@ LDacNop:
 				bchrCur = (char *) pchr - (char *)*vhgrpchr;
 				bchpCur = (char *) pchp - (char *)*vhgrpchr;
 				ShowSpec(ww, ich, &ptPen, yp, pchp, &uls);
-				(char *) pchr = (char *)*vhgrpchr + bchrCur;
-				(char *) pchp = (char *)*vhgrpchr + bchpCur;
+				pchr = (struct CHR *)((char *)*vhgrpchr + bchrCur);
+				pchp = (struct CHP *)((char *)*vhgrpchr + bchpCur);
 
 				if (vfli.grpfvisi.fvisiShowAll && 
 						(chSpec == chFootnote 
@@ -1246,8 +1246,8 @@ LRealExtTextOut:
 	 						lpdxp );		/* lpdx */
 	 					}
                     vrf.fInExternalCall = fFalse;
-					(char *) pchr = (char *)*vhgrpchr + bchrCur;
-					(char *) pchp = (char *)*vhgrpchr + bchpCur;
+					pchr = (struct CHR *)((char *)*vhgrpchr + bchrCur);
+					pchp = (struct CHP *)((char *)*vhgrpchr + bchpCur);
 
 					if (!fErased && !fPrvwPrint)
 						rcOpaque.xpLeft = ptPen.xp;
@@ -1719,7 +1719,7 @@ struct RC *prcwClip;
 		else  if (chrm == chrmEnd)
 			break;
 		bchrCur += CbFromChrm(chrm);
-		(char *)pchr += CbFromChrm(chrm);
+		pchr = (struct CHR *)((char *)pchr + CbFromChrm(chrm));
 		}
 
 /* draw CRJ symbol if needed */

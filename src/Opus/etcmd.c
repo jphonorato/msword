@@ -218,8 +218,8 @@ CMB * pcmb;
 		{
 		/* initialize the cab */
 		pcabThesaurus = (CABTHESAURUS *) *pcmb->hcab;
-		(int)(pcabThesaurus->uSynList) = LB_ERR;
-		(int)(pcabThesaurus->uDefList) = LB_ERR;
+		pcabThesaurus->uSynList = LB_ERR;
+		pcabThesaurus->uDefList = LB_ERR;
 		if (!FSetCabSz(pcmb->hcab, szEmpty, Iag(CABTHESAURUS, hszLookup)))
 			return cmdNoMemory;
 		}

@@ -1355,8 +1355,14 @@ char *pchBufLim;
 		Assert((char *) pelcr + cbElcr <= pchBufLim);
 
 ReturnPelcr:
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		/* Global(rgchBuf) is BYTE[]; cast both sides to char* for GCC pointer subtraction. */
+		*pibBufCur = (char *) pelcr + cbElcr - (char *)Global(rgchBuf);
+		Global(ibElcrCur) = (char *) pelcr - (char *)Global(rgchBuf);
+#else
 		*pibBufCur = (char *) pelcr + cbElcr - Global(rgchBuf);
 		Global(ibElcrCur) = (char *) pelcr - Global(rgchBuf);
+#endif
 		} 
 	while (elcc != elccEof && 
 			(fLoop || (fComment && !FLineElt(EltFromElcc(elcc)))));
@@ -1392,7 +1398,12 @@ char *PchRefillBuf(pchBufStart)
 */
 char *pchBufStart;
 {
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	/* BYTE* end of buffer vs char *pchBufStart */
+	int cchWanted = (char *)&Global(rgchBuf)[cchTokenBuf] - pchBufStart;
+#else
 	int cchWanted = &Global(rgchBuf)[cchTokenBuf] - pchBufStart;
+#endif
 	int cchGot;
 
 #ifdef DEBUG
@@ -1418,11 +1429,19 @@ LEof:
 		pchBufStart[cchGot++] = elccEof;
 		}
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	Global(libBufStart) = Global(libBufEnd) -
+			(pchBufStart - (char *)Global(rgchBuf));
+	Global(libBufEnd) += cchGot;
+
+	Global(ibBufLim) = pchBufStart - (char *)Global(rgchBuf) + cchGot;
+#else
 	Global(libBufStart) = Global(libBufEnd) -
 			(pchBufStart - Global(rgchBuf));
 	Global(libBufEnd) += cchGot;
 
 	Global(ibBufLim) = pchBufStart - Global(rgchBuf) + cchGot;
+#endif
 
 #ifdef DEBUG
 	if (fToRead)
@@ -1466,7 +1485,11 @@ ELT EltGetCur()
 	pelcr = PelcrGet(Global(rgchBuf), &Global(ibBufCur),
 			Global(rgchBuf) + Global(ibBufLim));
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	Global(ibElcrCur) = (char *)pelcr - (char *)Global(rgchBuf);
+#else
 	Global(ibElcrCur) = (char *)pelcr - Global(rgchBuf);
+#endif
 
 	switch (elcc = pelcr->elcc)
 		{

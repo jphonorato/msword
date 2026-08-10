@@ -18,6 +18,65 @@
 #include <stdint.h>
 #include <malloc.h>
 #include <string.h>
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include <alloca.h>
+/* MSVC CRT intrinsic used by Opus resource loaders (rcinit/rcbmp*). */
+#ifndef _alloca
+#define _alloca alloca
+#endif
+
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+/* Macro Declare arg push (port/original/opus_asm_misc.cpp). */
+long LPushMacroArgs(void *procedure, const int *arguments, int argument_count);
+/* dkts: per-param DKT tags (dktInt/dktLong/dktString/…); dkt_count 0 = untyped. */
+long LPushMacroArgsTyped(void *procedure, const int *arguments, int argument_count,
+                         const unsigned char *dkts, int dkt_count);
+#ifdef __cplusplus
+}
+#endif
+
+#endif
+
+/* MSVC's CRT supplies _stricmp(), Microsoft's case-insensitive string
+ * compare; GCC's does not. POSIX strcasecmp() is the exact equivalent. This
+ * is the same gap port/tools/opus_host_compat.h fills for the host-side
+ * build tools; opus_x64_compat.h needs its own copy because product/runtime
+ * translation units include this header instead of that one. */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include <strings.h>
+#ifndef _stricmp
+#define _stricmp strcasecmp
+#endif
+
+/* _snprintf_s/_vsnwprintf_s are MSVC's "secure CRT" bounded-write printf
+ * family; every call site in this tree (grep confirmed, 4 total) passes
+ * _TRUNCATE as the count argument, meaning "write at most bufferSize and
+ * truncate silently" -- exactly what plain snprintf/vswprintf already do.
+ * The count parameter is dropped rather than threaded through, since with
+ * _TRUNCATE it never carries information the call didn't already give via
+ * bufferSize. */
+#ifndef _TRUNCATE
+#define _TRUNCATE ((size_t)-1)
+#endif
+#define _snprintf_s(buffer, bufferSize, count, format, ...) \
+	snprintf((buffer), (bufferSize), (format), ##__VA_ARGS__)
+#define _vsnwprintf_s(buffer, bufferCount, count, format, args) \
+	vswprintf((buffer), (bufferCount), (format), (args))
+
+#ifndef _countof
+#define _countof(array) (sizeof(array) / sizeof((array)[0]))
+#endif
+
+/* MSVC's __assume(false) after a call already marked [[noreturn]]/noreturn
+ * tells the optimizer the fall-through is unreachable. __builtin_unreachable
+ * is GCC's equivalent promise, not a stub: reaching it is undefined
+ * behavior, same as reaching __assume(false) would be under MSVC. */
+#define __assume(expr) \
+	((expr) ? ((void)0) : __builtin_unreachable())
+#endif
 
 /* A null Win16 module handle made GetProcAddress fail.  On current Windows,
  * passing that invalid handle can instead search the process image.  Opus
@@ -132,8 +191,16 @@ typedef struct tagBITMAP
 #ifndef huge
 #define huge
 #endif
+/* Guarded like "export" and "string" just below: only the original C
+ * sources use "native" as a bare keyword replacement. C++20's <bit>
+ * declares "std::endian::native" as an enumerator; leaving this macro
+ * unconditional replaces that identifier wherever any port/original/*.cpp
+ * translation unit transitively includes <bit> (<algorithm> does), breaking
+ * libstdc++ itself rather than any Opus source. */
+#ifndef __cplusplus
 #ifndef native
 #define native
+#endif
 #endif
 #ifndef __cplusplus
 #ifndef export

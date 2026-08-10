@@ -1109,7 +1109,8 @@ LGotRecord:
 			break;
 		case ptgRefN:
 			/* cell reference */
-			rw = *((int *)pce)++;
+			rw = *(int *)pce;
+			pce = (CHAR *)((int *)pce + 1);
 			if (rw & grbitFRel)
 			/* ignore relative references */
 				break;
@@ -1120,12 +1121,14 @@ LGotRecord:
 					peref->col1 = *pce++;
 			goto LGetName;
 		case ptgAreaN:
-			rw = *((int *)pce)++;
+			rw = *(int *)pce;
+			pce = (CHAR *)((int *)pce + 1);
 			if (rw & grbitFRel)
 				/* ignore relative references */
 				break;
 			peref->row0 = rw & grbitRw;
-			rw = *((int *)pce)++;
+			rw = *(int *)pce;
+			pce = (CHAR *)((int *)pce + 1);
 			if (rw & grbitFRel)
 				/* ignore relative references */
 				break;

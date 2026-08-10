@@ -1459,7 +1459,15 @@ char *pchPrinter, *pchPort, *pchDriver;
 		}
 
 
-	/* Find the driver's DeviceMode() entry. */
+	#if defined(__GNUC__) && !defined(_MSC_VER)
+/* Printer-driver DeviceMode by ordinal.  Wine FARPROC is (void). */
+typedef int (WINAPI *OPUS_PFN_DEVMODE)(HWND, HANDLE, LPSTR, LPSTR);
+#define OpusCallDevMode(lpfn) (*(OPUS_PFN_DEVMODE)(lpfn))
+#else
+#define OpusCallDevMode(lpfn) (*(lpfn))
+#endif
+
+/* Find the driver's DeviceMode() entry. */
 	if ((lpfnDevMode = GetProcAddress(hDriver, 
 			MAKEINTRESOURCE(idoDeviceMode))) == NULL)
 		{
@@ -1476,7 +1484,7 @@ char *pchPrinter, *pchPort, *pchDriver;
 		hwndDlg = vhwndApp;
 
 	if (hwndDlg != (HWND)NULL)
-		(*lpfnDevMode)(hwndDlg, hDriver, (LPSTR)pchPrinter, (LPSTR)pchPort);
+		OpusCallDevMode(lpfnDevMode)(hwndDlg, hDriver, (LPSTR)pchPrinter, (LPSTR)pchPort);
 	else
 		Beep();
 
@@ -1868,7 +1876,7 @@ struct RC *prc;
 	pdxp = &vfli.rgdxp[0];
 	ich = 0;
 	FreezeHp();
-	for (pchr = &(**vhgrpchr)[0]; ; (char *)pchr += CbFromChrm(chrm))
+	for (pchr = &(**vhgrpchr)[0]; ; pchr = (struct CHR *)((char *)pchr + CbFromChrm(chrm)))
 		{
 		for (ichNext = pchr->ich; cpT < cpPic && ich < ichNext; ich++, cpT++)
 			xp += *pdxp++;

@@ -1,9 +1,17 @@
 #include "opus_x64_compat.h"
 
 #undef native
-#include <filesystem>
 #include <fstream>
 #include <string>
+
+/* std::filesystem is deliberately NOT used in this translation unit.  Under
+   wineg++ the headers select the Windows model (path::value_type == wchar_t,
+   _GLIBCXX_FILESYSTEM_IS_WINDOWS) while the out-of-line half of the library
+   lives in Fedora's ELF/POSIX libstdc++.so, and the two disagree: operator/,
+   .string(), create_directories and directory_iterator were each confirmed to
+   corrupt the heap or silently no-op.  Paths are handled here as plain
+   std::string.  See docs/port-linux/00-reconocimiento.md, "Regla de
+   plataforma: std::filesystem bajo wineg++". */
 
 #ifndef NEAR
 #define NEAR
@@ -93,9 +101,10 @@ extern "C" {
 
 namespace {
 
-bool WriteCabi(const std::filesystem::path& directory, const char* file_name,
+bool WriteCabi(const std::string& directory, const char* file_name,
                const char* macro_name, const unsigned value) {
-    std::ofstream output(directory / file_name, std::ios::trunc);
+    const std::string output_path = directory + "/" + file_name;
+    std::ofstream output(output_path, std::ios::trunc);
     if (!output) {
         return false;
     }
@@ -114,12 +123,13 @@ int main(int argc, char** argv) {
     if (argc != 2) {
         return 2;
     }
-    const std::filesystem::path output_directory(argv[1]);
-    std::error_code error;
-    std::filesystem::create_directories(output_directory, error);
-    if (error) {
-        return 3;
-    }
+    /* The output directory is created by the invoking CMake custom command
+       ("${CMAKE_COMMAND} -E make_directory"), which runs before this tool.  It
+       is not created here: std::filesystem::create_directories is unusable
+       under wineg++ (see the note at the top of this file), and duplicating the
+       step with a hand-rolled mkdir would add a second source of truth for no
+       gain. */
+    const std::string output_directory(argv[1]);
 
     bool success = true;
     WRITE_CABI("about.hs", cabiCABABOUT);

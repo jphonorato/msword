@@ -344,6 +344,14 @@ CleanUpForExit()
 
 /* O U R  E X I T  W I N D O W S */
 /*  %%Function: OurExitWindows  %%Owner: peterj  */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* USER!ExitWindows (Win3) by ordinal.  Wine FARPROC is (void). */
+typedef void (WINAPI *OPUS_PFN_EXITWINDOWSV3)(LPSTR);
+#define OpusCallExitWindowsV3(lpfn) (*(OPUS_PFN_EXITWINDOWSV3)(lpfn))
+#else
+#define OpusCallExitWindowsV3(lpfn) (*(lpfn))
+#endif
+
 EXPORT OurExitWindows()
 {
 	FARPROC lpfn = NULL;
@@ -356,7 +364,7 @@ EXPORT OurExitWindows()
 	CleanUpForExit();
 	if (lpfn != NULL)
 		{
-		(*lpfn)((LPSTR)NULL); /* does ExitWindows in win 3 */
+		OpusCallExitWindowsV3(lpfn)((LPSTR)NULL); /* does ExitWindows in win 3 */
 		}
 	EXITWINDOWS((LPSTR)NULL);
 	Assert(fFalse);

@@ -73,6 +73,14 @@ DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
 #include "search.h"
 #include "rerr.h"
 
+/* Forward declaration matching the definition below.  FHelp is called at
+   line 211, before it is defined, which in C89 conjures an implicit
+   "int FHelp()" that then conflicts with the real "BOOL PASCAL" definition.
+   The second parameter stays unsigned long: HFill casts it to LPSTR in the
+   string branch, so it has to be pointer-wide on this target, and both call
+   sites pass small numeric values that convert cleanly. */
+BOOL PASCAL FHelp(unsigned short usCommand, unsigned long ulData);
+
 /* E X T E R N S */
 
 extern BOOL			fElActive;

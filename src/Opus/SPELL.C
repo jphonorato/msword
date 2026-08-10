@@ -74,6 +74,16 @@ DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
 #include "spell.hs"
 #include "spell.sdm"
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* Used before static definitions; C89 invents non-static int(). */
+static BOOL FUpdateDictOK(void);
+static BOOL FUserDictOK(BOOL /*fDialogs*/);
+static int FTryDict(char * /*szFile*/, char * /*szAdjust*/, int * /*pfRO*/);
+static int FCreateDict(char * /*szFile*/);
+static int SpellDllFree(void);
+#endif
+
+
 
 extern int vrerr;
 extern BOOL		fElActive;

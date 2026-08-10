@@ -1495,13 +1495,31 @@ LTmError:
 						extern long LWholeFromNum();
 						NUM numT;
 						BLTBH(&hpev->num, &numT, cbNUM);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+						/* (a') Win32 As Long / Windows LONG is 32-bit.  int is 32-bit
+						   under winegcc LP64 (sizeof(int)==4 verified).  One int slot
+						   so cwArgs = pwArgs - rgwArgs advances by 1 and invoke_macro
+						   sees one parameter (historical Win32 ABI).  Values outside
+						   32-bit range are the same overflow class as MathError(fmerrOver)
+						   → ElMathError → RtError(rerrOverflow); use RtError directly
+						   (rerr.h already included; same user-visible error). */
+						{
+						long lT = LWholeFromNum(&numT, TRUE);
+						if (lT != (long)(int)lT)
+							RtError(rerrOverflow);
+						*pwArgs = (int)lT;
+						pwArgs += 1;
+						}
+#else
 						*((long *) pwArgs)++ = 
 								LWholeFromNum(&numT, TRUE);
+#endif
 						}
 					break;
 
 				case dktDouble:
-					*((NUM *) pwArgs)++ = hpev->num;
+					*(NUM *) pwArgs = hpev->num;
+					pwArgs = (int *)((NUM *) pwArgs + 1);
 					break;
 
 				case dktString:
@@ -1527,8 +1545,19 @@ LTmError:
 					(*hsz)[cch] = '\0';
 					
 					lpstr = (LPSTR) *hsz;
+#if defined(__GNUC__) && !defined(_MSC_VER)
+					/* LP64: HIWORD/LOWORD only keep 16+16 bits of a pointer.
+					   Pack the full address as two 32-bit halves (lo, then hi)
+					   for LPushMacroArgsTyped to reassemble into one LPSTR. */
+					{
+					uintptr_t up = (uintptr_t)(void *)lpstr;
+					*pwArgs++ = (int)(up & 0xffffffffu);
+					*pwArgs++ = (int)((up >> 32) & 0xffffffffu);
+					}
+#else
 					*pwArgs++ = HIWORD(lpstr);
 					*pwArgs++ = LOWORD(lpstr);
+#endif
 					}
 					break;
 					}
@@ -1539,7 +1568,14 @@ LTmError:
 			Assert(hpdkd->hLib != NULL);
 
 			/* Push the args, call the func, and pop the args. */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+			/* Typed push: reassemble dktString lo/hi pointer halves into one
+			   LPSTR argument.  rgdkt[] holds per-param DKT tags in the DKD. */
+			lT = LPushMacroArgsTyped(hpdkd->lppasproc, rgwArgs, cwArgs,
+				(const unsigned char *)hpdkd->rgdkt, (int)hpdkd->idktMacParam);
+#else
 			lT = LPushMacroArgs(hpdkd->lppasproc, rgwArgs, cwArgs);
+#endif
 
 			if (!fSubCall)
 				{

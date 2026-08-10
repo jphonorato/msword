@@ -30,6 +30,12 @@ DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
 #include "rareflag.h"
 #include "ch.h"
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* Used one line above the static definition; C89 invents non-static int(). */
+static int BSBPwwd(struct WWD * /*pwwd*/, int /*fBlank*/);
+#endif
+
+
 /* G L O B A L S */
 
 HFONT vhfntStyWnd; /* font for style name window */

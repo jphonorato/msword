@@ -579,7 +579,12 @@ typedef	WORD		SEV;
 #define sevList		((SEV)6)	// Non-directory ListBox fill failure.
 
 BOOL	SDMPUBLIC	FSdmDoIdle(BOOL);
-BOOL	SDMPUBLIC	FRetrySdmError(WORD, HDLG, SEV);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* raremsg.c defines the first parameter as int; WORD was same-width on Win32. */
+BOOL    SDMPUBLIC       FRetrySdmError(int, HDLG, SEV);
+#else
+BOOL    SDMPUBLIC       FRetrySdmError(WORD, HDLG, SEV);
+#endif
 
 // Directory ListBox support. 
 // A werid case of an SDM-supplied callback. 

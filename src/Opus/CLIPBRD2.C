@@ -40,6 +40,35 @@ DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
 #include "clipbrd2.cpt"
 #endif /* PROTOTYPE */
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* CreateDIBitmap and GetDIBits are reached by ordinal through
+ * GetProcAddress below, not linked, because Opus still had to run under
+ * Windows 2 (see the comments at both call sites).  MSVC's FARPROC is an
+ * unprototyped "int (WINAPI *)()", so calling it with real arguments
+ * compiles and passes them through.  Wine's FARPROC has the strict
+ * prototype "INT_PTR (WINAPI *)(void)", which makes GCC reject the same
+ * expression with "too many arguments to function 'lpfn'" -- and its
+ * INT_PTR return would additionally narrow implicitly to HBITMAP / int.
+ *
+ * These give the two calls back their real types, arguments and return
+ * value alike, instead of forcing the call through and ignoring the
+ * prototype.  Kept local to this file rather than in
+ * port/original/opus_x64_compat.h because translation units such as
+ * CREATE2.C include a reduced Windows header where BITMAPINFOHEADER and
+ * friends do not exist.  Signatures per the Win32 SDK; see
+ * docs/port-linux/00-reconocimiento.md. */
+typedef HBITMAP (WINAPI *OPUS_PFN_CREATEDIBITMAP)(
+	HDC, const BITMAPINFOHEADER *, DWORD, const void *,
+	const BITMAPINFO *, UINT);
+typedef int (WINAPI *OPUS_PFN_GETDIBITS)(
+	HDC, HBITMAP, UINT, UINT, LPVOID, LPBITMAPINFO, UINT);
+#define OpusCallCreateDIBitmap(lpfn) (*(OPUS_PFN_CREATEDIBITMAP)(lpfn))
+#define OpusCallGetDIBits(lpfn)      (*(OPUS_PFN_GETDIBITS)(lpfn))
+#else
+#define OpusCallCreateDIBitmap(lpfn) (*(lpfn))
+#define OpusCallGetDIBits(lpfn)      (*(lpfn))
+#endif
+
 extern char             (**vhgrpchr)[];
 extern struct SEL       selCur;      /* Current selection */
 extern struct DOD       **mpdochdod[];
@@ -626,7 +655,7 @@ int cf; /* requested clipboard format */
 				Assert(PwwdWw(wwCur)->hdc != NULL);
 				// calling CreateDIBitmap (a Win 3 call) through GetProcAddress 
 				// because we still have to run under Win 2
-				if ((hDataDescriptor = (*lpfn)(PwwdWw(wwCur)->hdc, 
+				if ((hDataDescriptor = OpusCallCreateDIBitmap(lpfn)(PwwdWw(wwCur)->hdc,
 					(LPBITMAPINFOHEADER)lpch, (DWORD)CBM_INIT, 
 					(LPSTR)lpBits, (LPBITMAPINFO)lpch, DIB_RGB_COLORS)) == NULL)
 					{
@@ -780,7 +809,14 @@ CP cp;
 		Assert (ich < vfli.ichMac);
 		Assert (pchr->chrm);
 		Assert (pchr->chrm != chrmEnd);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		/* On OPUS_X64, chrm is a unique tag, not a byte length (format.h).
+		   Advance by CbFromChrm(), same as disp1.c / pic.c / wproc.c walks.
+		   No cast-as-lvalue: assign through the real struct CHR * type. */
+		pchr = (struct CHR *)((char *)pchr + CbFromChrm(pchr->chrm));
+#else
 		(char *)pchr += pchr->chrm;
+#endif
 		}
 	return ich;
 }
@@ -1201,7 +1237,7 @@ struct RC *prcWinMF;  /* window org/ext rc for metafiles. may be null */
 			Assert(lpfn != NULL);
 			// calling GetDIBits (a Win 3 call) through GetProcAddress 
 			// because we still have to run under Win 2
-			if ((*lpfn)(PwwdWw(wwCur)->hdc, hData, 0, bm.bmHeight, (LPSTR)lpBits, 
+			if (OpusCallGetDIBits(lpfn)(PwwdWw(wwCur)->hdc, hData, 0, bm.bmHeight, (LPSTR)lpBits,
 				(LPBITMAPINFO)lpBitsInfo, DIB_RGB_COLORS) != bm.bmHeight)
 				{
 				GlobalUnlock(hDIB);

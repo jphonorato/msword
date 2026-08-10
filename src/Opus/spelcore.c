@@ -154,7 +154,7 @@ int TmcGosubSpellMM()
 	pcabspellerMM->iSplMMAddToBox = vrf.udcDefault;
 	pcabspellerMM->fSplMMAutoSugg = vpref.fSplAutoSugg;
 	pcabspellerMM->fSplMMIgnoreCaps = vrf.fSplIgnoreCaps;
-	(int)(pcabspellerMM->uSplMMSuggList) = uNinchList;
+	pcabspellerMM->uSplMMSuggList = uNinchList;
 
 	cmb.hcab = hcabspellerMM;
 	cmb.cmm = cmmNormal;

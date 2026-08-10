@@ -5,6 +5,13 @@ DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
 #include "ourmath.h"
 #include "inter.h"
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* Called before the definition below.  Without this, C89 invents a cdecl
+   int MathError() that conflicts with the PASCAL definition.  merr is the
+   K&R default int; the fmerr* constants passed at call sites are ints. */
+EXPORT FAR PASCAL MathError(int /*merr*/);
+#endif
+
 union RRU       vrruCalc;                /* Field Results */
 ENV		*penvMathError;
 STATIC NUM	rgnumMath[inumMax];
@@ -998,7 +1005,12 @@ int cDigBlw;
 */
 
 /* %%Function:LWholeFromNum  %%Owner:bryanl */
-LONG LWholeFromNum (pnum, fTruncate)
+/* "long", not LONG, to agree with the four declarations of this function
+   (el.h:32, ourmath.h:131, elfile.c, elmisc.c) and with the local "l" it
+   returns.  The two spellings were the same width on Win32; here LONG is 32
+   bits and long is 64, and the wider one is correct -- narrowing would
+   truncate legitimate interpreter results. */
+long LWholeFromNum (pnum, fTruncate)
 NUM *pnum;
 BOOL fTruncate;
 {

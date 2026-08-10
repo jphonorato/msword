@@ -1276,7 +1276,20 @@ OOM:
 				/* under win3.0 we have to change the data
 				   segment containing PlaybackHook to code. */
 				{
-				HANDLE hKernel=GetModuleHandle(SzShared("KERNEL"));
+				#if defined(__GNUC__) && !defined(_MSC_VER)
+/* KERNEL selector APIs by ordinal.  Wine FARPROC is (void). */
+typedef HANDLE (WINAPI *OPUS_PFN_ALLOCSELECTOR)(HANDLE);
+typedef HANDLE (WINAPI *OPUS_PFN_PRESTOCHANGOSELECTOR)(HANDLE, HANDLE);
+typedef void (WINAPI *OPUS_PFN_FREESELECTOR)(HANDLE);
+#define OpusCallAllocSelector(lpfn) (*(OPUS_PFN_ALLOCSELECTOR)(lpfn))
+#define OpusCallPrestoChangoSelector(lpfn) (*(OPUS_PFN_PRESTOCHANGOSELECTOR)(lpfn))
+#define OpusCallFreeSelector(lpfn) (*(OPUS_PFN_FREESELECTOR)(lpfn))
+#else
+#define OpusCallAllocSelector(lpfn) (*(lpfn))
+#define OpusCallPrestoChangoSelector(lpfn) (*(lpfn))
+#define OpusCallFreeSelector(lpfn) (*(lpfn))
+#endif
+		HANDLE hKernel=GetModuleHandle(SzShared("KERNEL"));
 				FARPROC lpfn;
 				HANDLE hTemp;
 
@@ -1286,17 +1299,17 @@ OOM:
 				lpfn = GetProcAddress(hKernel,
 						MAKEINTRESOURCE(idoAllocSelector));
 				Assert(lpfn != NULL);
-				hTemp = (*lpfn)(hPlaybackHook);
+				hTemp = OpusCallAllocSelector(lpfn)(hPlaybackHook);
 				if (hTemp == NULL)
 					goto OOM;
 				lpfn = GetProcAddress(hKernel,
 						MAKEINTRESOURCE(idoPrestoChangoSelector));
 				Assert(lpfn != NULL);
-				(*lpfn)(hTemp, hPlaybackHook);
+				OpusCallPrestoChangoSelector(lpfn)(hTemp, hPlaybackHook);
 				lpfn = GetProcAddress(hKernel,
 						MAKEINTRESOURCE(idoFreeSelector));
 				Assert(lpfn != NULL);
-				(*lpfn)(hTemp);
+				OpusCallFreeSelector(lpfn)(hTemp);
 				}
 			lpfnPlaybackHook=&lpdrvhd->fnPlaybackHook;
 			/* don't need to unlock hPlaybackHook, it's fixed */
@@ -1429,7 +1442,11 @@ LUnlockDone:
 		extern WORD CchReadDDESource();
 		extern int ElaDebug();
 		extern int GetInfoElx();
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		/* el.h already prototypes HeliNew; a K&R "HeliNew()" redeclaration conflicts. */
+#else
 		extern ELI ** HeliNew();
+#endif
 		extern BOOL vfElDisableInput;
 		extern BOOL vfElFunc;
 		extern BOOL vcElParams;

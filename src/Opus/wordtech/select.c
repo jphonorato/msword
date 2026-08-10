@@ -939,7 +939,7 @@ over xp, depending whichever is closer to the middle point of the char */
 				goto LHaveCp;
 				}
 			cp += ((struct CHRFG *)pchr)->dcp;
-			(char *)pchr += ((struct CHRFG *)pchr)->dbchr;
+			pchr = (struct CHR *)((char *)pchr + ((struct CHRFG *)pchr)->dbchr);
 			ich = pchr->ich;
 			pdxp = &vfli.rgdxp[ich];
 			continue;
@@ -957,7 +957,7 @@ over xp, depending whichever is closer to the middle point of the char */
 			break;
 			}
 /* note how chrm is cb of the variant chr structure! */
-		(char *)pchr += CbFromChrm(chrm);
+		pchr = (struct CHR *)((char *)pchr + CbFromChrm(chrm));
 		}
 
 LHaveCp:

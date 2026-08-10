@@ -50,9 +50,18 @@ typedef int DPV;
 
 extern DPV DpvParseFdxa(int *, TMC, char *, int, int, DPV, int, int, int);
 extern DPV DpvPdxaSzTmcWLow(int *, char *, TMC, WORD);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* dialog2.c / dialog3.c define the range bounds as int (signed; wLow can be
+   negative to pick wNinch).  The historical prototypes used WORD, which
+   matched int width on Win16/Win32 but conflicts with the K&R definitions
+   under GCC.  Wider signed form wins. */
+extern WORD WParseIntRange(TMM, char *, void **, WORD, TMC, int, int);
+extern WORD WParseOptRange(TMM, char *, void **, WORD, TMC, WORD, int, int);
+#else
 extern WORD WParseIntRange(TMM, char *, void **, WORD, TMC, WORD, WORD);
+extern WORD WParseOptRange(TMM, char *, void **, WORD, TMC, WORD, WORD, WORD);
+#endif
 extern WORD WParsePosIntNZ(TMM, char *, void **, WORD, TMC, WORD);
 extern WORD WParseUnit(TMM, char *, void **, WORD, TMC, WORD);
 extern WORD WParseAnyInt(TMM, char *, void **, WORD, TMC, WORD);
 extern WORD WParseAutoUnit(TMM, char *, void **, WORD, TMC, WORD);
-extern WORD WParseOptRange(TMM, char *, void **, WORD, TMC, WORD, WORD, WORD);

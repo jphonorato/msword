@@ -28,6 +28,34 @@
       "name": "x64-release",
       "displayName": "Word x64 Release",
       "inherits": "x64"
+    },
+    {
+      "name": "linux-winelib",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/../out/${presetName}",
+      "toolchainFile": "${sourceDir}/cmake/toolchain-winelib.cmake",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "linux-winelib-debug",
+      "displayName": "Word Linux Winelib Debug",
+      "inherits": "linux-winelib",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "linux-winelib-release",
+      "displayName": "Word Linux Winelib Release",
+      "inherits": "linux-winelib",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
     }
   ],
   "buildPresets": [
@@ -40,6 +68,14 @@
       "name": "x64-release",
       "configurePreset": "x64-release",
       "configuration": "Release"
+    },
+    {
+      "name": "linux-winelib-debug",
+      "configurePreset": "linux-winelib-debug"
+    },
+    {
+      "name": "linux-winelib-release",
+      "configurePreset": "linux-winelib-release"
     }
   ]
 }

@@ -7,6 +7,10 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+/* std::size lives in <iterator>.  MSVC's headers pull it in transitively;
+ * libstdc++ does not, so the two std::size call sites below fail to compile
+ * without this. */
+#include <iterator>
 #include <limits>
 
 /* AMD64 translation of FILEWINN.ASM.  Word continues to open files through

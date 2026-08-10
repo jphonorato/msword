@@ -32,6 +32,18 @@ DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
 #include "rareflag.h"
 #include "error.h"
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* Graphics-filter GetInfo/ReadPict by ordinal.  Wine FARPROC is (void). */
+typedef int (WINAPI *OPUS_PFN_GETINFO)(int, LPSTR, LPSTR, LPSTR);
+typedef int (WINAPI *OPUS_PFN_READPICT)(HDC, LPSTR, LPSTR, HANDLE);
+#define OpusCallGetInfo(lpfn) (*(OPUS_PFN_GETINFO)(lpfn))
+#define OpusCallReadPict(lpfn) (*(OPUS_PFN_READPICT)(lpfn))
+#else
+#define OpusCallGetInfo(lpfn) (*(lpfn))
+#define OpusCallReadPict(lpfn) (*(lpfn))
+#endif
+
+
 
 #define WFromStm() 	(WFromVfcStm())
 #define cbitByte (8)
@@ -1417,11 +1429,11 @@ struct GRIB *pgrib;
 	if (pgrib->szName[0] != 0 && (hLib = HOurLoadLibrary(pgrib->szName, NULL))
 			>= 32)
 		{
-		if ((lpfnGetInfo = GetProcAddress(hLib, MAKEINTRESOURCE(wProcInfo)))
+if ((lpfnGetInfo = GetProcAddress(hLib, MAKEINTRESOURCE(wProcInfo)))
 				!= NULL)
 			{
             vrf.fInExternalCall = fTrue;
-            fReturn = (((*lpfnGetInfo)(wGiArg, (LPSTR)szOption, (LPSTR)&pgrib->hPref,
+            fReturn = ((OpusCallGetInfo(lpfnGetInfo)(wGiArg, (LPSTR)szOption, (LPSTR)&pgrib->hPref,
 					(LPSTR)&hT)) == wIdPict);
             vrf.fInExternalCall = fFalse;
             }
@@ -1583,8 +1595,8 @@ HANDLE *ph; /* to return hMF */
 		StToSz(st, grfs.szFullName);
 
         vrf.fInExternalCall = fTrue;
-		wRet = (*lpfnReadPict)(hdc, (LPSTR)&grfs, (LPSTR)&grpi,
-				pgrib->hPref);
+		wRet = OpusCallReadPict(lpfnReadPict)(hdc, (LPSTR)&grfs, (LPSTR)&grpi,
+pgrib->hPref);
         vrf.fInExternalCall = fFalse;
 		if (!wRet && grpi.hMF != NULL)
 			{

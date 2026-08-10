@@ -31,7 +31,11 @@ BOOL fElActive = FALSE;
 #define LibCur()	(Global(libBufStart) + Global(ibBufCur))
 
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* el.h:663 already has VOID RtError(RERR); a K&R "RtError()" conflicts. */
+#else
 VOID RtError();
+#endif
 VOID StopHeli();
 VOID CleanupEl();
 
@@ -419,8 +423,13 @@ VOID (*pfnDebug)();
 
 
 /* %%Function:RtError %%Owner:bradch */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* Prototype form to match el.h:663; K&R "VOID RtError(rerr)" is seen as void(). */
+VOID RtError(RERR rerr)
+#else
 VOID RtError(rerr)
 RERR rerr;
+#endif
 {
 	ENV *penv, huge *hpenv;
 	extern RERR vrerr;

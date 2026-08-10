@@ -210,7 +210,7 @@ CMB * pcmb;
 	TDSD tdsd;
 	int  tmc;
 
-	vptdsd = &tdsd;
+	pcmb->pv = &tdsd;
 	tmc = TmcTabs(pcmb);
 
 	return tmc == tmcOK ? cmdOK : tmc == tmcCancel ? cmdCancelled : cmdError;
