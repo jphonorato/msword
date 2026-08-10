@@ -15,17 +15,45 @@ jobs:
           dnf install -y \
             wine wine-devel \
             cmake ninja-build \
-            gcc-c++ git make
+            gcc-c++ git make \
+            xorg-x11-server-Xvfb
 
       - name: Configure
         working-directory: src
         run: cmake --preset linux-winelib-debug
 
-      - name: Build (motor only, -k 0 to report all errors)
+      - name: Build engine (motor only, -k 0 to report all errors)
         run: ninja -k 0 -C out/linux-winelib-debug opus_original_engine
 
-      - name: Verify artifacts
+      - name: Verify engine artifact
         run: |
           test -f build/lib/Debug/libopus_original_engine.a
           ls -la build/lib/Debug/libopus_original_engine.a
           echo "Motor build successful: libopus_original_engine.a"
+
+      - name: Build WORD1 and test binaries
+        run: ninja -k 0 -C out/linux-winelib-debug
+
+      - name: Set up Wine prefix and virtual display
+        run: |
+          # Skip Mono/Gecko install prompts (no network dependency, no popups)
+          echo "WINEDLLOVERRIDES=mscoree,mshtml=" >> "$GITHUB_ENV"
+          echo "WINEDEBUG=-all" >> "$GITHUB_ENV"
+          export WINEDLLOVERRIDES="mscoree,mshtml="
+          export WINEDEBUG=-all
+          wineboot --init
+          # opus_word1_ui_test drives real WORD1 windows (USER32); give it a
+          # headless X server so it fails/succeeds on its own merits instead
+          # of erroring out on a missing DISPLAY.
+          Xvfb :99 -screen 0 1024x768x24 &
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+
+      - name: Run unit tests (gating)
+        run: >
+          ctest --test-dir out/linux-winelib-debug --output-on-failure
+          -LE word1_startup_blocked
+
+      - name: Run WORD1-dependent tests (known broken at startup, non-gating)
+        run: |
+          ctest --test-dir out/linux-winelib-debug --output-on-failure -L word1_startup_blocked || \
+            echo "::warning::WORD1-dependent tests failed as expected (known startup heap corruption blocker, see README). Not gating CI."
