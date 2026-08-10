@@ -838,6 +838,602 @@ produciría MSVC.
 
 ---
 
+## Fase 2 — EN PROGRESO, sin cerrar (estado al 2026-08-09)
+
+**No confundir con las Fases 0 y 1: esta fase no tiene commit todavía.** El árbol de
+trabajo tiene cambios reales, verificados contra `ninja` en vivo, pero el criterio de
+éxito de la fase («`ninja opus_x64_runtime` enlaza») **sí se cumple**, mientras que
+`opus_original_engine` completo queda bloqueado por un problema activo sin resolver.
+No se hizo `commit` de nada de esto a propósito: el estado no es estable.
+
+### git status real
+
+```
+ M src/CMakeLists.txt
+ M src/CMakePresets.json
+ M src/port/original/opus_x64_compat.h
+ M src/port/original/opus_x64_runtime_test.cpp
+?? src/cmake/toolchain-winelib.cmake
+```
+
+Los tres commits previos (`e4ad5bd` Fase 0, `5b0d777` Fase 1, `e7eac0d` nota Fase 5)
+siguen siendo la última base estable. `build/` y `out/` son directorios de artefactos
+de compilación, sin seguimiento, y no forman parte de este inventario.
+
+### Lo que sí está resuelto y verificado en vivo
+
+- **Presets `linux-winelib-debug` / `linux-winelib-release`** en `CMakePresets.json`,
+  generador Ninja, vía `src/cmake/toolchain-winelib.cmake` (fija `winegcc`/`wineg++`,
+  la marca `OPUS_WINELIB_BUILD`, y fuerza `CMAKE_SIZEOF_VOID_P=8` porque la detección
+  automática de ABI de CMake falla contra el stub de shell de `winegcc.exe` — no es
+  cosmético como se pensó al escribir el archivo de toolchain, hay que forzarlo).
+- **Puerta `FATAL_ERROR` de la línea 5** sustituida por `NOT WIN32 AND NOT
+  OPUS_WINELIB_BUILD`.
+- **`project(... LANGUAGES C CXX)`** sin `RC`; `enable_language(RC)` sólo bajo
+  `WIN32`. `port/word1.rc` y `port/winword.manifest` se excluyen condicionalmente de
+  las fuentes de `WORD1` fuera de Windows (se reincorporan en la Fase 4, vía `wrc`).
+- **`opus_windows_sdk.h.in`** apunta a `/usr/include/wine/windows/windows.h` bajo
+  `OPUS_WINELIB_BUILD`, localizado con `find_path`.
+- **Directorio de compatibilidad de mayúsculas** (12 symlinks, `generated/case-shim/`),
+  prependido a `OPUS_ORIGINAL_INCLUDE_DIRS`, compartido por todos los targets que ya
+  usaban esa variable.
+- **Symlinks en minúscula para las fuentes `.C`** — resultaron ser **18, no 17**: al
+  ejecutar `add_library` sobre el árbol real, CMake reportó `Cannot find source file:
+  Opus/cmd3.c`. El archivo real es `Opus/CMD3.C`; `cmd3.c` (minúscula) es un typo
+  preexistente en el `CMakeLists.txt` original (confirmado con `git show ac5472e`),
+  invisible bajo NTFS insensible a mayúsculas, que Linux expuso de inmediato. Se
+  corrigió la entrada de la lista de fuentes a `Opus/CMD3.C` y se sumó a la lista de
+  symlinks en minúscula — y, para no romper MSVC, también a la línea
+  `set_source_files_properties(... LANGUAGE C)`, porque bajo MSVC la ortografía en
+  minúscula del `CMakeLists.txt` era justamente lo que hacía que ese archivo se
+  compilara como C sin necesitar esa propiedad.
+- **Banderas del motor** (`-std=gnu89 -funsigned-char -fms-extensions -fpermissive`),
+  aplicadas con `$<COMPILE_LANGUAGE:C>` para no alcanzar los ~20 `.cpp` del mismo
+  target. **También hicieron falta en `opus_x64_runtime`** (no sólo en
+  `opus_original_engine`): ese target tiene dos fuentes `.c` K&R
+  (`opus_original_chupper.c`, `opus_x64_layout.c`) que fallaban con
+  `-Wimplicit-int` sin ellas.
+- **`opus_x64_compat.h`**: tres correcciones reales, no sólo scaffolding —
+  1. `#define native` pasa a `#ifndef __cplusplus`, igual que ya estaban guardados
+     `export` y `string` en el mismo archivo (mismo patrón preexistente, no una
+     invención): sin la guarda, `<bit>` de libstdc++ no compila porque
+     `std::endian::native` deja de ser un identificador válido.
+  2. `_stricmp` vía `strcasecmp`, igual que en `port/tools/opus_host_compat.h` de la
+     Fase 1 pero para el lado runtime/producto (que incluye este header, no aquél).
+  3. `_snprintf_s`/`_vsnwprintf_s`/`_TRUNCATE`/`_countof`/`__assume` — la CRT segura de
+     MSVC y un intrínseco, ninguno de los dos con equivalente directo en GCC.
+     Verificado que los 4 sitios de llamada en todo el árbol usan `_TRUNCATE`, lo que
+     permite mapear directamente a `snprintf`/`vswprintf` sin reimplementar el
+     parámetro `count`.
+- **`src/port/original/opus_x64_runtime_test.cpp`** — un `#include <cstdint>`
+  faltante. MSVC lo arrastraba de forma transitoria vía otra cabecera; libstdc++ no
+  hace ese mismo arrastre, y `std::uint32_t` (u otro tipo de `<cstdint>`) quedaba sin
+  declarar.
+
+**Verificado por reconfiguración y build limpios, dos veces**, no sólo por una
+corrida incremental: `rm -rf out/linux-winelib-debug build && cmake --preset
+linux-winelib-debug && ninja opus_x64_runtime` produce
+`build/lib/Debug/libopus_x64_runtime.a` (18 objetos) sin errores, de forma
+reproducible. **El criterio de éxito de la fase para `opus_x64_runtime` está
+cumplido.**
+
+También se verificó en vivo (no de memoria) que las tres herramientas de host de la
+Fase 1 (`opus_mkcmd_tool`, `opus_bitapp_tool`, `opus_mkdlg_tool`) enlazan bajo este
+mismo preset: les faltaba `target_include_directories` hacia `src/port/tools/` (donde
+vive `opus_host_compat.h`) y `target_compile_options(... -std=gnu89)` bajo
+`if(NOT MSVC)`. Con eso, las tres compilan y enlazan de forma aislada.
+
+### Bloqueador activo: `src/port/tools/opus_cabi_tool.cpp:98`
+
+```cpp
+std::ofstream output(directory / file_name, std::ios::trunc);
+```
+
+`directory` es `std::filesystem::path`. Bajo `wineg++`, `std::filesystem::path::value_type`
+es `wchar_t` (modelo de tipos de Windows, `-fshort-wchar` forzado por winegcc — el mismo
+mecanismo documentado en §4.2 de este informe para la STL de libstdc++ y las cadenas
+anchas). `std::basic_ofstream<char>` no tiene ningún constructor que acepte un
+`const wchar_t*`/`path` de ese tipo por conversión implícita; falla en `<fstream>` con
+5 sobrecargas candidatas rechazadas, cada una por una razón distinta — confirmado
+compilando el archivo real, no una reproducción reducida.
+
+Es la **única ocurrencia** de `std::ofstream`/`std::ifstream`/`std::fstream` en el
+archivo (`grep` confirmado); no hay más sitios del mismo patrón que corregir en el
+mismo archivo. Tampoco hay ninguna convención propia ya existente en el resto del árbol
+para convertir un `path` antes de pasarlo a un stream —es el único uso de
+`std::filesystem` bajo `src/port/` con este problema—, así que la corrección más simple
+(forzar `.string()` en el sitio de la llamada) no tiene un precedente que seguir ni que
+contradecir.
+
+**Esto no es un problema aislado de una herramienta secundaria.** Cadena de dependencia
+confirmada con `ninja -C out/linux-winelib-debug opus_original_engine` real (no
+deducida sólo leyendo `CMakeLists.txt`):
+
+```
+opus_cabi_tool (falla al compilar)
+  → OPUS_GENERATED_CABI_OPEN (cabi/open.hs, custom command, línea ~365)
+    → dependencia de la regla que produce opuscmd.h (opus_generated_commands, línea ~407)
+      → add_dependencies(opus_original_engine opus_generated_commands ...) (línea ~726)
+```
+
+Sin `opuscmd.h`, ningún archivo de `opus_original_engine` compila — el bloqueador de
+`opus_cabi_tool` es el bloqueador del motor completo, no de una utilidad prescindible.
+
+### Ruido ya descartado, no tratar como bloqueador del motor
+
+Compilar `opus_original_sttb_test` (target de prueba en C, no el motor) contra el árbol
+real muestra **345 errores `-Wimplicit-int`** en `Opus/wordtech/word.h`, todos de la
+forma `NATIVE FreeDrs();` sin tipo de retorno explícito (K&R puro). La causa **no** es
+un problema nuevo del motor: `opus_original_sttb_test`, `opus_original_plc_test`,
+`opus_original_strtbl_test` y el fixture en C de `opus_x64_runtime_test`
+(`opus_x64_layout_test_fixture.c`) no tienen ningún bloque `elseif(OPUS_WINELIB_BUILD)`
+con `-std=gnu89` — sólo el `if(MSVC)` original. Verificado A/B, en vivo: el mismo
+`Opus/wordtech/sttb.c`, compilado a mano con exactamente las mismas banderas que ya
+usa `opus_original_engine` (incluidas `-std=gnu89 -funsigned-char -fms-extensions
+-fpermissive`), da **cero** errores de este tipo; sin esas banderas, el mismo archivo
+también los reproduce. Corresponde arreglarlo en estos cuatro targets de prueba
+—mismo patrón `elseif(OPUS_WINELIB_BUILD)` que ya tienen `opus_original_engine` y
+`opus_x64_runtime`— pero no bloquea ni contamina el diagnóstico del motor en sí.
+
+### Verificación empírica de la hipótesis de ABI (2026-08-09)
+
+La hipótesis de partida — `winegcc`/`wineg++` define `_WIN32`, lo que activa
+`_GLIBCXX_FILESYSTEM_IS_WINDOWS` en los encabezados de libstdc++ y fija
+`path::value_type = wchar_t`, mientras que la porción de `std::filesystem` ya
+compilada dentro de `libstdc++.so` de Fedora es ELF/POSIX — se sometió a prueba
+directa con tres binarios mínimos compilados con `wineg++ -std=c++17`, no se dio por
+buena de oficio. Resultado: **confirmada, y más grave de lo que la hipótesis por sí
+sola sugería.**
+
+- `sizeof(fs::path::value_type)` = 2 (`wchar_t`): el modelo de encabezados es en
+  efecto el de Windows.
+- Pero `is_absolute("/tmp/x")` da `false` y `is_absolute("C:\\x")` también da
+  `false` con `root_name()`/`root_directory()` vacíos — ninguna de las dos
+  semánticas (POSIX o Windows) se aplica de forma consistente. El análisis de la
+  ruta está roto, no simplemente "asume Windows".
+- **`fs::path::operator/` (el join que usa la línea 98: `directory / file_name`)
+  corrompe memoria y cuelga el proceso** (`malloc(): invalid size` seguido de
+  `stack overflow` en el unwind de Wine) — reproducido de forma determinista en
+  un caso mínimo de 15 líneas, sin relación con `std::ofstream`. La construcción
+  simple de un `path` de un solo componente y su `.string()` SÍ son seguras
+  (confirmado independientemente).
+- **`std::filesystem::create_directories` (línea 119, sin join) también corrompe
+  memoria y cuelga el proceso**, con la misma firma de error. Esto es un segundo
+  punto de entrada distinto — no textualmente el mismo patrón `std::ofstream` que
+  pedía revisar el punto 4 de instrucciones — pero la misma causa raíz: cualquier
+  función de `std::filesystem` resuelta fuera de línea en `libstdc++.so`
+  (`operator/`, `create_directories`, `directory_iterator` — las tres probadas)
+  falla bajo este `wineg++`/`libstdc++`. Sólo lo que resuelve enteramente en el
+  encabezado (construcción, `.string()` de un `path` sin componer) se comprobó
+  seguro.
+- Caso de control que SÍ funciona de punta a punta, sin tocar ningún símbolo
+  fuera de línea de `std::filesystem`: construir el `path` del directorio sólo
+  para obtener su `.string()`, concatenar con `std::string` normal
+  (`dir.string() + "/" + file_name`), y pasar ese `std::string` a
+  `std::ofstream`/`std::ifstream`. Ejecutado y verificado con lectura de vuelta
+  del contenido escrito, salida limpia (`EXIT=0`), sin corrupción ni en ejecución
+  ni al cierre del proceso.
+
+**Consecuencia para el candidato de corrección previamente anotado aquí
+(`(directory / file_name).string()`): está descartado.** Esa expresión evalúa
+`operator/` antes de `.string()`, y es exactamente `operator/` lo que corrompe
+memoria — el candidato original habría cambiado el error de compilación por un
+cuelgue en ejecución, no lo habría resuelto.
+
+### Siguiente paso concreto, antes de continuar cualquier otra cosa
+
+El alcance de la corrección es más amplio de lo que el plan original de este punto
+preveía (que hablaba sólo de la línea 98 y del patrón `std::ofstream`). Hay dos
+sitios en `opus_cabi_tool.cpp`, no uno, y ambos dependen de símbolos rotos de
+`std::filesystem` fuera de línea:
+
+1. Línea 98 (`std::ofstream output(directory / file_name, ...)`) — corregible con
+   el patrón de control ya verificado: construir el `std::string` de la ruta con
+   concatenación simple, sin `operator/`.
+2. Línea 119 (`std::filesystem::create_directories(output_directory, error)`) —
+   necesita sustituirse por una creación de directorio que no pase por el símbolo
+   roto de `libstdc++.so`; candidatos: `mkdir()`/`_mkdir()` de POSIX directo (el
+   directorio de salida de `opus_cabi_tool` no tiene anidamiento profundo conocido
+   en este árbol, a confirmar antes de asumir que un `mkdir` de un solo nivel
+   basta) o una función recursiva propia sobre `mkdir()`.
+
+Los dos comparten causa (evitar todo símbolo de `std::filesystem` resuelto fuera de
+línea). La corrección finalmente aplicada va más allá de encapsular la conversión:
+elimina `std::filesystem` del archivo por completo. Ver la sección siguiente.
+
+### Cierre de la discrepancia `.string()` / `native()` — regla de plataforma
+
+Hubo una discrepancia entre auditorías sobre si `.string()` sobre un
+`std::filesystem::path` era seguro bajo `wineg++`. **Resuelta en contra de
+`.string()`**, por una segunda auditoría de Grok Build con probes aislados y
+determinismo 3/3: `.string()` es corrupción de heap determinista. (Kimi quedó
+descartado en este punto específico.)
+
+Conviene registrar por qué la medición propia hecha aquí no lo detectó, porque el
+modo de fallo es instructivo: el probe local `fs_probe4` usó `dir.string()` sobre un
+`path` de un solo componente, imprimió el valor correcto y salió con `EXIT=0`. Pero
+el probe `fs_probe5`, con el mismo patrón, imprimió resultados correctos y **aun así
+abortó al cierre del proceso** con `Inconsistency detected by ld.so: dl-fini.c: 93`.
+Es decir: la corrupción ocurre igualmente, sólo que a veces no se manifiesta hasta
+después de que la salida ya parece correcta. Una salida limpia no es evidencia de
+ausencia de corrupción aquí. La auditoría con probes aislados y repetición 3/3 es la
+medida válida; una sola pasada con `EXIT=0` no lo es.
+
+`native()` sobrevive a las pruebas, pero **no es utilizable en la práctica**: bajo
+este toolchain devuelve `wstring`/`wchar_t`, y lo que `WriteCabi` necesita es una
+ruta en `char` para `std::ofstream`. No existe ningún método de
+`std::filesystem::path` que sirva de forma segura para este uso.
+
+Con cuatro mecanismos de conversión independientes ya confirmados rotos
+(`operator/`, `.string()`, `directory_iterator`, `create_directories`) y sólo
+`native()` y la construcción simple sobrevivientes —ninguno de los dos utilizable
+aquí— se registra la siguiente **regla de plataforma**:
+
+> Bajo `wineg++`, `std::filesystem::path` no debe usarse para ninguna operación que
+> produzca o consuma una representación de cadena en `char`. La construcción desde
+> `const char*` y la comparación estructural pueden ser seguras, pero no hay ningún
+> caso de uso real en este árbol para eso. **Regla práctica: no usar
+> `std::filesystem` en unidades de traducción compiladas con `wineg++`.**
+
+### Corrección aplicada a `opus_cabi_tool.cpp`
+
+Origen único localizado por Grok Build: la conversión de `argv[1]` (`const char*`) a
+`std::filesystem::path` en L117. Eliminada esa conversión, `std::filesystem`
+desaparece del archivo entero.
+
+- `#include <filesystem>` eliminado, sustituido por un comentario que explica la
+  prohibición y remite a la regla de plataforma de arriba.
+- Firma de `WriteCabi`: `const std::filesystem::path& directory` →
+  `const std::string& directory`.
+- Sitio ~98: `directory + "/" + file_name` con `std::string` normal, a una variable
+  local, y esa variable al constructor de `std::ofstream`. Ningún `path` se
+  construye en el camino.
+- Sitio ~119: `create_directories` eliminado sin sustituto. **No hizo falta ningún
+  cambio en CMake**: el `add_custom_command` que invoca la herramienta
+  (`src/CMakeLists.txt:366`) ya ejecutaba
+  `"${CMAKE_COMMAND}" -E make_directory "${OPUS_GENERATED_CABI_DIR}"` como paso
+  previo, en el código original del autor. La creación dentro de la herramienta
+  siempre fue redundante; eliminarla deja una sola fuente de verdad en lugar de
+  añadir una segunda. No se introdujo `mkdir_p` propio porque no es necesario.
+- Verificado con `grep`: no queda ningún uso de `std::filesystem` ni `fs::` en el
+  archivo (sólo menciones en comentarios explicativos).
+
+Verificación de ejecución real, no sólo de enlace: el binario, invocado a través de
+su stub (`build/tools/Debug/opus_cabi_tool.exe /tmp/cabi_exec_test`), sale con
+`EXIT=0`, sin corrupción ni al ejecutar ni al cerrar, y escribe **73 archivos** con
+contenido real y correcto (`open.hs` → `#define cabiCABOPEN 268`, `about.hs` →
+`#define cabiCABABOUT 1824`, `print.hs` → `#define cabiCABPRINT 1068`). El bloqueador
+de `std::filesystem` queda cerrado.
+
+### Bloqueador NUEVO y distinto: sufijo `.exe` frente a `$<TARGET_FILE:>`
+
+Con la herramienta ya funcionando, `ninja -C out/linux-winelib-debug
+opus_generated_commands` **sigue fallando, por una causa completamente distinta**:
+
+```
+/bin/sh: /home/exia/word1/msword/build/tools/Debug/opus_cabi_tool: No existe el fichero o el directorio
+```
+
+`winegcc`/`wineg++` emiten el par `opus_cabi_tool.exe` (stub POSIX) +
+`opus_cabi_tool.exe.so` (ELF real). CMake, que no sabe del convenio de dos archivos
+de winegcc, expande `$<TARGET_FILE:opus_cabi_tool>` (L367) a la ruta **sin** sufijo,
+que no existe. El enlace tiene éxito y la herramienta funciona; lo que falla es
+únicamente cómo el custom command la nombra.
+
+Esto afecta por igual a las cinco herramientas host del árbol (`opus_cabi_tool`,
+`opus_mkcmd_tool`, `opus_mkdlg_tool`, `opus_bitapp_tool`, `opus_dibapp_tool`), no
+sólo a ésta.
+
+**No se aplica corrección aquí.** Las dos salidas plausibles son (a) fijar
+`CMAKE_EXECUTABLE_SUFFIX` en el toolchain file, y (b) construir las herramientas host
+con el `gcc` nativo en lugar de `winegcc`, con lo que producirían ELF sin sufijo y el
+problema desaparecería de raíz. La opción (b) **es exactamente la decisión de
+arquitectura pendiente sobre separar herramientas host del target**, que está
+reservada explícitamente al responsable del proyecto. Se para aquí en lugar de
+improvisar una de las dos.
+
+Obsérvese que estas herramientas son generadores que sólo tienen que ejecutarse en la
+máquina de construcción: no hay razón técnica para que pasen por Wine. Eso es un
+argumento a favor de (b), pero la decisión no se toma aquí.
+
+### Estado de la cadena, tras esta sesión
+
+`opus_cabi_tool` compila, enlaza y **ejecuta correctamente**. `opus_generated_commands`
+sigue bloqueado, por el sufijo `.exe`, no por `std::filesystem`. Por tanto
+`generated/original/opuscmd.h` **todavía no se genera**, y los pasos 3 y 4 de la
+verificación pedida (contraste de `opuscmd.h` y conteo de errores de
+`opus_original_engine`) **no han podido ejecutarse todavía** — no por falta de
+intento, sino porque la cadena se corta antes.
+
+No se debe dar la Fase 2 por cumplida ni hacer `commit` hasta que
+`opus_original_engine` compile (o hasta acordar explícitamente que el alcance de la
+fase se cierra sólo con `opus_x64_runtime`, que es lo único que el plan original
+exigía por escrito).
+
+---
+
+## Separación de host tools del toolchain Winelib (2026-08-09)
+
+### Decisión y justificación
+
+Cuatro de las cinco herramientas de construcción pasan a compilarse con el
+`gcc`/`g++` nativo, fuera del toolchain Winelib. Son generadores que sólo se
+ejecutan en la máquina de construcción: leen fuentes de Opus y emiten
+cabeceras/inicializadores que después compila el motor. Compilarlas con
+`winegcc` no aportaba nada funcional y las metía gratis en los modos de fallo de
+la capa Winelib (el mismo tipo de riesgo que acaba de cerrarse con
+`std::filesystem`).
+
+Auditoría de dependencias, hecha por lectura de los `#include` de cada una antes
+de mover nada:
+
+| Herramienta | Fuente | Includes | ABI del motor |
+|---|---|---|---|
+| `opus_mkcmd_tool` | `OpusEtAl/tools/src/mkcmd.c` | `stdio, ctype, stdint, stdlib, string, vk.h, opus_host_compat.h` | no |
+| `opus_mkdlg_tool` | `OpusEtAl/tools/src/mkdlg.c` | `stdio, ctype, opus_host_compat.h` | no |
+| `opus_bitapp_tool` | `OpusEtAl/tools/src/bitapp.c` | `stdio, stdlib, string, bitapp.h`→`stdint.h` | no |
+| `opus_dibapp_tool` | `port/tools/opus_dibapp_tool.cpp` | `cstdint, fstream, iomanip, iostream, string, vector` | no |
+| **`opus_cabi_tool`** | `port/tools/opus_cabi_tool.cpp` | `opus_x64_compat.h`→`<windows.h>`, `sdm.h`, 73 `.hs` | **SÍ** |
+
+Ni `vk.h` ni `opus_host_compat.h` ni `bitapp.h` arrastran `<windows.h>`.
+
+### `opus_cabi_tool` no se mueve
+
+Su salida **es** el ABI del motor: evalúa `sizeof` sobre las estructuras del
+motor a través de `<windows.h>`, p. ej.
+
+```c
+#define cabiCABOPEN Cabi((sizeof(CABOPEN) + sizeof(WORD) - 1) / sizeof(WORD), 1)
+```
+
+con `CABOPEN = { CABH cabh; WORD sab; CHAR **hszFile; int iDirectory; BOOL fReadOnly; }`.
+Medirlo con un compilador distinto del que compila el motor es exactamente el
+error que hay que evitar. Confirmado además que `g++` nativo no lo compila
+siquiera: `fatal error: excpt.h: No existe el fichero o el directorio`.
+
+Hallazgo de Grok Build, registrado por ser evidencia real aunque no concluyente:
+compilándolo con `g++` nativo más `-I/usr/include/wine/windows` se obtienen los
+mismos `sizeof`/macros, tanto en las muestras como en el volcado completo de las
+73 `.hs`. No basta para moverlo: ese probe usa los mismos encabezados que
+consulta `winegcc`, así que no descarta que algo propio del driver (banderas
+implícitas, modelo de convención de llamada, `pragma pack` heredado de
+encabezados no incluidos en el probe mínimo) afecte a estructuras no muestreadas.
+No se apuesta la corrección del ABI a que alguien recuerde el `-I` correcto en
+lugar de usar el compilador diseñado para ello.
+
+### Mecanismo de CMake elegido
+
+`ExternalProject_Add` sobre un `CMakeLists.txt` propio y pequeño en
+`src/port/tools/host/`, configurado con `-DCMAKE_C_COMPILER=gcc`
+`-DCMAKE_CXX_COMPILER=g++` y **sin** toolchain file, más destinos
+`IMPORTED GLOBAL` con los mismos nombres en el proyecto principal. Así los 31
+`$<TARGET_FILE:opus_*_tool>` existentes siguen resolviendo sin tocarse.
+
+Lo único que no sobrevive es `DEPENDS`: ninja no puede resolver un `DEPENDS`
+sobre la `IMPORTED_LOCATION` de un destino importado (`missing and no known
+rule to make it`, reproducido en un proyecto mínimo). Se introducen variables
+`OPUS_<TOOL>_TOOL_DEP`, que valen el nombre del sub-build bajo Winelib y el
+nombre real de cada destino en el resto de casos — de modo que la ruta MSVC
+conserva exactamente las mismas dependencias que antes. Los cuatro bloques
+`add_executable` originales quedan intactos dentro de un `if(NOT
+OPUS_WINELIB_BUILD)`, así que el build de Visual Studio no cambia en absoluto.
+
+Verificado: los cuatro binarios instalados son ELF nativos
+(`ELF 64-bit LSB executable ... interpreter /lib64/ld-linux-x86-64.so.2`), sin
+stub `.exe`, y el `CMakeCache.txt` del sub-build registra `/usr/bin/gcc` y
+`/usr/bin/g++`. Cero apariciones de `winegcc`/`wineg++` en su `build.ninja`.
+
+### Sufijo `.exe`, corregido en el toolchain file
+
+`CMAKE_EXECUTABLE_SUFFIX` queda vacío bajo este toolchain porque
+`CMAKE_SYSTEM_NAME` no es Windows y el build se trata como nativo Linux, de modo
+que `$<TARGET_FILE:>` expandía a una ruta sin sufijo inexistente. Reproducido con
+un destino CMake mínimo, sin nada específico de `cabi`: es una propiedad del
+toolchain, no de un destino. Se fija en `src/cmake/toolchain-winelib.cmake`
+(`CMAKE_EXECUTABLE_SUFFIX`, `_C` y `_CXX`), no por destino ni por custom command.
+
+Efecto lateral observado: con el sufijo fijado, la detección de ABI de CMake pasa
+a reportar «done» en lugar de fallar. No se ha tocado por ello el forzado de
+`CMAKE_SIZEOF_VOID_P`, que puede haber quedado redundante — queda anotado como
+posible limpieza futura, no verificado.
+
+### Dos bugs de convención Windows/Linux encontrados al desbloquear la cadena
+
+1. **Profundidad de ruta relativa.** `src/CMakeLists.txt` pasaba a MKCMD
+   `-s../../../src/Opus/dlg/`, que asume el `binaryDir` del preset de Visual
+   Studio (`out/`). Con `out/<preset>/` hay un nivel más y resolvía a un
+   inexistente `out/src`, con el error `opuscmd.cmd:64: cannot open elx.txt
+   file`. Sustituido por `-s${CMAKE_CURRENT_SOURCE_DIR}/Opus/dlg/`, absoluto y
+   correcto bajo cualquiera de los dos presets.
+
+2. **BITAPP interpreta `/` como switch.** `bitapp.c:59` hace
+   `if (*(rgszArg[cCurArg]) == '/') SetFlag(...)`. En Windows las rutas
+   absolutas empiezan por letra de unidad, así que nunca colisionaba; en Linux
+   una ruta absoluta **es** un `/` inicial, y la herramienta respondía
+   `Invalid Switch on command line`. Corregido **en el llamador**, no en la
+   herramienta: los dos `add_custom_command` que invocan BITAPP pasan ahora
+   rutas relativas al directorio de construcción vía `file(RELATIVE_PATH)`.
+   `OpusEtAl/` queda sin tocar.
+
+### Estado de la cadena tras esta sesión
+
+- `opus_cabi_tool` compila, enlaza y ejecuta. Sus 73 `.hs` generadas son
+  **byte a byte idénticas** a la corrida previa bajo el stub de Wine
+  (`diff -r` limpio), con las mismas muestras: `cabiCABOPEN 268`,
+  `cabiCABABOUT 1824`, `cabiCABPRINT 1068`. El cálculo no dependía del
+  compilador en estas estructuras.
+- `opus_generated_commands` **pasa**. `generated/original/opuscmd.h` se
+  regenera con contenido real: 284 líneas, 14 489 bytes, 275 `#define`, con la
+  cabecera «This file was created by MKCMD!». Junto a él, `IBCM.H` (11 684 B),
+  `RGBCM.H` (2 442 B), `OPUSCMD2.H`, `OPUSMENU.H`, `menuhelp.h` (208 cadenas de
+  ayuda).
+- `opus_original_engine` avanza de 0 a **más de 300 unidades compiladas**, con
+  sólo **2 unidades fallidas y 4 errores reales**. El aluvión de ~345
+  `-Wimplicit-int` **no aparece**, como estaba previsto: el motor sí lleva
+  `-std=gnu89`.
+
+Los errores reales que quedaban en ese momento, y su estado:
+
+1. ~~`Opus/command2.c:1515: fatal error: rgbcm.h: No existe el fichero`~~ —
+   **corregido**, ver «Shim de mayúsculas para cabeceras generadas» abajo.
+2. `generated/lowercase-c/clipbrd2.c`, 3 errores: dos
+   `too many arguments to function 'lpfn'` (líneas 629 y 1204) y un
+   `se requiere un l-valor como operando izquierdo de la asignación` (línea
+   783). Misma familia que los `cast-as-lvalue` ya resueltos en `mkcmd.c` en
+   Fase 1 con `OPUS_POSTINC_READ`/`OPUS_POSTINC_WRITE`. `CLIPBRD2.C` estaba ya
+   en la lista de candidatos LP64/LLP64 a auditar en Fase 5. Toca código
+   restringido (`Opus/`), así que requiere decisión explícita y guardas. **En
+   espera del veredicto de una auditoría paralela; no se toca.**
+
+### Shim de mayúsculas para cabeceras generadas (2026-08-09)
+
+El shim existente sólo cubría cabeceras del árbol fuente. MKCMD **genera**
+`IBCM.H`, `RGBCM.H`, `OPUSCMD2.H` y `OPUSMENU.H` en mayúsculas (y la regla de
+copia de `ibcm.rel` también escribe `IBCM.H`), mientras que `src/Opus/` incluye
+las cuatro en minúsculas. Verificado por grep, no supuesto: `#include "ibcm.h"`,
+`#include "rgbcm.h"`, `#include "opuscmd2.h"`, `#include "opusmenu.h"`.
+
+Sólo `rgbcm.h` había aflorado como error porque `command2.c` fallaba primero;
+corregir únicamente ese par habría desplazado el fallo a la siguiente unidad. Se
+añaden los cuatro.
+
+Detalle de implementación que conviene no perder: estos enlaces apuntan al
+**árbol de construcción**, no al de fuentes, y sus destinos **todavía no existen**
+cuando CMake configura — se crean colgantes y se resuelven cuando MKCMD corre.
+Por eso la comprobación es `IS_SYMLINK` y no `EXISTS`: `EXISTS` sigue el enlace y
+devuelve falso mientras falta el destino, lo que provocaría recrearlo en cada
+reconfiguración. `Opus/` no se toca.
+
+Verificado: `command2.c` compila con **0 errores** (objeto de 124 872 bytes).
+
+> ## ⚠ REGLA DE MEDICIÓN — LEER ANTES DE CONTAR ERRORES
+>
+> **`ninja` usa `-k 1` por omisión y deja de programar trabajo nuevo al primer
+> fallo. Cualquier conteo de errores del motor obtenido sin `-k 0` es falso por
+> defecto y mide hasta dónde llegó ninja, no cuántos errores hay.**
+>
+> Usar **siempre** `ninja -k 0 -C out/linux-winelib-debug opus_original_engine`
+> para medir. En este árbol la diferencia fue 1 error frente a 182: dos órdenes
+> de magnitud. Es un error fácil de repetir y ya se cometió dos veces en esta
+> sesión.
+
+### Corrección de método: los conteos de errores anteriores estaban subestimados
+
+**Todos los conteos de errores del motor reportados antes de este punto son
+falsos por defecto**, y conviene dejarlo escrito para no volver a caer. `ninja`
+usa `-k 1` por omisión: al primer fallo deja de programar trabajo nuevo. Como
+`opus_original_engine` tiene 331 pasos, un fallo temprano oculta todo lo que
+venía después, y el conteo resultante mide *hasta dónde llegó ninja*, no cuántos
+errores hay.
+
+Los números correctos se obtienen con `ninja -k 0`, que sigue hasta agotar el
+grafo. Comparación sobre el mismo árbol:
+
+| Medición | Unidades fallidas | Errores |
+|---|---|---|
+| `ninja` (`-k 1`, por omisión) | 1 | 1 |
+| `ninja -k 0` | **43** | **182** |
+
+La discrepancia se detectó porque `disp1.c` "desapareció" de la lista de fallos
+sin que nada relacionado hubiera cambiado; al forzar su recompilación aislada
+seguía dando sus 14 errores. No era una corrección: ninja simplemente no había
+llegado a compilarlo. **Usar siempre `-k 0` para medir el estado del motor.**
+
+### Estado real del motor (`ninja -k 0`, 2026-08-09)
+
+43 unidades fallidas, 182 errores. Familias dominantes:
+
+| Errores | Familia |
+|---|---|
+| 90 | `el elemento inicializador no es calculable al momento de la carga` — todos en `Opus/keys.h:287+` |
+| 24 | `se requiere un l-valor como operando izquierdo de la asignación` (cast-as-lvalue) |
+| 12 | `se requiere un l-valor como un operando de incremento` (cast-as-lvalue) |
+| 10 | `declaración static de X después de una declaración que no es static` |
+| 9 + 4 | `conflicting types for X` |
+| 5 | `el argumento X no coincide con el prototipo` |
+| 5 | `invalid operands to binary -` |
+| 4 + 3 | `too many arguments to function X; expected 0` (misma familia FARPROC que la ya corregida) |
+
+Concentración por archivo, cabeceras incluidas: `keys.h` 90, `disp1.c` 14,
+`elcore.c` 6, `style.c` 6, `spell.c` 5, `sdmparse.h` 4, `eldde.c` 4, y una cola
+larga de 1–3 errores en ~35 archivos más.
+
+Esto no invalida nada de lo ya corregido —cada corrección se verificó
+individualmente y sigue en pie— pero sí redimensiona lo que queda: el motor no
+estaba a 4 ni a 17 errores de compilar.
+
+### Estado del motor tras el shim de cabeceras generadas (medición antigua, `-k 1`)
+
+`ninja opus_original_engine`: **2 unidades fallidas, 17 errores**, todos de la
+misma familia `cast-as-lvalue` / puntero a función K&R, y todos en código
+restringido `Opus/`:
+
+- `generated/lowercase-c/clipbrd2.c` — 3 errores (629, 783, 1204).
+- `Opus/disp1.c` — 14 errores (798, 799, 800, 852, 904, 959, 974, 1045, 1046,
+  1072, 1073, 1249, 1250, 1722), casi todos
+  `se requiere un l-valor como operando izquierdo de la asignación`, más un
+  `se requiere un l-valor como un operando de incremento` en la 800.
+
+`disp1.c` aparece ahora porque el shim desbloqueó las unidades que se compilaban
+antes que ella; es un hallazgo nuevo, no una regresión. Pertenece a la misma
+familia que `clipbrd2.c` y al mismo conjunto restringido, así que **queda igual a
+la espera de la auditoría paralela**: no se le escribe ninguna guarda todavía.
+
+### Llamadas a FARPROC por ordinal en CLIPBRD2.C (autorizado, corregido)
+
+`CLIPBRD2.C` alcanza `CreateDIBitmap` (L629) y `GetDIBits` (L1204) por ordinal a
+través de `GetProcAddress`, sin enlazarlas, porque Opus todavía tenía que correr
+bajo Windows 2 — el motivo está escrito por Microsoft en ambos sitios de llamada.
+El `FARPROC` de MSVC es un `int (WINAPI *)()` sin prototipo, así que llamarlo con
+argumentos reales compila y los pasa. El de Wine tiene prototipo estricto
+`INT_PTR (WINAPI *)(void)`, de ahí
+`too many arguments to function 'lpfn'; expected 0, have 6/7`; y su retorno
+`INT_PTR` además estrecharía implícitamente a `HBITMAP` (L629) y a `int` (L1204).
+
+Corregido **sin tocar la lista de argumentos ni la intención de la llamada**:
+`typedef` locales con la firma real de cada API, y macros que castean `lpfn` a
+ese tipo antes de llamar, cubriendo argumentos **y** tipo de retorno. La rama
+`#else` expande exactamente a la expresión original `(*(lpfn))`, de modo que el
+build MSVC no cambia.
+
+```c
+typedef HBITMAP (WINAPI *OPUS_PFN_CREATEDIBITMAP)(
+	HDC, const BITMAPINFOHEADER *, DWORD, const void *,
+	const BITMAPINFO *, UINT);
+typedef int (WINAPI *OPUS_PFN_GETDIBITS)(
+	HDC, HBITMAP, UINT, UINT, LPVOID, LPBITMAPINFO, UINT);
+```
+
+Guardadas con `#if defined(__GNUC__) && !defined(_MSC_VER)`, según lo
+autorizado.
+
+**Por qué locales a `CLIPBRD2.C` y no en `port/original/opus_x64_compat.h`:** se
+intentó primero en el encabezado compartido y **rompió `CREATE2.C`**
+(`nombre de tipo 'BITMAPINFOHEADER' desconocido`). Varias unidades de traducción
+de Opus se compilan contra un encabezado de Windows reducido —`CREATE2.C` define
+`NOHDC`, `NOBRUSH`, `NOCOLOR`, `NORASTEROPS`…— donde los tipos GDI no existen.
+Un `typedef` que los nombre no puede vivir en un encabezado que ven todas. La
+opción de `typedef` local estaba explícitamente autorizada y es además la
+correcta aquí. El intento fallido queda registrado por ser justamente la clase de
+regresión que un conteo parcial habría ocultado.
+
+Verificado: los dos errores `too many arguments` desaparecen. `clipbrd2.c` baja
+de 3 errores a 1, y el que queda es exactamente el reservado a la auditoría
+paralela (`CbFromChrm()`, ahora en la línea 812 tras la inserción de las
+guardas, antes 783). `command2.c` sigue compilando con 0 errores.
+
+### Presets de Visual Studio: verificación explícita
+
+Requisito pendiente desde el enunciado de Fase 2. `CMakePresets.json` parsea como
+JSON válido y contiene los seis presets (`x64`, `x64-debug`, `x64-release`,
+`linux-winelib`, `linux-winelib-debug`, `linux-winelib-release`). El `git diff`
+del archivo es **sólo altas**: ninguna línea de los presets `x64` fue eliminada ni
+modificada. `cmake --list-presets` en Linux muestra únicamente los dos presets
+Linux porque el generador «Visual Studio 17 2022» no existe en esta plataforma;
+no es una regresión introducida aquí.
+
+---
+
 ## Apéndice: qué no está en el árbol
 
 Para evitar que se busque lo que no existe:
@@ -849,3 +1445,987 @@ Para evitar que se busque lo que no existe:
 - Archivos `.dlg` — ninguno en todo el repositorio
 - El ejecutable del Dialog Editor que convertía `.des` → `.elx`
 - DIBAPP original de Microsoft (sustituido por `port/tools/opus_dibapp_tool.cpp`)
+
+---
+
+## Triage estructurado de los 182 errores del motor (2026-08-09)
+
+Mapa previo a cualquier corrección. **No se propone ni se aplica ningún fix
+aquí.** Medido con `ninja -k 0`; 43 unidades fallidas, 182 errores.
+
+### Familia 1 — `initializer element is not computable at load time` (90 errores)
+
+Todos en `Opus/keys.h`, expandidos desde macros de tabla de teclado hacia los
+`.c` que las instancian (`iconbar3.c:710` es un sitio de expansión típico).
+
+Sitio representativo, `Opus/keys.h:287`, expandido en
+`Opus/iconbar3.c:710` dentro de `csconst KME rgKmeHdrIconBar[]`:
+
+```c
+#define rgKmeHdrIBDef \
+	{ kcTab,	ktFunc, IBTab },		\
+	{ kcReturn,	ktFunc, IBReturn    },		\
+	...
+```
+
+Con `KME` definido en `Opus/wordwin.h:451`:
+
+```c
+typedef struct _kme
+	{
+	unsigned kc : 12;
+	unsigned kt : 3;
+	union {
+		int w;		/* generic */
+		BCM bcm;	/* ktMacro */
+		...
+		PFN pfn;	/* ktFunc */
+		...
+		};
+	} KME;
+```
+
+**Qué es exactamente.** El inicializador por llaves de C89 sin designadores
+inicializa **el primer miembro de la unión**, que es `int w`. Las filas
+`ktFunc` pasan ahí un puntero a función (`IBTab`, de tipo `void (*)()`). GCC lo
+dice en dos pasos, y el primero es el diagnóstico revelador:
+
+```
+warning: la inicialización de ‘int’ desde ‘void (*)()’ crea un entero desde un
+         puntero sin una conversión [-Wint-conversion]
+note: (cerca de la inicialización de ‘rgKmeHdrIconBar[0].<anónimo>.w’)
+error: el elemento inicializador no es calculable al momento de la carga
+```
+
+**Respuesta a la pregunta planteada: no es inicialización diferida en runtime, y
+no es un guard de compatibilidad.** La tabla es `csconst`, está ordenada por
+`kc` para búsqueda y se consume como dato constante; su intención siempre fue
+ser de tiempo de carga. Lo que falla es el tamaño del puntero: en Win16 un
+puntero a función *near* medía 16 bits y cabía en el miembro entero de la unión;
+en Win32 medía 32 bits y seguía cabiendo en `int`, así que MSVC lo aceptaba como
+constante de tiempo de carga. En x86-64 el puntero mide 64 bits, no cabe en
+`int`, y la dirección deja de ser una constante calculable en tiempo de carga
+para ese miembro. Es por tanto **la misma clase de defecto LP64/LLP64 que ya
+rompió `BITAPP` en Fase 1** (`bitapp.h:29`), no una variante sintáctica.
+
+**Homogeneidad: total, verificada, no estimada.** De las 90 líneas de `keys.h`
+que producen error, **90 son filas `ktFunc` y 0 son filas `ktMacro`**
+(comprobado extrayendo cada número de línea del log y clasificándolo contra el
+fuente). El criterio de discriminación es directo y barato: **las filas
+`ktMacro` inicializan el miembro entero con un `bcm`, que es un entero y no da
+error; sólo las `ktFunc` meten un puntero a función.** Es decir, la familia es
+mecánica y de un solo patrón, y la propia etiqueta `kt` de cada fila dice a qué
+grupo pertenece sin necesidad de mirar nada más.
+
+### Familia 2 — cast-as-lvalue (24 asignación + 12 incremento = 36 errores)
+
+Sitio representativo, `Opus/disp1.c:798-800`:
+
+```c
+			(char *) pchr = (char *)*vhgrpchr + bchrCur;
+			(char *) pchp = (char *)*vhgrpchr + bchpCur;
+			((struct CHRT *)pchr)++;
+```
+
+Extensión de MSVC (cast como lvalue) que GCC nunca aceptó. Misma familia que los
+cinco sitios ya resueltos en `mkcmd.c` en Fase 1 con
+`OPUS_POSTINC_READ`/`OPUS_POSTINC_WRITE`.
+
+**Homogeneidad: sintácticamente uniforme, semánticamente NO.** El síntoma es
+idéntico en los 36 sitios, pero ya hay constancia de que la causa difiere:
+`clipbrd2.c:812` se confirmó que necesita `CbFromChrm()` y no una guarda
+sintáctica. `disp1.c` opera sobre el mismo walk de `vhgrpchr` bajo el modelo de
+tags `OPUS_X64`.
+
+**Criterio rápido para separarlos:** mirar el operando, no la forma. Si el cast
+es a un tipo del mismo ancho y el puntero recorre un buffer plano, es
+mecánico. **Si el cast interviene en aritmética sobre `vhgrpchr` o sobre
+cualquier estructura cuyo tamaño cambie entre el modelo de 16 bits y
+`OPUS_X64`** —`CHRT`, `CHP`, `CHR`— entonces el avance en bytes ya no coincide
+con `sizeof` y hace falta la función de conversión de tamaño, no una macro. Los
+sitios de `disp1.c` y `clipbrd2.c` caen en el segundo grupo por construcción.
+
+### Familia 3 — `static declaration after non-static declaration` (10 errores)
+
+Sitio representativo, `Opus/initwin.c`:
+
+```c
+/* uso en la línea 807, antes de cualquier prototipo */
+	if (!FRegisterWnd ())
+...
+/* definición en la línea 948 */
+STATIC BOOL NEAR FRegisterWnd()
+```
+
+Diagnóstico de GCC: `previous implicit declaration of 'FRegisterWnd' with type
+'int()'`. C89 crea una declaración implícita `extern int()` en el punto de uso;
+la definición posterior la contradice al ser `static`.
+
+**Homogeneidad: alta, mecánica.** Es un artefacto puro de C K&R (usar antes de
+declarar), sin componente de ABI ni de ancho de tipo. Los 10 sitios están
+concentrados en 5 archivos: `initwin.c` (2), `spell.c` (5), `syschg.c` (2),
+`wwact.c` (1).
+
+**Criterio rápido:** si la nota de GCC dice `previous implicit declaration`, es
+este caso y es mecánico. Si en cambio señala una declaración **explícita** en
+una cabecera, entonces hay dos declaraciones reales en desacuerdo y pertenece
+en realidad a la Familia 4.
+
+### Familia 4 — `conflicting types` (13 errores)
+
+Sitio representativo, `Opus/ourmath.h:126` contra `Opus/el.h:32`:
+
+```c
+/* ourmath.h:126 */
+LONG LWholeFromNum ();
+/* el.h:32 */
+long LWholeFromNum();
+```
+
+GCC: `have 'LONG()' {también conocido como 'int()'}` frente a
+`previous declaration ... with type 'long int()'`.
+
+**Esta es la familia LP64/LLP64 pura**, la que el plan de Fase 5 anticipaba:
+bajo el modelo Windows `LONG` es de 32 bits (`int`), mientras que `long` en
+Linux LP64 es de 64. En Windows ambas grafías coincidían y el desacuerdo era
+invisible.
+
+**Homogeneidad: media — hay que mirar cada una.** El síntoma agrupa dos causas
+distintas: (a) desacuerdo real `LONG`/`long` por LP64, y (b) declaraciones K&R
+sin prototipo que chocan con un prototipo posterior (p. ej. `HeliNew`, que
+aparece en tres archivos distintos, y `RtError` dos veces en `elinit.c`).
+
+**Criterio rápido:** si los dos tipos en conflicto son `LONG`/`long`,
+`DWORD`/`unsigned long` o equivalentes de ancho, es LP64 y se trata como
+`bitapp.h:29`. Si difieren en número o tipo de **argumentos**, es K&R contra
+prototipo y es otra cosa. Sitios: `HeliNew` ×3, `RtError` ×2, `LWholeFromNum`,
+`FDlgAbout`, `CpNextVisiInOutline`, `CpFirstNonBlank`, `FHelp`, `MathError`,
+`OurSetCursor`.
+
+### Familia 5 — FARPROC llamado con argumentos (7 errores restantes)
+
+Misma familia ya corregida en `CLIPBRD2.C` (L629/L1204): `FARPROC` de Wine tiene
+prototipo estricto `INT_PTR (WINAPI *)(void)`.
+
+Sitios restantes, todos con nombre de variable revelador del API destino:
+
+| Archivo | Línea | Variable |
+|---|---|---|
+| `dlgmisc.c` | 2337 | `lpfnSetSpeed` |
+| `eldde.c` | 1289, 1295, 1299 | `lpfn` |
+| `filecvt.c` | 506 | `lpfnInitConvtr` |
+| `grspec.c` | 1424, 1586 | `lpfnGetInfo`, `lpfnReadPict` |
+| `print2.c` | 1479 | `lpfnDevMode` |
+| `quit.c` | 359 | `lpfn` |
+
+**Homogeneidad: uniforme en mecanismo, individual en firma.** Todos requieren
+exactamente el mismo tratamiento aplicado en `CLIPBRD2.C` —typedef con la firma
+real y cast antes de llamar, cubriendo argumentos y retorno— pero **la firma hay
+que averiguarla caso por caso**, y no todas son APIs públicas de Windows:
+`lpfnInitConvtr`, `lpfnGetInfo` y `lpfnReadPict` apuntan a DLLs de conversión y
+de filtros gráficos propias de Word, cuyo contrato hay que leer en el código.
+
+**Criterio rápido:** si el `GetProcAddress` que produce el `lpfn` resuelve contra
+`GDI`/`USER`/`KERNEL`, la firma está en el SDK. Si resuelve contra una DLL de
+Word (conversores, filtros), la firma hay que deducirla del propio árbol.
+
+### Cola larga — conteo por archivo
+
+`keys.h` 90 · `disp1.c` 14 · `style.c` 6 · `elcore.c` 6 · `spell.c` 5 ·
+`sdmparse.h` 4 · `eldde.c` 4 · `ffread.c` 3 · `elsubs2.c` 3 · `syschg.c` 2 ·
+`select.c` 2 · `print2.c` 2 · `ourmath.h` 2 · `opus_asm_filewin.cpp` 2 ·
+`inssubs.c` 2 · `initwin.c` 2 · `grspec.c` 2 · `exp.c` 2 · `etcmd.c` 2 ·
+`elinit.c` 2 · `dialog3.c` 2 · `dialog2.c` 2 · `wwact.c` 1 · `wproc.c` 1 ·
+`tabs.c` 1 · `spelcore.c` 1 · `sdm.h` 1 · `raremsg.c` 1 · `quit.c` 1 ·
+`pagevw.c` 1 · `opus_asm_misc.cpp` 1 · `opus_asm_file2.cpp` 1 · `mathapi.c` 1 ·
+`help.c` 1 · `formula.c` 1 · `format.c` 1 · `filecvt.c` 1 · `fieldcr.c` 1 ·
+`elxprocs.c` 1 · `edmacro.c` 1 · `dlgmisc.c` 1 · `clipbrd2.c` 1 ·
+`about.sdm` 1
+
+Nota: `opus_asm_file2.cpp`, `opus_asm_filewin.cpp` y `opus_asm_misc.cpp` están
+en `src/port/`, no en código restringido. `about.sdm` y `sdmparse.h`/`sdm.h`
+pertenecen a la capa SDM.
+
+---
+
+## Ronda de correcciones cast-as-lvalue y LP64 (2026-08-09)
+
+Medido siempre con `ninja -k 0`. **182 → 141 errores**, 43 → 30 unidades
+fallidas.
+
+### `src/port/` — 4 errores, tres causas distintas
+
+- `opus_asm_filewin.cpp` (2): `std::size` vive en `<iterator>`; MSVC lo
+  arrastra transitivamente, libstdc++ no. Misma clase que el `<cstdint>` que
+  faltaba en `opus_x64_runtime_test.cpp`.
+- `opus_asm_misc.cpp` (1): su `index()` chocaba con el `index()` de POSIX que
+  glibc declara en `<strings.h>` (alcanzado vía `<windows.h>` → `<string.h>`)
+  con distinta constancia del parámetro y enlace C. La semántica es idéntica,
+  así que en este toolchain se usa el del sistema y la traducción se omite;
+  MSVC, que no tiene `index()`, conserva la definición.
+- `opus_asm_file2.cpp` (1): `<direct.h>` es un encabezado del CRT de MSVC sin
+  equivalente aquí. Sólo usaba `_getdcwd` y `_chdir`, sustituidos por
+  `GetCurrentDirectoryA`/`GetFullPathNameA` y `SetCurrentDirectoryA` — que es
+  lo que el resto del archivo ya usaba (`GetFileAttributesA`,
+  `CreateDirectoryA`).
+
+### Familia cast-as-lvalue — 36 → 2
+
+`disp1.c` (14) y los 21 restantes reescritos al mismo patrón: se saca el cast
+del lado izquierdo y el resultado se asigna directo, con el tipo real de la
+variable.
+
+```c
+/* antes */                          /* después */
+(char *) pchr = (char *)*vhgrpchr + bchrCur;
+                                     pchr = (struct CHR *)((char *)*vhgrpchr + bchrCur);
+(char *)pchr += cbCHRV;              pchr = (struct CHR *)((char *)pchr + cbCHRV);
+((struct CHRT *)pchr)++;             pchr = (struct CHR *)((struct CHRT *)pchr + 1);
+*((int *) pb)++ = 0;                 *(int *) pb = 0;
+                                     pb = (CHAR *)((int *) pb + 1);
+```
+
+**Sin guardas de preprocesador, deliberadamente.** La reescritura es C
+estándar y compila igual bajo MSVC; envolver 34 sitios en `#if/#else`
+duplicaría el código y dejaría la forma no estándar viva en la rama MSVC. Se
+deja constancia aquí por ser una desviación de la pauta general de guardas.
+
+Casos que no eran aritmética de punteros y se trataron aparte:
+
+- `etcmd.c:221,222`, `spelcore.c:157`: el cast `(int)` era redundante sobre un
+  campo ya entero (`int uSynList`, `unsigned uSplMMSuggList`); se asigna
+  directo al campo.
+- `tabs.c:213`: `vptdsd` es la macro `((TDSD *) pcmb->pv)`; se asigna directo a
+  `pcmb->pv`, que es el campo real (`void *`).
+- `inssubs.c:1687`: **el cast sí cumplía una función.** `w` es `int`, y
+  `(uns)w >>= 1` fuerza un desplazamiento *lógico*; sin él, un `w` negativo
+  daría desplazamiento aritmético y el bucle `for (isprm = 0; w != 0; ...)` no
+  terminaría. Reescrito como `w = (int)((uns)w >> 1)`, preservando la
+  semántica sin recurrir al cast como lvalue.
+
+Quedan 2, ambos reservados: `clipbrd2.c:812` (pendiente de `CbFromChrm()`) y
+`exp.c:1498` (ver abajo).
+
+### `LWholeFromNum` — corrección de una premisa
+
+El criterio recibido situaba la definición real en `el.h:32`. **`el.h:32` es
+una declaración, no la definición**: hay cuatro declaraciones (`el.h:32`,
+`ourmath.h`, `elfile.c:1053`, `elmisc.c:20`, más una local en `exp.c:1495`),
+todas `long`, y **la definición está en `mathapi.c:1001`, declarada `LONG`** —
+es decir, la desviada era la definición, no sólo la declaración vieja.
+
+Aplicado el criterio dado (prevalece el ancho mayor; truncar a 32 bits
+perdería resultados legítimos del intérprete): `ourmath.h` y `mathapi.c` pasan
+a `long`. La variable local que la función devuelve ya era `long`.
+
+### `FHelp` — verificado seguro y aplicado
+
+El conflicto no era con una declaración de cabecera sino con una **declaración
+implícita**: `help.c:211` la llama antes de definirla en `help.c:316`.
+
+Sobre el ancho del segundo parámetro, verificado en los consumidores como se
+pidió: sólo hay dos sitios de llamada, ambos en `help.c`
+(`FHelp(cmd, (LONG) cxt)` y `FHelp(cmdQuit, 0L)`), ambos pasan valores
+numéricos pequeños, sin unión, sin cast a un tipo más angosto y sin aritmética
+de bits sobre el valor. Y hacia dentro, `FHelp` pasa `ulData` a `HFill`, que
+**lo castea a `LPSTR`** (`CchLpszLen((LPSTR)ulData)`,
+`CchCopyLpsz(..., (LPSTR)ulData)`): en esa rama el valor es un puntero, así que
+en este destino **tiene que ser de ancho de puntero**. `unsigned long` (8
+bytes) es por tanto lo correcto, no un problema a corregir. Añadido el
+prototipo adelantado que coincide con la definición.
+
+### `exp.c:1498` — DETENIDO, es un (b) real, no un (a)
+
+```c
+	*((long *) pwArgs)++ = LWholeFromNum(&numT, TRUE);
+```
+
+Verificado el consumidor antes de tocar nada, como se pidió. La cadena es:
+
+```c
+	int  rgwArgs [celpMax];       /* exp.c:1427 */
+	int *pwArgs = rgwArgs;        /* exp.c:1456 */
+	...
+	cwArgs = pwArgs - rgwArgs;    /* exp.c:1536 -- cuenta en unidades de int */
+	lT = LPushMacroArgs(hpdkd->lppasproc, rgwArgs, cwArgs);
+```
+
+Y el lector, en `port/original/opus_asm_misc.cpp:80`, **pasa cada `int` del
+arreglo como un parámetro independiente**:
+
+```cpp
+template <std::size_t... Index>
+long invoke_macro(void* procedure, const int* arguments,
+                  std::index_sequence<Index...>) {
+    using Procedure = long(__cdecl*)(std::conditional_t<true, int, ...>...);
+    return reinterpret_cast<Procedure>(procedure)(arguments[Index]...);
+}
+```
+
+Es decir: el lector **asume una ranura de un `int` por argumento** y construye
+la firma de la llamada a partir de `cwArgs`. No reensambla un `long` a partir
+de dos ranuras consecutivas.
+
+Consecuencia: históricamente (`long` de 4 bytes) esta escritura ocupaba **una**
+ranura y `cwArgs` crecía en 1, de modo que el procedimiento del lenguaje de
+macros recibía un parámetro. Aquí `long` mide 8 bytes: ocupa **dos** ranuras,
+`cwArgs` crece en 2, y el lector genera una llamada con **dos parámetros
+`int`** en lugar de uno. Compila limpio y rompe la ABI de invocación.
+
+**No se ha tocado.** Mover el cast sin más cambiaría el error de compilación
+por una llamada mal formada en ejecución. La decisión pendiente es si el
+empaquetado debe seguir usando ranuras de 32 bits (y entonces esta escritura
+ha de partir el valor, o el arreglo dejar de ser de `int`), o si el lector debe
+aprender anchos por argumento.
+
+
+---
+
+## Sesión Grok Build (2026-08-09) — ejecución motor
+
+Medido siempre con `ninja -k 0 -C out/linux-winelib-debug opus_original_engine`.
+
+### Reconciliación inicial (git, no el documento)
+
+- **No** había proceso Claude/ninja paralelo sobre el build tree.
+- Baseline al arrancar esta sesión: **141 errores**, 30 unidades fallidas.
+- Los siete conflicting-types autorizados al cierre de la sesión Claude
+  (**HeliNew ×3, RtError ×2, FDlgAbout, CpNextVisiInOutline, CpFirstNonBlank,
+  MathError, OurSetCursor**) **no** estaban en el árbol: `git diff` no los
+  mostraba; el log de ninja sí los listaba. (Sí estaban aplicados
+  `LWholeFromNum`, `FHelp`, cast-as-lvalue 34/36, port/ y CLIPBRD2 FARPROC.)
+
+### 1. Siete conflicting-types — aplicados (141 → 131)
+
+Patrón: `#if defined(__GNUC__) && !defined(_MSC_VER)`; LP64 o K&R-vs-prototipo.
+
+| Símbolo | Sitio | Fix |
+|---|---|---|
+| HeliNew ×3 | `elsubs2.c:569`, `edmacro.c:1748`, `eldde.c:1432` | Omitir `extern ELI ** HeliNew();` bajo GCC (`el.h:653` ya prototipa) |
+| RtError ×2 | `interp/elinit.c:34`, definición ~422 | Omitir redecl K&R; definición en forma prototipo `VOID RtError(RERR)` |
+| FDlgAbout | `help.h:229` (bajo `NOABOUT`) | Forma prototipo que coincide con `about.sdm` |
+| CpNextVisiInOutline | `fieldcr.c` | Forward `HANDNATIVE CP ...(int,int,CP)` fuera de solo-DEBUG |
+| CpFirstNonBlank | `formula.c` | Forward `NATIVE CP ...(int,CP)` |
+| MathError | `mathapi.c` | Forward `EXPORT FAR PASCAL MathError(int)` |
+| OurSetCursor | `wproc.c` | Forward `EXPORT PASCAL OurSetCursor(HCURSOR)` |
+
+Verificado: esas 10 menciones dejan de aparecer en el log; **131 errores**.
+
+### 2. Familia 1 — `keys.h` / KME (131 → 41)
+
+Raíz en `wordwin.h` unión de `KME`, no en cada fila de `keys.h`.
+
+```c
+/* wordwin.h, primer miembro de la unión */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+long w;   /* pointer-width en LP64 */
+#else
+int w;
+#endif
+```
+
+Las 90 filas `ktFunc` inicializan el **primer** miembro de la unión con un
+puntero a función. Con `int` (32 bits) GCC rechaza la constante de carga; con
+`long` (64 bits en LP64) las 90 desaparecen de un golpe. Las filas `ktMacro`
+siguen cargando un entero en los bits bajos (LE). MSVC conserva `int`.
+
+**Nota de tamaño:** `cwKME` / `sizeof(KME)` crecen bajo este toolchain. La
+asignación en memoria vía `HAllocateCw(... * cwKME)` se actualiza sola. La
+serialización a fichero (`openrare.c` y afines) es tema de Fase 5 / LP64, no
+de esta ronda.
+
+Verificado: 0 errores `keys.h` / «inicializador no calculable»; **41 errores**.
+
+### 3. Familia 3 — static después de no-static (10)
+
+Forwards `static`/`STATIC` antes del primer uso, tras includes que definen
+`STATIC` (`debug.h`):
+
+- `initwin.c`: `FRegisterWnd`, `FRegisterWinInfo`
+- `SYSCHG.C`: `GetAMPMFromProfile`, `FInvalidCharSetting`
+- `SPELL.C`: `FUpdateDictOK`, `FUserDictOK`, `FTryDict`, `FCreateDict`, `SpellDllFree`
+- `wwact.c`: `BSBPwwd`
+- `elsubs2.c`: `void ModeError(void)` a nivel de archivo (la decl. de bloque en
+  ~243 sale de alcance y la llamada en ~593 inventaba `int ModeError()`)
+
+### 4. Familia 5 — FARPROC restantes (9)
+
+Mismo patrón que `CLIPBRD2.C`: `typedef` + macro de cast local, guardas GCC.
+
+| Archivo | Variable / API | Firma usada en el cast |
+|---|---|---|
+| `dlgmisc.c` | `lpfnSetSpeed` (KEYBOARD ordinal) | `void (WINAPI *)(int)` |
+| `print2.c` | `lpfnDevMode` (driver) | `int (WINAPI *)(HWND, HANDLE, LPSTR, LPSTR)` |
+| `eldde.c` | Alloc/PrestoChango/FreeSelector (KERNEL) | `(HANDLE)`, `(HANDLE,HANDLE)`, `(HANDLE)` |
+| `filecvt.c` | `INITCONVERTER` | `HANDLE (WINAPI *)(HANDLE, HWND)` |
+| `GRSPEC.C` | GetInfo / ReadPict (filtros) | 4 args cada uno; typedefs a **ámbito de archivo** |
+| `quit.c` | ExitWindows V3 (USER) | `void (WINAPI *)(LPSTR)` |
+
+### 5. SDM prototipos WORD vs int (Familia 4 residual)
+
+- `lib/sdmparse.h`: `WParseIntRange` / `WParseOptRange` — últimos bounds pasan a
+  `int` bajo GCC (coinciden con `dialog2.c` / `dialog3.c`; signed necesario
+  para `wNinch`).
+- `lib/sdm.h`: `FRetrySdmError` primer arg `int` bajo GCC (`raremsg.c`).
+
+Tras 3–5: **41 → 11 errores**, 6 unidades fallidas.
+
+### 6. Lo que NO se tocó (restricción + decisión pendiente)
+
+**Reservados (cast-as-lvalue):**
+
+- `CLIPBRD2.C:812` — `(char *)pchr += pchr->chrm`; pendiente de `CbFromChrm()`
+  (auditoría previa).
+- `interp/exp.c:1498` — **no tocado**; ver recomendación abajo.
+
+**Familia nueva — resta de punteros incompatibles (9 errores), NO aplicada.**
+
+GCC exige operandos de tipo puntero compatible; MSVC era laxo. No hay patrón
+autorizado caso por caso. Sitios:
+
+| Archivo | Línea | Operandos |
+|---|---|---|
+| `interp/elcore.c` | 1358, 1359, 1395, 1422, 1425, 1469 | `char *` ↔ `BYTE *` (`Global(rgchBuf)`) |
+| `elxprocs.c` | 89 | `int *` − `const unsigned *` (`mpelkistName`) — ya citado en plan Fase 0/3 |
+| `wordtech/inssubs.c` | 652 | `char *` − `struct FKP *` |
+| `wordtech/pagevw.c` | 1380 | `struct DR *` − `char *` (`PInPl`) |
+
+Fix mecánico probable (pendiente de autorización): castear ambos lados a
+`char *` (o al tipo del array) antes de restar. **No aplicado en esta sesión.**
+
+### 7. Recomendación `exp.c:1498` (propuesta, no ejecución)
+
+Contexto ya cerrado en la sesión Claude: el escritor empaqueta un `long` (8 B)
+en `int rgwArgs[]` y avanza `pwArgs` dos ranuras; el lector
+`invoke_macro` en `port/original/opus_asm_misc.cpp:80` pasa **una ranura `int`
+por argumento**.
+
+| Opción | Qué cambia | Trade-off |
+|---|---|---|
+| **(a) Escritor parte el long** | En `exp.c` (o wrapper en port), escribir el valor como dos `int` de 32 bits (p. ej. lo/hi) y avanzar `pwArgs` en +2 de forma explícita y documentada; `cwArgs` sigue contando ranuras `int`. `invoke_macro` **no cambia**. | Toca `src/Opus/interp/exp.c` (restringido) → necesita autorización de caso. Preserva la ABI del lector y el modelo «todo es ranura int» del intérprete Win16/Win32. Hay que fijar endianness de las dos mitades y revisar si hay **otros** empaquetados `long`/`NUM` en el mismo arreglo. Runtime-correcto si el callee histórico recibía un solo `long` de 32 bits: en ese caso partir a dos `int` **rompe** al callee a menos que el callee también espere dos words (modelo Win16 de long en dos words). En Win32 un `long` era **una** ranura de 32 bits; aquí el bug es que 8 bytes ocupan dos ranuras de `int` y el contador miente. La variante (a) correcta para ABI Win32 es: **almacenar el valor en 32 bits** (truncar o `LONG`) en **una** ranura y avanzar +1 — no partir en dos. |
+| **(b) Lector con anchos por argumento** | Extender `LPushMacroArgs` / `invoke_macro` para conocer el layout de cada argumento (int vs long/pointer) y reensamblar. | Cambia solo `src/port/` (preferible por política de árbol). Más trabajo: hace falta la firma real de cada `lppasproc` (tabla de macros / EL). Más correcto a largo plazo si hay varios anchos, pero no hay tabla de anchos hoy. |
+
+**Recomendación:** preferir una variante de **(a) orientada a ABI Win32 de una ranura**: escribir
+`*(LONG *)pwArgs = (LONG)LWholeFromNum(...); pwArgs += 1;` (o equivalente sin
+cast-as-lvalue), de modo que `cwArgs` crezca en 1 y el lector siga pasando un
+`int`/`LONG` de 32 bits por parámetro de valor entero del lenguaje de macros.
+Eso reproduce el ancho histórico del valor (32 bits), no el `long` LP64 de 64.
+Si algún callee necesita 64 bits de verdad, entonces **(b)** o ranuras
+etiquetadas.
+
+**No ejecutar** hasta autorización explícita sobre `exp.c` (y confirmación de
+que los enteros del lenguaje de macros siguen siendo 32 bits).
+
+### Conteo de cierre (ninja -k 0)
+
+| Momento | Errores | Unidades fallidas |
+|---|---|---|
+| Inicio sesión Grok | 141 | 30 |
+| Tras 7 conflicting-types | 131 | — |
+| Tras KME/`keys.h` | 41 | — |
+| Tras static + FARPROC + SDM | **11** | **6** |
+
+Las 6 unidades: `clipbrd2.c`, `elxprocs.c`, `elcore.c`, `exp.c`, `inssubs.c`,
+`pagevw.c`.
+
+## Estado al cierre de sesión (2026-08-09, Grok Build)
+
+- **Aplicado y verificado con diff + `ninja -k 0`:** 7 conflicting-types;
+  KME `long w` (90 de keys.h); 10 static-after-non-static + ModeError; 9
+  FARPROC; prototipos SDM int. Motor: **141 → 11** errores.
+- **Decisión abierta:** `exp.c:1498` — recomendación arriba (preferir escritura
+  en una ranura `LONG` de 32 bits + avance +1; alternativa (b) en port si hay
+  anchos mixtos). No tocado.
+- **Familia nueva sin autorización:** 9× resta de punteros incompatibles
+  (`elcore`, `elxprocs`, `inssubs`, `pagevw`). Documentada; no aplicada.
+- **Reservados previos:** `clipbrd2.c:812` (`CbFromChrm`).
+- **Dónde retomar:** (1) autorizar y aplicar casteo mecánico en las 9 restas;
+  (2) autorizar `exp.c:1498` o el arreglo en `opus_asm_misc.cpp`; (3)
+  `CbFromChrm` para clipbrd2. Tras eso, `ninja -k 0` debería poder cerrar el
+  motor. Sin commit.
+
+
+---
+
+## Sesión Grok Build #2 (2026-08-09)
+
+Medido siempre con `ninja -k 0 -C out/linux-winelib-debug opus_original_engine`.
+Sin commit. `exp.c:1498` y `clipbrd2.c:812` no tocados.
+
+### 1. Nueve restas de punteros — autorizadas y aplicadas (11 → 2)
+
+Baseline al arrancar: **11 errores**, 6 TUs. Tras el fix: **2 errores**, 2 TUs
+(`clipbrd2.c:812`, `exp.c:1498`). Cero `invalid operands to binary -`.
+
+Cada sitio verificado en el árbol antes del cast (no se asumió un tipo único):
+
+| Sitio | Operandos reales | Cast bajo `__GNUC__ && !_MSC_VER` |
+|---|---|---|
+| `interp/elcore.c` 1358, 1359, 1422, 1425, 1469 | `char *` − `BYTE *` (`Global(rgchBuf)` es `BYTE rgchBuf[cchTokenBuf]` en `priv.h:219`) | segundo operando → `(char *)Global(rgchBuf)` |
+| `interp/elcore.c` 1395 | `BYTE *` (`&Global(rgchBuf)[cchTokenBuf]`) − `char *pchBufStart` | primer operando → `(char *)&Global(rgchBuf)[cchTokenBuf]` |
+| `elxprocs.c:89` | `int far *pist` − `csconst unsigned mpelkistName[]` (elxinfo.h) | base → `(int far *)mpelkistName` (elemento 4 B en ambos) |
+| `wordtech/inssubs.c:652` | `char HUGE *hpch` − `struct FKP HUGE *hpfkp` | base → `(char HUGE *)hpfkp` (offset en bytes; `hpch` ya se formó así en L642) |
+| `wordtech/pagevw.c:1380` | `struct DR *pdr` − `char *` (`PInPl` declarado `NATIVE char *PInPl()`) | base → `(struct DR *)PInPl(hpldr, 0)` (índice en unidades DR; mismo patrón que otros call sites que castea el retorno) |
+
+Rama `#else` = expresión original. MSVC no cambia.
+
+### 2. Investigación `exp.c:1498` — evidencia del árbol (sin ejecución)
+
+#### Qué valor llega ahí
+
+El sitio **no** es un camino genérico del intérprete. Está dentro del `switch (dkt)`
+que empaqueta argumentos de una **llamada a procedimiento externo** (`sytDkd` /
+DKD), justo antes de `LPushMacroArgs(hpdkd->lppasproc, rgwArgs, cwArgs)`:
+
+```c
+case dktLong:
+{
+    extern long LWholeFromNum();
+    NUM numT;
+    BLTBH(&hpev->num, &numT, cbNUM);
+    *((long *) pwArgs)++ = LWholeFromNum(&numT, TRUE);
+}
+```
+
+Cadena:
+
+1. WordBasic `Declare ... Lib "foo" ... (x As Long) ...` se parsea en
+   `interp/main.c` (`DktFromElt(eltLong) → dktLong`, ~1210–1213).
+2. Sin `As`, el sufijo del nombre decide: `$`→string, `%`→int, **default→double**
+   — **nunca** long. `dktLong` exige `As Long` explícito.
+3. `DeclDkd` hace `LoadLibrary` + `GetProcAddress` y guarda el `FARPROC` en
+   `DKD.lppasproc` (`el.h:581`) y los tipos en `rgdkt[]` (`el.h:584`).
+4. En la llamada, cada arg se resuelve a `elvNum` cuando `dkt == dktLong`
+   (`ElvFromDkt`: long y double → `elvNum`), se copia `hpev->num` a `numT`, y
+   `LWholeFromNum(&numT, TRUE)` extrae la parte entera (truncando, no redondeando).
+
+**Conclusión de tipo de valor:** es un **entero de interop DLL** etiquetado
+WordBasic `Long` / Windows `LONG` de 32 bits en el producto original, no un
+entero arbitrario del heap del intérprete. El payload numérico del EL es `NUM`
+(doble del math pack); el paso a entero es solo en la frontera del Declare.
+
+#### ¿Puede exceder 32 bits en uso real?
+
+Evidencia en `LWholeFromNum` / `ourmath.h`:
+
+- Comentario de la función: si `*pnum` no cabe en `long`, el retorno es
+  **indefinido**; si `wExp > cDigLong` → `MathError(fmerrOver)`.
+- `#define cDigLong 10` con comentario explícito: *«A number of digits in
+  0x7FFFFFFF»* — el techo de dígitos se dimensionó contra el máximo **positivo
+  de 32 bits**, no de 64.
+- Bucle de acumulación con `if (l < lPrev) goto lblOvrflw` (wrap en el ancho de
+  `long` de la plataforma).
+
+Implicaciones:
+
+| Plataforma | `long` | Comportamiento para enteros grandes |
+|---|---|---|
+| Win32 histórico | 32 bit | Overflow → MathError vía wrap o `cDigLong` |
+| Linux LP64 tras ensanche | 64 bit | Hasta 10 dígitos (~10¹⁰) caben en `long` sin wrap; valores entre 2³¹ y ~10¹⁰ que **fallaban en Win32** ahora **pueden devolverse** |
+
+En uso real de `As Long` hacia DLLs Win16/Win32/Wine, el callee espera un
+**LONG de 32 bits** en el stack stdcall/PASCAL. Un valor >32 bits no es un
+«resultado legítimo de macros» en esta frontera: es un valor que el producto
+original rechazaba o truncaba al ancho de `long` de 32 bits. No hay en el árbol
+una tabla de Declares de producto con `As Long` y rangos documentados; el
+mecanismo es 100 % dinámico (usuario + `GetProcAddress`).
+
+Otros llamadores de `LWholeFromNum` (ensanche justificado en otra sección):
+
+| Sitio | Uso |
+|---|---|
+| `elfile.c:1054` | posición de fichero (`DwSeekDw`) — sí se beneficia de >32 bit en LP64 |
+| `elmisc.c:1800,1803` | tiempo / tolerancia |
+| `elmisc.c:836` | flags de MessageBox (bajo) |
+| `elmisc2.c:412` | tamaño de punto tipográfico (rango 8–254) |
+| `fieldpic.c:204` | inserta número; el destino `CchInsertLongNfc` toma `LONG` |
+| `fltexp.c:2715` | solo el bit bajo (`& 1`) |
+| **`exp.c:1498`** | **solo** empaquetado `dktLong` hacia DLL |
+
+Re-estrechar **globalmente** `LWholeFromNum` a 32 bits reintroduciría el
+problema en `elfile` y afines. El ensanche y este sitio **no son el mismo
+contrato**.
+
+#### Lado lector: ¿hay firmas de `lppasproc`?
+
+- Declaración: `long (FAR PASCAL * lppasproc)();` — **sin prototipo de args**.
+- Valor: `GetProcAddress` opaco; **cero** tabla estática de firmas en el árbol.
+- La única metadata de anchos es runtime: `DKD.rgdkt[i]` (`dktInt` / `dktLong` /
+  `dktDouble` / `dktString`), hasta `celpMax` (16) args.
+- `LPushMacroArgs` / `invoke_macro` (`opus_asm_misc.cpp:80`) **ignoran**
+  `rgdkt`: tratan cada ranura de `int` como un parámetro `int` independiente.
+  No reensamblan `long` ni punteros.
+
+Históricamente en Win32, `long` ≡ `int` ≡ 32 bit → una ranura por `dktLong` y el
+lector acertaba por accidente. En LP64, `long` = 8 B → dos ranuras y el lector
+inventa dos `int`.
+
+#### Recomendación revisada (sigue sin ejecutarse)
+
+La opción **(a) ingenua** de la sesión #1 («escribir `LONG` y punto») es
+**incompleta** respecto al ensanche de `LWholeFromNum`, pero el argumento de
+Claude no implica adoptar (b) sin más: el valor en **esta** frontera es de
+contrato 32-bit.
+
+| Opción | Descripción | Veredicto |
+|---|---|---|
+| **(a) ingenua** | Truncar a `LONG` sin comprobar rango | **No.** Silencia desbordamientos que Win32 reportaba vía MathError. |
+| **(a′) acotada a este sitio** | Escribir **una** ranura de 32 bits (`LONG`/`int`), `pwArgs += 1`, y si el `long` de `LWholeFromNum` no cabe en `LONG` → `MathError` (mismo espíritu que `cDigLong` / wrap Win32). No se toca la definición de `LWholeFromNum`. | **Preferida.** Alinea empaquetado con ABI Win32 del Declare; no revierte el ensanche para ficheros/tiempos; el lector actual no cambia. Requiere autorización sobre `exp.c`. |
+| **(b) lector con anchos** | Pasar `rgdkt` (o mapa de ranuras) a `LPushMacroArgs` y construir la llamada con tipos reales | Correcta a medio plazo y además ataca el empaquetado `dktString` con `HIWORD`/`LOWORD` de un `LPSTR` de 64 bits (otro bug LP64 latente en el mismo bucle). Esfuerzo: rediseño de `invoke_macro` + firma de `LPushMacroArgs`; no hay tabla estática de procs, pero **sí** hay `rgdkt` en cada DKD. Proporcional si se quiere cerrar toda la frontera Declare de una vez. |
+| **(c) re-estrechar `LWholeFromNum`** | Volver a 32 bits o bifurcar por llamador | **No** como solución a este sitio: rompe o reabre `elfile`/posiciones. Un wrapper `LONG LLong32FromNum(...)` usado solo en `dktLong` es equivalente a (a′) y puede vivir en port o en el sitio. |
+
+**Recomendación de la sesión #2:** **(a′)**, documentada como **excepción acotada de la frontera DLL `dktLong`**, no como duda sobre el ancho de `LWholeFromNum` en general. Si se prefiere no tocar `src/Opus/interp/exp.c`, la alternativa ejecutable en `src/port/` es (b) consumiendo `rgdkt` — más trabajo, más cobertura.
+
+**No se ha aplicado ningún cambio** en `exp.c` ni en `opus_asm_misc.cpp`.
+
+### Conteo de cierre #2
+
+| Momento | Errores (`ninja -k 0`) | TUs fallidas |
+|---|---|---|
+| Inicio #2 | 11 | 6 |
+| Tras 9 restas de punteros | **2** | **2** |
+
+Restan solo: `clipbrd2.c:812` (`CbFromChrm`, reservado) y `exp.c:1498` (decisión
+(a′)/(b), sin autorización de código todavía).
+
+## Estado al cierre de sesión (2026-08-09, Grok Build #2)
+
+- **Aplicado:** 9 restas de punteros con guardas GCC; **11 → 2** errores.
+- **Investigado, no ejecutado:** `exp.c:1498` — valor = entero `As Long` de
+  Declare/DLL; contrato 32-bit; recomendar **(a′) con MathError si no cabe**,
+  no (a) ingenua; (b) si se quiere arreglar toda la frontera en port.
+- **Sin tocar:** `clipbrd2.c:812`, commits.
+- **Dónde retomar:** autorizar (a′) en `exp.c` o (b) en `opus_asm_misc.cpp` +
+  firma de `LPushMacroArgs`; luego `CbFromChrm` para el último error del motor.
+
+
+---
+
+## Sesión Grok Build #3 (2026-08-09) — cierre del motor
+
+Medido siempre con `ninja -k 0 -C out/linux-winelib-debug opus_original_engine`.
+Sin commit.
+
+### Precondiciones verificadas (exp.c:1498)
+
+| Pregunta | Evidencia |
+|---|---|
+| `sizeof(int)` bajo winegcc LP64 | Programa de prueba: **`sizeof(int)=4`**, `sizeof(long)=8`, `sizeof(void*)=8`, `INT_MAX=2147483647`, `INT_MIN=-2147483648` |
+| Otros `*((long *) pwArgs)++` en exp.c | **Uno solo** (el de `dktLong`). `dktInt` usa `*pwArgs++`; `dktDouble` usa `*(NUM*)` + reasignación; `dktString` usa dos `*pwArgs++` (HIWORD/LOWORD) |
+| Código de overflow | `MathError(merr)` con `fmerrOver` (0x0001). Con `fElActive`, `ElMathError` mapea `case 1` → **`RtError(rerrOverflow)`** (`elinit.c:516–529`). No hay código «arg DLL fuera de rango»; se reutiliza overflow. En `exp.c` se usa **`RtError(rerrOverflow)`** directamente: mismo mensaje al usuario, `rerr.h` ya incluido, sin depender del assert de math-pack de `MathError` |
+| `cwArgs = pwArgs - rgwArgs` | Con (a′) `pwArgs += 1` → `cwArgs` crece en **1** (antes, `long` de 8 B hacía crecer en 2 y `invoke_macro` inventaba dos `int`) |
+
+### 1. exp.c:1498 — (a′) aplicado
+
+```c
+/* bajo __GNUC__ && !_MSC_VER */
+long lT = LWholeFromNum(&numT, TRUE);
+if (lT != (long)(int)lT)
+    RtError(rerrOverflow);
+*pwArgs = (int)lT;
+pwArgs += 1;
+/* #else: forma histórica cast-as-lvalue sin cambios */
+```
+
+- No reintroduce cast-as-lvalue.
+- No toca la definición de `LWholeFromNum`.
+- Comprobación de rango: `lT != (long)(int)lT` (equivalente a fuera de `INT_MIN..INT_MAX` sin necesitar `<limits.h>`).
+
+**Humo runtime (no hay harness de Declare en el árbol):** programa aislado
+`/tmp/opus_dktlong_smoke.c` que reproduce el contrato del empaquetador + un
+callee de un `int` (como `invoke_macro`):
+
+- valor 42 → `cwArgs==1`, callee recibe 42 y devuelve 142;
+- `INT_MAX+1` / `INT_MIN-1` fallan el fit check;
+- contraste: almacenar un `long` de 8 B avanza **2** ranuras (el bug LP64).
+
+Salida: `dktLong (a') smoke OK: sizeof(int)=4 sizeof(long)=8 cwArgs=1 overflow_ok`.
+
+No existe en el repo un test e2e `Declare ... As Long` real; el humo cubre la
+ABI de empaquetado/lector, no LoadLibrary de un .EXE de macros.
+
+### 2. clipbrd2.c:812 — investigación y fix
+
+**¿Existe `CbFromChrm`?** Sí. Macro en `wordtech/format.h:351–357` (rama
+`OPUS_X64`). Mapea tag `chrm*` → `sizeof` del registro (`cbCHR`, `cbCHRT`, …).
+
+**Por qué no bastaba `pchr->chrm`:** en Win16/Win32, `chrmChp = cbCHR` etc.
+(los tags **eran** las longitudes). En `OPUS_X64`, format.h documenta que
+varios registros pasaron a compartir tamaño y los tags son únicos 1..7; hay que
+usar `CbFromChrm` al escanear `grpchr` (mismo criterio que `disp1.c:1721–1722`,
+`pic.c:514`, `wproc.c:1657`).
+
+**Cadena en `IchFromCpVfli`:** recorre `vhgrpchr` sumando runs de caracteres;
+tras cada CHR, avanza el puntero al siguiente registro del grupo. El
+cast-as-lvalue `(char *)pchr += pchr->chrm` usaba el tag como delta de bytes —
+incorrecto bajo OPUS_X64 y además no es lvalue en GCC.
+
+**Fix (mismo patrón cast-as-lvalue de la ronda + CbFromChrm):**
+
+```c
+#if defined(__GNUC__) && !defined(_MSC_VER)
+pchr = (struct CHR *)((char *)pchr + CbFromChrm(pchr->chrm));
+#else
+(char *)pchr += pchr->chrm;
+#endif
+```
+
+`CLIPBRD2.C` ya incluye `format.h`. No hacía falta escribir ninguna función
+nueva: la «auditoría paralela» del documento apuntaba a una macro **ya
+presente**.
+
+### 3. Criterio Fase 3
+
+```
+ninja -k 0 -C out/linux-winelib-debug opus_original_engine
+→ 0 errores, 0 FAILED
+→ Linking ... build/lib/Debug/libopus_original_engine.a
+→ 207 objetos .o bajo CMakeFiles/opus_original_engine.dir
+→ CMakeLists lista 207 fuentes en OPUS_ORIGINAL_ENGINE_SOURCES
+```
+
+**Motor: 2 → 0 errores.** Fase 3 (compilar el motor a `libopus_original_engine.a`
+con las 207 TUs) cumplida en este build tree. Sin commit.
+
+| Momento | Errores |
+|---|---|
+| Inicio #3 | 2 |
+| Tras exp.c (a′) + clipbrd2 CbFromChrm | **0** |
+
+## Estado al cierre de sesión (2026-08-09, Grok Build #3)
+
+- **Motor a 0 errores** con `ninja -k 0`; `libopus_original_engine.a` enlazada
+  (207 TUs). Criterio de éxito escrito de la Fase 3 alcanzado en el árbol local.
+- **Aplicado:** `exp.c:1498` (a′) con `RtError(rerrOverflow)` si no cabe en
+  32 bit; `CLIPBRD2.C` avance con `CbFromChrm` sin cast-as-lvalue.
+- **Humo:** packing/ABI de dktLong verificado fuera del árbol de producto; no
+  hay test e2e de Declare.
+- **Sin commit** (decisión aparte). Siguiente fase natural del plan: enlace,
+  recursos y exportaciones (Fase 4), o auditoría LP64 residual (p. ej.
+  `dktString` HIWORD/LOWORD de punteros 64-bit en el mismo bucle de exp.c).
+
+
+---
+
+## Sesión Grok Build #4 — Fase 4 (2026-08-09)
+
+Enlace, recursos y exportaciones. Sin commit.
+
+### Ruta elegida: **B** (transformar `opuscmd_native.inc` → `.spec`)
+
+| Opción | Por qué no / sí |
+|---|---|
+| **A** — extender MKCMD | Toca `OpusEtAl/tools/src/mkcmd.c` (restringido). MKCMD ya emite la lista de exports; un segundo emisor en C duplica lógica y exige autorización de caso. |
+| **B** — script CMake | **Elegida.** Misma fuente de verdad: las 427 líneas `#pragma comment(linker,"/export:X")` que produce MKCMD. `src/cmake/GenerateWord1Spec.cmake` las convierte a `@ cdecl Name()` sin re-parsear las tablas de comandos. |
+
+Estructura de `opuscmd_native.inc` (verificado en el árbol):
+
+- Cabecera de comentario + **427** `#pragma comment(linker, "/export:…")` (únicos).
+- Tablas nativas `kOpusNativeHash[]` y `kOpusNativeSymbols[]` (no van al `.spec`).
+- De los 427 nombres: **229** empiezan por `Cmd`; el resto son entradas EL (`El*`, `SdEl*`, `NumEl*`, `IntEl*`, `WEl*`, `OurExitWindows`, …). El criterio del plan («427 símbolos Cmd*») se interpreta como **427 exportaciones de la tabla de comandos/EL**, no 427 con prefijo `Cmd`.
+
+### Artefactos generados
+
+| Artefacto | Ruta | Notas |
+|---|---|---|
+| `.spec` | `out/linux-winelib-debug/generated/original/word1.spec` | 427× `@ cdecl Name()` |
+| `.res` | `…/generated/original/word1.res` | `wrc` sobre `port/word1.rc` (iconos, bitmap toolbar, VERSIONINFO, manifest) |
+| Stub | `bin/WORD1.exe` | script shell de winegcc (697 B) |
+| ELF | `bin/WORD1.exe.so` | ELF x86-64 ~14 MB, con debug |
+
+### Comandos de toolchain
+
+```text
+# spec (vía ninja / GenerateWord1Spec.cmake)
+cmake -DINPUT=.../opuscmd_native.inc -DOUTPUT=.../word1.spec \
+  -P src/cmake/GenerateWord1Spec.cmake
+
+# resources (Wine 11: usar -o, no -fo con cwd=port)
+wrc -I src/port -o .../word1.res src/port/word1.rc
+
+# link (wineg++ como CMAKE_CXX_COMPILER)
+wineg++ … -mwindows -municode word1.spec word1.res \
+  opus_original_startup_probe.cpp.o \
+  -lopus_original_engine -lopus_x64_runtime -luser32 -ldbghelp \
+  -o bin/WORD1.exe
+```
+
+### CMake (Winelib)
+
+En `src/CMakeLists.txt` bajo `OPUS_WINELIB_BUILD`:
+
+- Includes mínimos para el probe (`case-shim`, `generated/original`, `port/original`) — **sin** `Opus/` (Wine `windows.h` incluye `dde.h` y colisionaría con `Opus/dde.h`).
+- `add_custom_command` para `.spec` y `.res`; `EXTERNAL_OBJECT` + `target_sources`.
+- `-mwindows -municode` (entry `wWinMain`).
+- Case-shim `DbgHelp.h`; guards MSVC en el probe (`rtcapi`, `RtlVirtualUnwind`, …).
+- `#define _alloca alloca` en `opus_x64_compat.h` (rcinit/rcbmp).
+
+### Verificación
+
+```text
+spec exports:           427
+nm symbols present:     427 / 427 (0 missing)
+Cmd* among exports:     229
+file bin/WORD1.exe:     POSIX shell script
+file bin/WORD1.exe.so:  ELF 64-bit LSB shared object, x86-64
+engine ninja -k 0:      0 errors (libopus_original_engine.a, 207 TUs)
+```
+
+**GetProcAddress / ResolveCommandAddress:**
+
+- Mecánica del `.spec` verificada con un módulo mínimo (`min_export.c` + 2 exports):  
+  `CmdHelp` y `CmdAbout` no nulos vía `GetModuleHandleW(NULL)+GetProcAddress` (ok=1).
+- En `WORD1`, `nm` confirma los 427 símbolos; el `--self-test` del probe (misma API que `ResolveCommandAddress` en `opus_asm_movecmds.c:172`) **aún no es fiable en proceso completo**: el enlace del motor completo provoca corrupción de heap en init/teardown de Wine antes de poder confiar en el código de salida (no se escribió el informe de self-test). **No es un fallo del `.spec`**, sino del arranque con el grafo completo de estáticos del motor.
+- `winedump -j export` no aplica al stub shell ni al ELF Winelib (sin firma PE clásica); la verificación de exports es por `nm` + smoke de `.spec`.
+
+### Problemas y resoluciones
+
+| Problema | Resolución |
+|---|---|
+| `wrc -fo` + `WORKING_DIRECTORY=port` no abre el `.res` | `-o` con rutas absolutas |
+| `Windows.h` / `DbgHelp.h` case-sensitive | case-shim + wrappers en `port/original/` |
+| `rtcapi.h` / `_RTC_*` / `RtlVirtualUnwind` | guards `_MSC_VER` en el probe |
+| Include de `Opus/` rompe `dde.h` de Wine | includes acotados en WORD1 |
+| `WinMain` undefined | `-municode` → `wWinMain` |
+| `_alloca` undefined | `#define _alloca alloca` + `<alloca.h>` en compat |
+| Self-test WORD1 heap crash | documentado; smoke de exports con módulo mínimo |
+
+### Criterio Fase 4
+
+| Requisito | Estado |
+|---|---|
+| `WORD1.exe.so` ELF x86-64 | **Sí** |
+| `WORD1.exe` stub ejecutable | **Sí** (shell winegcc) |
+| 427 exports en el módulo | **Sí** (nm 427/427) |
+| `ResolveCommandAddress("CmdHelp")` ≠ null | **Parcial**: API demostrada con `.spec` mínimo; en WORD1 los símbolos existen; proceso completo inestable al arrancar |
+| Sin commit | **Sí** |
+
+---
+
+## Sesión Grok Build #5 — Fase 5 (2026-08-09)
+
+Auditoría LP64 / propuesta. **Sin cambios de código de serialización ni de anchos de estructura.**
+
+### Inventario de riesgos
+
+| Riesgo | Ubicación | Impacto | ¿Bloquea F4? | Lectura/escritura | ¿>32 bit real? | Propuesta (no aplicada) |
+|---|---|---|---|---|---|---|
+| **dktString HIWORD/LOWORD** | `interp/exp.c:1548–1549` empaqueta `LPSTR` en dos `int` de 16+16 bits | Solo 32 bits del puntero; en LP64 se pierden los altos 32. Macros `Declare` con `As String` / punteros a heap rotos en runtime | **No para enlace**. **Sí para runtime de macros con strings hacia DLL** | Escritura a ranuras de args de Declare; lectura en el callee | Punteros heap sí son 64-bit | (1) Empaquetar `uintptr_t` en **dos** ranuras `int` de 32 bits (lo/hi) y enseñar al lector; o (2) una ranura `INT_PTR` si se rediseña `invoke_macro`. Precedente F3: (a′) de `dktLong` (frontera 32-bit Windows). Aquí el valor **es** un puntero, no un LONG de interop — no truncar a 32. |
+| **dktDouble / NUM** | `exp.c` `*(NUM*)pwArgs` | `NUM` = `double` (8 B) = 2×`int` en LP64 y en Win32 — **OK** si alineación coincide | No | Empaquetado args | N/A | Verificar alineación de `pwArgs` (hoy se avanza con aritmética de `NUM*`) |
+| **STID / tablas long** | tablas EL, posibles STTB; plan citaba STID | Formato en memoria más grande; archivos si se serializa `long` crudo | No F4 | Depende del sitio | Posible en contadores grandes | Inventariar escrituras a fichero que usen `sizeof(long)` o `cb` derivados de `long` |
+| **PLC / CP = long** | `wordtech/plc.c`, `CP` typedef long | Índices de caracteres 64-bit en memoria; disco usa formatos fijos | No F4; riesgo de formato si se escribe CP crudo | Lectura/escritura PLC en doc | Docs grandes >2GB teóricamente | Auditar `savefast` / `file` para anchos fijos vs `sizeof(CP)` |
+| **`#pragma pack(1)`** | `cmdtbl.h`, `opus_asm_movecmds.c` | Layout de tablas de comandos empaquetadas; movecmds ya usa tipos fijos de 15/258 bytes con asserts de tamaño | No si asserts siguen pasando | Memoria / tablas generadas | N/A | Mantener asserts; no relajar pack |
+| **KME `long w` (F3)** | `wordwin.h` unión | `sizeof(KME)` creció; `cwKME` / heap de keymaps y posible I/O de mapas de teclas | No F4 | Memoria; `openrare` lee `cwKME*2` (legado) | N/A | Revisar `openrare.c` lectura de keymaps; posible conversión en F5 |
+| **bitapp DWORD** | ya uint32_t bajo tool | Precedente correcto de ancho fijo para serialización | Resuelto F1 | Fichero .hb | N/A | — |
+| **`(int)` / `(LONG)` casts** | difuso en Opus | Truncamiento silencioso | Depende | Ambos | Sitio a sitio | Grep dirigido en paths de save/load |
+| **HANDLE como unsigned** | spell path warnings | Win16 handles vs punteros | No F4; warning actual | Runtime spell | Sí (punteros) | Capa de compat de handles (ya parcialmente en port) |
+
+### dktString — veredicto
+
+```c
+lpstr = (LPSTR)*hsz;
+*pwArgs++ = HIWORD(lpstr);  /* 16 bits */
+*pwArgs++ = LOWORD(lpstr);  /* 16 bits */
+```
+
+- **Origen histórico:** modelo Win16 far pointer = dos words; en Win32 flat, HIWORD/LOWORD de un puntero de 32 bits aún reconstruyen el puntero si el callee reensambla con `MAKELONG`/`MAKELP`. En LP64 solo se conservan 32 bits.
+- **¿Macros públicas?** Sí: `Declare Function … Lib "…" (s As String)` es WordBasic de usuario hacia DLLs externas; también strings hacia APIs de Word expuestas por el mismo camino DKD.
+- **¿Hay manejo 64-bit en port?** `HIWORDX`/`LOWORDX` en `opus_x64_compat.h` siguen siendo **16-bit** halves de `uintptr_t` (para empaquetado de puntos/mensajes), **no** un split hi/lo de 32+32 para punteros de args de macros.
+- **¿Bloquea F4 (enlace)?** No: el ejecutable y los exports no dependen de este camino.
+- **¿Bloquea uso real de macros con strings?** **Sí (runtime)**, cuando se invoque un DKD con `dktString`.
+- **No es el mismo caso que dktLong (a′):** allí el contrato Windows es LONG 32-bit; aquí el valor es un **puntero** y debe sobrevivir 64 bits.
+
+**Propuesta (documentada, no aplicada):**
+
+1. Empaquetar `uintptr_t p = (uintptr_t)lpstr` como dos `int` de 32 bits (`(int)p`, `(int)(p>>32)`) en orden LE, y extender `LPushMacroArgs`/`invoke_macro` para reensamblar punteros cuando `rgdkt[i]==dktString` (opción (b) ampliada de F3).
+2. Alternativa solo-port: API de empaquetado en `opus_asm_misc.cpp` con tabla de anchos por `DKT`.
+3. No reutilizar HIWORD/LOWORD de 16 bits.
+
+### Sitios críticos para revisión manual (F5+)
+
+1. `exp.c` `dktString` + `dktDouble` alineación de `pwArgs`.
+2. `openrare.c` / keymaps y `cwKME` tras el cambio de `KME`.
+3. Cualquier `WriteFile`/`ReadFile`/`bltb` de estructuras con `long`/`CP` no mediado por campos de ancho fijo.
+4. Spell/`HANDLE` como `unsigned` (warnings actuales).
+5. `qwindows.h` / redefinición histórica de `DWORD` si aún aparece fuera de bitapp.
+
+### Decisiones pendientes (arquitectura)
+
+1. **ABI de args de Declare en LP64:** ¿dos ranuras de 32 bits por puntero, o rediseño de `invoke_macro` con tipos nativos?
+2. **Documentos >2GB / CP 64-bit:** ¿se soportan o se mantiene techo 32-bit en disco?
+3. **Keymap file I/O:** ¿reescribir con tamaños fijos o solo mapas en memoria?
+
+### Criterio de cierre Fase 5
+
+| Requisito | Estado |
+|---|---|
+| Inventario de supuestos LP64 | **Sí** (tabla arriba) |
+| Clasificación bloqueadores vs mejoras | **Sí** (dktString = bloqueador runtime macros; resto no bloquea F4) |
+| Investigación dktString | **Sí** — no bloquea enlace F4; sí bloquea macros string→DLL en runtime |
+| Propuestas de guardas documentadas | **Sí** — sin aplicar |
+| Sin regresión de compilación del motor | **Sí** — 0 errores `ninja -k 0` engine |
+
+## Estado al cierre de sesión (2026-08-09, Grok Build #4+#5)
+
+- **Fase 4 (enlace):** `bin/WORD1.exe` + `bin/WORD1.exe.so` existen; **427/427** exports en el ELF; `.spec` desde MKCMD (ruta B); `wrc` → `.res`; smoke de `GetProcAddress` con `.spec` mínimo **OK**. Self-test del proceso WORD1 completo inestable (heap en init) — deuda de arranque, no de la tabla de exports.
+- **Fase 5 (auditoría):** inventario LP64 documentado; **dktString** es el bloqueador runtime prioritario de macros; no se aplicaron cambios de serialización.
+- **Sin commit.**
+- **Dónde retomar:** (1) estabilizar arranque WORD1 / self-test `CmdHelp`; (2) autorizar e implementar empaquetado 64-bit de `dktString` (+ lector); (3) decidir commit de F3+F4; (4) pruebas e2e (Fase 6 del plan) cuando el proceso arranque limpio.
+
+
+---
+
+## Sesión Grok Build #5b — dktString 64-bit implementado (2026-08-09)
+
+Precondición de Fase 6. Sin commit.
+
+### Problema
+
+`exp.c` empaquetaba `LPSTR` para `Declare … As String` con:
+
+```c
+*pwArgs++ = HIWORD(lpstr);
+*pwArgs++ = LOWORD(lpstr);
+```
+
+Solo 32 bits del puntero (16+16). En LP64 el heap vive fuera de ese rango.
+
+### Diseño aplicado
+
+1. **Escritor** (`exp.c`, guarda `__GNUC__ && !_MSC_VER`):
+   - `uintptr_t up = (uintptr_t)(void *)lpstr`
+   - dos ranuras `int`: lo32, hi32
+2. **Lector** (`port/original/opus_asm_misc.cpp`):
+   - Nueva API `LPushMacroArgsTyped(proc, args, cwArgs, dkts, dkt_count)`
+   - Con `dkts == NULL`: comportamiento legado (una ranura `int` → un arg)
+   - Con tipos: por cada `dktString` reensambla `void*` de lo|hi<<32 y pasa
+     **un** argumento puntero; `dktInt`/`dktLong` → un GPR; `dktDouble` → un
+     payload de 64 bits en GPR (bit pattern; XMM float sigue como deuda)
+3. **Call site** (`exp.c`):  
+   `LPushMacroArgsTyped(..., (const unsigned char *)hpdkd->rgdkt, idktMacParam)`
+4. Declaración en `opus_x64_compat.h`; stub en `opus_original_plc_test.c`.
+5. Rama MSVC: sin cambios (HIWORD/LOWORD + `LPushMacroArgs` untyped).
+
+### Verificación
+
+| Prueba | Resultado |
+|---|---|
+| Smoke reensamblado + call ms_abi con string | OK (`dktString 64-bit smoke OK`) |
+| Round-trip puntero con hi32 ≠ 0 | OK |
+| HIWORD/LOWORD 16-bit no preserva 64-bit | Confirmado (contraste) |
+| `ninja -k 0 opus_original_engine` | **0 errores** |
+| `LPushMacroArgsTyped` en `.a` | Símbolo presente |
+
+### No cubierto (deuda documentada)
+
+- Callees que esperan `double` en XMM: el path tipado aún mete el bit-pattern
+  en un GPR (igual de roto que el untyped en x64; no empeora el caso string).
+- Self-test de arranque WORD1 (heap en init) — independiente de dktString.
+
+## Estado al cierre (2026-08-09, Grok Build #5b)
+
+- **dktString 64-bit implementado** (pack + typed invoke).
+- Motor compila a 0 errores.
+- Sin commit.
+- **Listo para Fase 6** en cuanto el arranque del proceso WORD1 se estabilice
+  (o se pruebe el camino Declare con un harness más acotado).
