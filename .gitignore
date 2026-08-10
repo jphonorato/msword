@@ -1,0 +1,81 @@
+# ==============================================================================
+# Build artifacts and generated files — NEVER commit
+# ==============================================================================
+
+# CMake build directories
+build/
+out/
+cmake_build/
+_build/
+
+# Ninja / compiled objects
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+*.exe.so
+
+# CMake generated
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+
+# Generated code (from MKCMD, wrc, etc.) — commit only docs, not intermediates
+generated/lowercase-c/
+generated/word1.res
+
+# ==============================================================================
+# Local development, notes, secrets
+# ==============================================================================
+
+CLAUDE.md
+GROK.md
+DEBUG.md
+*.local
+.env
+.env.local
+
+# Port tools (host-only, not shipped)
+src/port/tools/host/
+src/port/tools/build/
+
+# IDE / Editor
+.vscode/
+.idea/
+.vim/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# OS
+.DS_Store
+.AppleDouble
+.LSOverride
+Desktop.ini
+
+# Binaries (artifacts from build)
+bin/
+lib/Debug/
+lib/Release/
+
+# ==============================================================================
+# Optional: keep these if you want, but recommend .gitignore
+# ==============================================================================
+
+# Temporary files
+*.tmp
+*.bak
+*.backup
+*.log
+
+# Profiling / debugging
+*.gprof
+*.callgrind
+*.prof
