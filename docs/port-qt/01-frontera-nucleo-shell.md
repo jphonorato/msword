@@ -909,10 +909,25 @@ El orden no es arbitrario: cada paso deja verificable el siguiente.
    a `opus_qt_shell` (deliberado: un diálogo modal disparado
    automáticamente en cada arranque del andamiaje sería ruido, no una
    comprobación útil).
-7. **Inversión del bucle de mensajes (§B4.1).** Último, porque hasta aquí el
-   núcleo puede seguir siendo conducido por el binario Winelib, que es el
-   oráculo. Invertirlo antes de tener la medición verificada quitaría el
-   oráculo justo cuando más se necesita.
+7. **Inversión del bucle de mensajes (§B4.1) — patrón demostrado,
+   adelantado fuera de orden por decisión explícita del mantenedor
+   2026-08-11 (B2 verificado de forma aislada, no contra `wordtech/`
+   real; riesgo aceptado a sabiendas, no un descuido).** `opus_qt_shell`
+   corre bajo el bucle de `QApplication` -- sin `GetMessage`/
+   `DispatchMessage` en ningún punto del binario -- y ya llama hacia
+   dentro con los dos patrones de despacho de §B4.2: menú "Despacho
+   (B4.2)", acción directa (`SendMessage` → llamada síncrona en el mismo
+   ciclo) y acción diferida (`PostMessage` →
+   `QMetaObject::invokeMethod(..., Qt::QueuedConnection)`, corre en un
+   ciclo posterior). Una bitácora en pantalla hace la diferencia
+   observable, no solo afirmada. **Lo que esto NO es:** la inversión de
+   `Opus/wproc.c` -- sigue siendo el conductor real del motor de
+   documento, y `Opus/` es árbol restringido, no tocado. Este es el
+   molde de despacho a reutilizar el día que `wordtech/` se conecte, no
+   la migración en sí. El oráculo Winelib sigue siendo necesario para
+   verificar fidelidad; adelantar este paso no lo reemplaza ni lo
+   invalida, solo dejó de bloquear en seco a la espera de B2 contra
+   documento real.
 
 ---
 

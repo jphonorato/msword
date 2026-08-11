@@ -151,6 +151,7 @@ target_link_libraries(opus_qt_shell PRIVATE
     opus_shell_memory
     opus_shell_font_substitution
     opus_shell_font_metrics
+    opus_shell_spine
     Qt6::Widgets
 )
 install(TARGETS opus_qt_shell RUNTIME DESTINATION bin)
