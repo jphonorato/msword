@@ -30,6 +30,24 @@ Sitios en la categoría *Memoria Win16* (`docs/port-qt/00-inventario-win32.md`, 
 
 **`GMEM_ZEROINIT`:** cero apariciones en las 173 TU del motor y en `Opus/debug/`. Aparece solo en `Opus/lib/qwindows.h` (SDK vendorizado, excluido de conteo por ser superficie de API) y en `Opus/asm/windows.inc` (ensamblador legado, no compilado, fuera de alcance por decisión de proyecto). El comentario de `OpusShellMemory.h:58-64` que documenta `OPUS_MEM_ZEROINIT` como "equivalente a GMEM_ZEROINIT" **no referencia un sitio inexistente por error** — es fidelidad a la semántica del SDK Win16 documentada para el flag, sin que haya (todavía) una llamada real que lo use. No es una corrección necesaria, solo una aclaración: `OpusMemFlagsFromWin16()` puede mapear `GMEM_ZEROINIT` sin que ninguna de las 147 migraciones de este spec vaya a ejercer esa rama.
 
+### Adenda a §0 — Revisión de alcance (2026-08-11, previa al lote 2)
+
+**Total de 147 sitios en alcance queda obsoleto como cifra de "migrables ya".** Auditoría de cruce de proceso/frontera (§10-§14) reclasifica los 147 sitios en seis categorías:
+
+| Categoría | Sitios | TUs | Migrable ahora |
+|---|---|---|---|
+| **Ya migrado** | 2 | `elsubs2.c` | sí — hecho (`3c7c0db`) |
+| **Lote 2 propuesto** | 4 | `catalog.c` | sí — pendiente autorización de ejecución |
+| **A — familia de handle compartida entre TUs, mismo proceso** | 15 | `eldde.c` (parcial: `hevt`/`hPlaybackHook`/`lphrgbKeyState`) + `quit.c` (5) | no — orden de lote, pendiente de que `eldde.c` se desbloquee |
+| **B — frontera de proceso** (fusiona antigua Categoría C con nuevo hallazgo C2, mismo fenómeno con mecanismo distinto — ver §11) | ~85 | `eldde.c` (resto), `ddeclnt.c`, `filecvt.c`, `spelcore.c`, `etcmd.c`, `help.c` (parcial), `raremsg.c` | no — bloqueado, decisión de diseño pendiente |
+| **D — segmento/selector Win16 sin equivalente conceptual** | ~5 | `eldde.c` (`hPlaybackHook`, parcial ya contado en A), `idle.c`, `initwin.c` | no — sin equivalente en el contrato, como `GlobalWire`/`GlobalFlags` ya excluidos |
+| **Muerto / fuera de build** | 10 | `initwin.c`, `rcinit.c`, `debug/debug1.c`, `debug/debug2.c`(*), `debug/debugwin.c`(*), `help.c` (`hText`/TEXTEVENT) | no — no se compila o `#if` nunca cierto |
+| **`res.c` — hub estructural** | 4 | `res.c` | no — asignador central de 12 TU consumidoras, orden pendiente |
+
+`(*)` `debug/debug2.c` y `debug/debugwin.c` no están en `OPUS_ORIGINAL_ENGINE_SOURCES` — no compilan, independientemente de `RPDEBUG`.
+
+**Total migrable real confirmado hoy: 6 de 147** (2 hechos + 4 propuestos en lote 2). El resto (139 sitios) requiere una o más decisiones de diseño explícitas antes de tocarse, documentadas por categoría en §11-§14.
+
 ## 1. Estado real de `opus_shell_memory` en CMake
 
 `src/core/CMakeLists.txt` ya declara el target (verificado, no asumido):
@@ -280,9 +298,13 @@ Los tres apuntan al mismo par `eldde.c` + `quit.c`. Implicación: cuando le toqu
 - `hData` en `debug/debug2.c` (no confundir con el `hData` de `eldde.c`/`ddeclnt.c`, categoría C): local, ciclo completo dentro de una sola función.
 - `h` (`debug/debug1.c`, `rcinit.c`): locales sin relación entre sí; además ambos son código muerto (ver actualización en §12).
 
-## 11. Categoría C — handles DDE cruzando proceso vía mensajes de Windows (BLOQUEADO, fuera de alcance de este issue)
+## 11. Categoría B — memoria cruzando la frontera del proceso (BLOQUEADO, fuera de alcance de este issue; unifica la antigua Categoría C)
 
 **No es un problema de orden de lote como la Categoría A — es una pregunta de diseño abierta, sin resolver.**
+
+Reescrito 2026-08-11: el fenómeno de fondo es único — el handle en cuestión tiene un consumidor real fuera de este binario/TU-tree, así que envolver su `Lock`/`Unlock`/`Free` en `OpusMemLock`/`OpusMemUnlock`/`OpusMemFree` (que operan sobre un registro privado `OpusHandleImpl*`, no sobre `HGLOBAL` de Wine) puede reinterpretar memoria ajena como el struct interno del contrato. El mecanismo de cruce varía (DDE, DLL externa, WinHelp, portapapeles del sistema); el riesgo no. Se documenta como una categoría con tres subcasos en vez de tres categorías separadas.
+
+### Subcaso B1 — DDE vía mensajes de Windows (antiguo contenido de la Categoría C, sin cambios)
 
 Cuatro sitios verificados en el árbol (no los 48 de `eldde.c` completos — ver alcance de la verificación más abajo):
 
@@ -291,11 +313,24 @@ Cuatro sitios verificados en el árbol (no los 48 de `eldde.c` completos — ver
 - **`eldde.c` `wLow`** (handler `WM_DDE_DATA`, líneas 540–620) y **`ddeclnt.c` `wLow`** (líneas 770–920): mismo patrón — el handle llega en el propio mensaje `WM_DDE_DATA`, se bloquea con `GlobalLockClip` (excluido) y se libera con `GlobalFree` (en alcance). El propio código confirma que es un bloque de datos que **otro proceso** alocó y envió.
 - **`eldde.c`/`ddeclnt.c` `hData`** (`ddli.hData` y variantes de `ElDDEExecute`): mismo patrón de protocolo DDE.
 
-**Argumento central:** en los cuatro casos, el `Lock` ya vive permanentemente fuera del contrato `OpusShellMemory` (`GlobalLockClip`, decisión Qt-6 ya tomada), pero el `Free`/`Unlock` emparejado sí está contado entre los 147 sitios de este issue. `OpusMemLock`/`OpusMemUnlock`/`OpusMemFree` (`OpusShellMemory.cpp`) operan sobre un registro privado (`OpusHandleImpl*`), no envuelven `GlobalAlloc`/`HGLOBAL` de Wine. Si el handle lo aloca un proceso externo real vía `WM_DDE_*` (no este código), envolver su liberación/desbloqueo en `OpusMemFree`/`OpusMemUnlock` puede ser **incorrecto de raíz** — memoria ajena reinterpretada como el struct interno del contrato — no un problema de "todavía no se migró la otra TU" que se arregla reordenando lotes (a diferencia de la Categoría A).
+**Argumento central:** en los cuatro casos, el `Lock` ya vive permanentemente fuera del contrato `OpusShellMemory` (`GlobalLockClip`, decisión Qt-6 ya tomada), pero el `Free`/`Unlock` emparejado sí está contado entre los 147 sitios de este issue. Si el handle lo aloca un proceso externo real vía `WM_DDE_*` (no este código), envolver su liberación/desbloqueo en `OpusMemFree`/`OpusMemUnlock` puede ser **incorrecto de raíz** — no un problema de "todavía no se migró la otra TU" que se arregla reordenando lotes (a diferencia de la Categoría A).
 
 **Alcance de la verificación — explícito, no asumir más de lo comprobado:** se verificaron estos 4 casos concretos, no los 48 sitios de `eldde.c` uno por uno. El patrón (par `GlobalLockClip` + `Free`/`Unlock` sobre un handle de mensaje DDE) es consistente en los 4, pero esto es **un patrón observado, no un hallazgo cerrado sobre toda la TU** — antes de tocar `eldde.c` o `ddeclnt.c` hace falta una revisión completa sitio por sitio, no solo extrapolar desde estos 4.
 
-**Estado: BLOQUEADO.** Ningún sitio DDE de `eldde.c` ni `ddeclnt.c` se migra bajo ninguna circunstancia sin autorización nueva y específica del mantenedor — distinta de la ya dada para el resto de los 147 sitios en issue #3 — hasta que exista una decisión de diseño explícita sobre si estos sitios quedan excluidos del contrato `OpusShellMemory` (como ya pasó con `GlobalLockClip`) o se resuelven de otra forma.
+### Subcaso B2 — DLL externa vía `CallOtherStack`/`WCallOtherStack` (nuevo, 2026-08-11)
+
+El handle se pasa por llamada a otra pila/DLL cargada dinámicamente (`GetProcAddress`), que hace su propio `Lock` sobre el mismo handle:
+
+- **`filecvt.c`** (22 sitios): `ghszFn`/`ghszSubset`/`ghszVersion`/`ghBuff`/`ghIniName`/`ghIniExt`, todos pasados a la DLL de conversión (`ISFORMATCORRECT`/`FOREIGNTORTF`/`RTFTOFOREIGN`/`GETINIENTRY`, resueltas vía `GetProcAddress` en `filecvt.c:473-520`).
+- **`spelcore.c`** (9 sitios en alcance): `hsz`/`pghd->ghsz` pasados a `MyGetAlternates`/`LMyLookUpWord` → `CallOtherStack`/`LCallOtherStack` hacia el corrector ortográfico externo.
+- **`etcmd.c`** (7 sitios): `pghd->ghsz` (`vpetlib->ghdWord/ghdWorkspace/ghdRgpos`) pasado a `WMyETLookup` → `WCallOtherStack` hacia la DLL del motor de sinónimos/gramática (ET).
+
+### Subcaso B3 — WinHelp / portapapeles del sistema (nuevo, 2026-08-11)
+
+- **`help.c`** (11 de 15 sitios): `hHlp` (9 sitios) enviado a WINHELP.EXE vía `RegisterWindowMessage(szWINHELP)`/`LookForHelp`; `hsz` (2 sitios, `GlobalUnlock` en `KcFromSzHelp`/`SzFromKcHelp`) — funciones exportadas sin llamador interno, para que WinHelp las invoque.
+- **`raremsg.c`** (parcial de 8): `hdata` en `FFedtCopy` pasa a `SetClipboardData` — ownership transferido al portapapeles del sistema; `hdata`/`hdata2` en `FFedtPaste`/`HFedtStripText` provienen de `GetClipboardData` — handle ya ajeno desde el origen.
+
+**Estado: BLOQUEADO.** Ningún sitio de B1/B2/B3 se migra bajo ninguna circunstancia sin autorización nueva y específica del mantenedor — distinta de la ya dada para el resto de los 147 sitios en issue #3 — hasta que exista una decisión de diseño explícita sobre si estos sitios quedan excluidos del contrato `OpusShellMemory` (como ya pasó con `GlobalLockClip`) o se resuelven de otra forma.
 
 ## 12. Código muerto bajo condición no compilada — actualizado (6 sitios, 3 TU, no 3)
 
@@ -314,3 +349,13 @@ Encontrado al evaluar `res.c` como candidato al lote 2. No es una familia de han
 **Implicación para el orden general, no solo para `res.c`:** cualquier TU cuyos handles en alcance provengan de `OurGlobalAlloc` (la mayoría de las 12 listadas arriba) hereda el mismo riesgo que ya se documentó para `elsubs2.c`/`hevt` — el "productor" (`res.c`, sin migrar) y el "consumidor" (la TU en cuestión, si se migra) quedan desincronizados hasta que `res.c` se migre. La diferencia entre `elsubs2.c` y estas 12 TU es que `elsubs2.c` no asigna nada — solo bloquea/desbloquea un handle ajeno (issue documentado, aceptado porque WORD1 no arranca hoy). Migrar `help.c` o `spelcore.c` (que sí enlazan en WORD1, a diferencia de `debug/*`) repetiría el mismo riesgo pero sobre TU que si el bloqueador de arranque de Fase 6 se resuelve, sí se ejecutan — acumular esto sin resolverlo es la deuda técnica que la granularidad de §6 buscaba evitar, no solo "todavía no le tocó el turno a esa TU".
 
 **`res.c` queda fuera de la lista de candidatos para lotes tempranos.** Su migración requiere, o bien migrar sus 12 TU consumidoras en el mismo lote (contradice la granularidad de §6), o bien migrarlo al final, después de que todas ellas ya estén migradas — decisión de orden explícita pendiente, no asumida aquí. `Opus/debug/debugwin.c` es la única TU de las 17 que **no** depende de `OurGlobalAlloc` en absoluto (verificado, cero coincidencias) — no tiene alocador propio, son 3 funciones puente (`GlobalAllocFP`/`GlobalLockClipFP`/`GlobalReAllocFP`) que reciben el handle ya armado como parámetro genérico de quien las llama.
+
+## 14. Categoría D — segmento/selector Win16 sin equivalente conceptual (2026-08-11, previa al lote 2)
+
+Sitios donde el handle no es memoria simple sino un segmento con semántica de wiring/discardability o un selector real de Win16, sin contraparte en un contrato basado en `malloc`/`realloc`/`free`:
+
+- **`eldde.c` `hPlaybackHook`** (`AddKeys`, líneas 1261-1332): `GMEM_FIXED|GMEM_LOWER` + `AllocSelector`/`PrestoChangoSelector`/`FreeSelector` reales sobre el handle, para instalar un hook de reproducción de teclado (`SetWindowsHook(WH_JOURNALPLAYBACK,...)`). Ya contado dentro de la familia A (`eldde.c`/`quit.c`) por el orden de lote, pero el motivo de exclusión real es este, no solo "compartido entre TUs".
+- **`idle.c` `hfontPhy`** (líneas 770-792): bloque `GlobalReAlloc(...,GMEM_MODIFY)` + `GlobalWire` + `GlobalUnlock`, inseparable de `GlobalFlags`/`GlobalWire` (ya excluidos por §0) sobre el mismo handle en el mismo condicional — manejo de discardability de fuente física GDI.
+- **`initwin.c` `hInstance`** (línea 781): opera sobre el handle de módulo (no un handle de `OurGlobalAlloc`), emparejado con `GlobalFlags`/`GlobalWire` ya excluidos. Doblemente no migrable — además de ser código muerto bajo `OPUS_X64` (§12).
+
+Mismo tratamiento que `GlobalWire`/`GlobalFlags`/`GlobalCompact`: sin equivalente en el contrato, issue futura separada si alguna vez se decide abordar.
