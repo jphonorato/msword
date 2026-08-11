@@ -19,7 +19,7 @@ set(CMAKE_AUTOMOC ON)
 # repetir el set_target_properties.
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core)
+find_package(Qt6 REQUIRED COMPONENTS Core Widgets)
 
 add_library(opus_shell_config STATIC
     src/OpusShellConfig.cpp
@@ -82,3 +82,22 @@ endif()
 # con wineg++ desde fuera de este build, contra la biblioteca instalada,
 # igual que docs/port-qt/scripts/link-check/ hizo con opus_shell_config.
 install(TARGETS opus_shell_memory ARCHIVE DESTINATION lib)
+
+# Primer binario Qt real de la rama Qt-2 -- QApplication/QMainWindow, no
+# QCoreApplication como los tests de arriba. Andamiaje deliberadamente
+# vacío de motor de documento (docs/port-qt/01-frontera-nucleo-shell.md,
+# "Secuencia recomendada para Qt-2", paso 7 sigue siendo el último);
+# existe para probar que el grafo de enlace con Widgets de por medio
+# funciona antes de colgarle encima medición de texto (B2). Se construye
+# siempre, no solo bajo OPUS_CORE_BUILD_TESTS -- es un ejecutable de
+# producto embrionario, no una prueba.
+add_executable(opus_qt_shell
+    src/opus_qt_shell_main.cpp
+)
+target_link_libraries(opus_qt_shell PRIVATE
+    opus_shell_config
+    opus_shell_memory
+    opus_shell_font_substitution
+    Qt6::Widgets
+)
+install(TARGETS opus_qt_shell RUNTIME DESTINATION bin)
