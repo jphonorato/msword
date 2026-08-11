@@ -1,10 +1,26 @@
 # Categorías bloqueadas de la migración de memoria (issue #3): propuesta de diseño
 
 **Fecha:** 2026-08-11
-**Estado:** propuesta para decidir — **ninguna decisión tomada aquí**, ningún cambio aplicado al contrato ni a `src/Opus/`.
+**Estado:** **DECIDIDO** (ver §0 Decisión). Documento de propuesta conservado tal cual para trazabilidad; la decisión no reescribe las secciones de análisis de abajo.
 **Documento base:** `docs/superpowers/specs/2026-08-10-opus-memory-migration-design.md` (§0 adenda, §10-§14). Este documento no repite el análisis de allí; lo referencia y lo corrige donde el árbol dice otra cosa.
 
 Objetivo: dejar las categorías A, B (B1/B2/B3), D y `res.c` en estado de *decisión rápida*, con opciones concretas, contrapartidas reales y una estimación de impacto por combinación.
+
+---
+
+## 0. Decisión
+
+**Fecha:** 2026-08-11
+**Quién decide:** mantenedor (Pablo Honorato / jphonorato), en conversación con Claude Code.
+**Decisión:** fila 3 de §7, **"Passthrough completo"** — combinación **A-2, B1-b, B2-b, B3-b, D-2, R-4**.
+
+`OpusShellMemory` pasa a ser una **capa de convivencia** con Wine/Win32 real (passthrough hacia handles ajenos vía tabla de function pointers instalada por el shell), no un reemplazo que excluye por subsistema. 119/147 sitios pasan por el contrato nuevo. Quedan fuera, con destino ya cerrado en D-2:
+- **D** (11 sitios: `hCode`, `hPlaybackHook`, `hfontPhy`) — sin equivalente en heap nativo, reasignados a `OpusShellFontMetrics`/`OpusShellSpine` cuando esos contratos existan.
+- **17 sitios muertos/fuera de build** — no se migran, no cuentan como pendientes.
+
+Las filas 1/2/4 de §7 y las opciones "-a"/"-c" por categoría (B1-a, B1-c, B2-a, B3-a, R-1, R-3) quedan descartadas, no borradas del documento — el análisis de contrapartidas que las respalda sigue siendo válido como registro de por qué se descartaron.
+
+**Próximo paso:** diseño del mecanismo de passthrough en detalle, antes de tocar `OpusShellMemory.h`/`.cpp` — ver `docs/superpowers/specs/2026-08-11-opus-memory-passthrough-design.md`.
 
 ---
 
