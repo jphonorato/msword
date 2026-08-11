@@ -738,11 +738,24 @@ detectado** por este contrato mientras viaje por el camino foreign — la red de
 `OpusMemFree` solo existe en la rama `IsOwn(h)`, y eso es el trade-off que se acepta aquí, no un defecto
 pendiente.
 
-**P8 — `struct GHD` con `unsigned ghsz` de 32 bits en `splshare.h:64-68`** frente a `HANDLE ghsz` en
-`etcmd.c:160-164`. Trunca handles de 64 bits en `spelcore.c:681,687` y `SPELL.C:1300`. Preexistente e
-independiente del passthrough, pero cae justo encima de un sitio de riesgo. ¿Se abre issue aparte?
+**P8 — `struct GHD` con `unsigned ghsz` de 32 bits en `splshare.h:64-68` frente a `HANDLE ghsz` en
+`etcmd.c:160-164`. DECIDIDO 2026-08-11 (no corregido en código).**
+`docs/superpowers/specs/2026-08-11-opus-memory-p8-ghd-width-decision.md` confirma ambas definiciones con
+números de línea actuales y los sitios consumidores reales (`spelcore.c:681,687,656,666,699,702`,
+`SPELL.C:1300`, todos vía `splshare.h:59`/`SPELL.C:59` — `etcmd.c` no incluye `splshare.h`, así que su
+propia `struct GHD` de 64 bits nunca se ve afectada). El bug es hoy inerte porque nada ejercita ese
+camino con un `HGLOBAL` real de Wine; la migración P2 (`OPUS_MEM_ESCAPES` en `spelcore.c:681`,
+`…-p2-boundary-crossing-decision.md` §3) lo activa, porque a partir de ahí `pghd->ghsz` sí recibe un
+handle real de Wine que el campo `unsigned` trunca. Recomendación: ensanchar `splshare.h:65` con la misma
+guarda `#if defined(__GNUC__) && !defined(_MSC_VER)` ya usada en `wordwin.h:460` para un problema de forma
+idéntica (ancho de campo dependiente de plataforma), aplicado **en el mismo cambio que la migración P2**,
+no antes (no verificable) ni después (ventana de bug activo sin corregir). Recomendación de proceso: sin
+issue aparte, bundled dentro del issue de migración P2 — mismos archivos restringidos, misma
+autorización, el fix es un prerrequisito estructural de esa migración, no un bug aislado. No se toca
+`src/Opus/` aquí; el fix de código queda para cuando se autorice y ejecute la migración P2.
 
-**P9 — Higiene menor, sin urgencia:** `opus_product_entry.cpp` es un archivo huérfano que no compila en
-ningún target (§3.1); el target `opus_original_startup_probe` tiene una rotura de enlace latente (§3.4);
-`handle-check/run.sh:8` apunta a un directorio de build obsoleto (§4.1); `CLAUDE.md` omite
-`opus_shell_font_substitution_test` del conjunto gating (§4.1).
+**P9 — Higiene menor, sin urgencia. RESUELTO 2026-08-11.**
+(1) `src/port/original/opus_product_entry.cpp`: Agregado comentario al inicio indicando que el archivo no está compilado en ningún target (§3.1, verificado con grep -rn en CMakeLists.txt y *.cmake). 
+(2) `src/CMakeLists.txt`, target `opus_original_startup_probe` (línea 1361-1362): Añadida línea `target_link_libraries(opus_original_startup_probe PRIVATE opus_shell_memory)` dentro de guard `if(OPUS_WINELIB_BUILD)` para resolver rotura de enlace latente (§3.4, símbolos OpusMemAlloc/Lock/Unlock/Free referenciados en catalog.o/elsubs2.o).
+(3) `docs/port-qt/scripts/handle-check/run.sh` (línea 8): Corregida variable CORE_LIB de ruta obsoleta `../../../../build/linux-winelib-debug/opus_core_build-prefix/src/opus_core_build-build` a ruta correcta `../../../../out/linux-winelib-debug/core/lib` (§4.1, verificado con realpath).
+(4) `CLAUDE.md`, sección Tests/Gating (línea 45): Añadidas `opus_shell_font_substitution_test` y `opus_shell_memory_foreign_test` a la lista de tests gating (§4.1, verificado en src/CMakeLists.txt líneas 226-228, 285-290, 1450-1453).
