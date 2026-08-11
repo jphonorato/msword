@@ -897,6 +897,33 @@ if(OPUS_WINELIB_BUILD)
     endforeach()
 endif()
 
+# K&R-era C dialect flags, shared by every target that compiles original
+# Opus C translation units (or port/ fixtures that include Opus headers).
+# These used to be spelled out per target with target_compile_options(...
+# PRIVATE ...), which does not propagate: opus_original_engine and
+# opus_x64_runtime had them, but opus_original_sttb_test,
+# opus_original_plc_test, opus_original_strtbl_test and opus_x64_runtime_test
+# compile the same sources into their own objects and inherited nothing --
+# ~1098 -Wimplicit-int/-Wimplicit-function-declaration errors under GCC 14,
+# whose default -std=gnu17 rejects implicit int outright. An INTERFACE target
+# is the propagating form; consuming it adds nothing to the link line.
+#
+# -std=gnu89: this is 1980s K&R-era C (old-style function definitions,
+# implicit int). -funsigned-char: /J's GCC equivalent -- Opus was built
+# with unsigned plain characters (see port/original/opus_x64_compat.h).
+# -fms-extensions: accepts MSVC's nameless-struct-member extension,
+# which struct PAP/PAPS (Opus/wordtech/props.h) depends on.
+# -fpermissive: downgrades a handful of stricter-in-GCC diagnostics
+# (old-style K&R prototype mismatches) to warnings. Guarded by
+# COMPILE_LANGUAGE:C -- the consuming targets also hold C++ translation
+# units that -std=gnu89 would reject outright.
+add_library(opus_original_c_dialect INTERFACE)
+if(OPUS_WINELIB_BUILD)
+    target_compile_options(opus_original_c_dialect INTERFACE
+        $<$<COMPILE_LANGUAGE:C>:-std=gnu89 -funsigned-char -fms-extensions -fpermissive>
+    )
+endif()
+
 add_library(opus_original_engine STATIC ${OPUS_ORIGINAL_ENGINE_SOURCES})
 
 add_dependencies(opus_original_engine
@@ -1037,23 +1064,11 @@ target_compile_definitions(opus_original_engine PRIVATE
     NOMINMAX
 )
 target_include_directories(opus_original_engine PRIVATE ${OPUS_ORIGINAL_INCLUDE_DIRS})
+target_link_libraries(opus_original_engine PRIVATE opus_original_c_dialect)
 if(MSVC)
     # /J preserves the original compiler's unsigned-char default. Do not use
     # the C++ compiler for K&R-era original C translation units.
     target_compile_options(opus_original_engine PRIVATE /J /W3 /wd4005 /Gy)
-elseif(OPUS_WINELIB_BUILD)
-    # -std=gnu89: this is 1980s K&R-era C (old-style function definitions,
-    # implicit int). -funsigned-char: /J's GCC equivalent -- Opus was built
-    # with unsigned plain characters (see port/original/opus_x64_compat.h).
-    # -fms-extensions: accepts MSVC's nameless-struct-member extension,
-    # which struct PAP/PAPS (Opus/wordtech/props.h) depends on.
-    # -fpermissive: downgrades a handful of stricter-in-GCC diagnostics
-    # (old-style K&R prototype mismatches) to warnings. Applied only to C
-    # sources: this target also holds ~20 .cpp translation units
-    # (port/original/opus_asm_*.cpp) that -std=gnu89 would reject outright.
-    target_compile_options(opus_original_engine PRIVATE
-        $<$<COMPILE_LANGUAGE:C>:-std=gnu89 -funsigned-char -fms-extensions -fpermissive>
-    )
 endif()
 set_target_properties(opus_original_engine PROPERTIES
     FOLDER "Original Opus x64"
@@ -1096,18 +1111,15 @@ target_compile_definitions(opus_x64_runtime PRIVATE
     NOMINMAX
 )
 target_include_directories(opus_x64_runtime PRIVATE ${OPUS_ORIGINAL_INCLUDE_DIRS})
+# This target's two C sources (opus_original_chupper.c, opus_x64_layout.c)
+# are K&R-era like the engine's; the other 16 translation units are C++ and
+# the COMPILE_LANGUAGE:C guard inside opus_original_c_dialect keeps the
+# dialect flags off them.
+target_link_libraries(opus_x64_runtime PRIVATE opus_original_c_dialect)
 if(MSVC)
     # Opus was built with unsigned plain characters; the byte-oriented string
     # and international-character assembly routines depend on that behavior.
     target_compile_options(opus_x64_runtime PRIVATE /J /W4 /permissive-)
-elseif(OPUS_WINELIB_BUILD)
-    # This target's two C sources (opus_original_chupper.c,
-    # opus_x64_layout.c) are K&R-era like the engine; same rationale as
-    # opus_original_engine's matching block above. Applied only to C
-    # sources: the other 16 translation units here are C++.
-    target_compile_options(opus_x64_runtime PRIVATE
-        $<$<COMPILE_LANGUAGE:C>:-std=gnu89 -funsigned-char -fms-extensions -fpermissive>
-    )
 endif()
 set_target_properties(opus_x64_runtime PROPERTIES
     FOLDER "Original Opus x64/runtime"
@@ -1129,7 +1141,7 @@ target_compile_definitions(opus_original_sttb_test PRIVATE
     WIN WIN23 CRLF NONATIVE OPUS_X64 NOMINMAX
 )
 target_include_directories(opus_original_sttb_test PRIVATE ${OPUS_ORIGINAL_INCLUDE_DIRS})
-target_link_libraries(opus_original_sttb_test PRIVATE opus_x64_runtime user32)
+target_link_libraries(opus_original_sttb_test PRIVATE opus_original_c_dialect opus_x64_runtime user32)
 if(MSVC)
     target_compile_options(opus_original_sttb_test PRIVATE /J /W3 /wd4005)
 endif()
@@ -1154,7 +1166,7 @@ target_compile_definitions(opus_original_plc_test PRIVATE
     WIN WIN23 CRLF NONATIVE OPUS_X64 NOMINMAX
 )
 target_include_directories(opus_original_plc_test PRIVATE ${OPUS_ORIGINAL_INCLUDE_DIRS})
-target_link_libraries(opus_original_plc_test PRIVATE opus_x64_runtime user32)
+target_link_libraries(opus_original_plc_test PRIVATE opus_original_c_dialect opus_x64_runtime user32)
 if(MSVC)
     target_compile_options(opus_original_plc_test PRIVATE /J /W3 /wd4005)
 endif()
@@ -1352,7 +1364,7 @@ target_compile_definitions(opus_original_strtbl_test PRIVATE
     WIN WIN23 CRLF NONATIVE OPUS_X64 NOMINMAX
 )
 target_include_directories(opus_original_strtbl_test PRIVATE ${OPUS_ORIGINAL_INCLUDE_DIRS})
-target_link_libraries(opus_original_strtbl_test PRIVATE user32)
+target_link_libraries(opus_original_strtbl_test PRIVATE opus_original_c_dialect user32)
 if(MSVC)
     target_compile_options(opus_original_strtbl_test PRIVATE /J /W3 /wd4005)
 endif()
@@ -1377,7 +1389,7 @@ target_compile_definitions(opus_x64_runtime_test PRIVATE
     WIN WIN23 CRLF NONATIVE OPUS_X64 NOMINMAX
 )
 target_include_directories(opus_x64_runtime_test PRIVATE ${OPUS_ORIGINAL_INCLUDE_DIRS})
-target_link_libraries(opus_x64_runtime_test PRIVATE opus_x64_runtime user32 gdi32)
+target_link_libraries(opus_x64_runtime_test PRIVATE opus_original_c_dialect opus_x64_runtime user32 gdi32)
 set_target_properties(opus_x64_runtime_test PROPERTIES
     FOLDER "Original Opus x64/tests"
     RUNTIME_OUTPUT_DIRECTORY "${MSWORD_BUILD_ROOT}/tests"
