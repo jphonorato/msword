@@ -29,6 +29,29 @@ target_include_directories(opus_shell_config PUBLIC
 )
 target_link_libraries(opus_shell_config PUBLIC Qt6::Core)
 
+# Contrato de sustitución de fuentes de época (§B2.6). Tabla de datos
+# estática, medida contra el oráculo Winelib -- ver
+# docs/port-qt/01-frontera-nucleo-shell.md §B2.6. No depende de Qt.
+add_library(opus_shell_font_substitution STATIC
+    src/OpusShellFontSubstitution.cpp
+)
+target_include_directories(opus_shell_font_substitution PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+)
+install(TARGETS opus_shell_font_substitution ARCHIVE DESTINATION lib)
+
+if(OPUS_CORE_BUILD_TESTS)
+    add_executable(opus_shell_font_substitution_test
+        src/OpusShellFontSubstitution_test.cpp
+    )
+    target_link_libraries(opus_shell_font_substitution_test PRIVATE
+        opus_shell_font_substitution
+    )
+    add_test(NAME opus_shell_font_substitution_test
+             COMMAND $<TARGET_FILE:opus_shell_font_substitution_test>)
+    install(TARGETS opus_shell_font_substitution_test RUNTIME DESTINATION bin)
+endif()
+
 # Contrato de memoria Win16 (B3). No depende de Qt: es malloc/realloc/free
 # nativo detrás de un handle opaco con contador de fijación -- ver
 # docs/port-qt/01-frontera-nucleo-shell.md §B3 y el comentario de cabecera
