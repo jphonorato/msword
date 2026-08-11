@@ -44,6 +44,9 @@ DEBUG.md
 src/port/tools/host/build/
 src/port/tools/build/
 
+# Claude Code worktrees (EnterWorktree scratch checkouts)
+.claude/worktrees/
+
 # IDE / Editor
 .vscode/
 .idea/
