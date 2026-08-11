@@ -258,3 +258,59 @@ Por cada commit (archivo o lote pequeño):
 3. Por archivo o lote pequeño (§5, §6): migrar sitios mecánicos con el guard estándar + `OpusMemFlagsFromWin16()` donde aplique.
 4. Commit separado para `catalog.c:1612` (§7), con la pérdida de comportamiento documentada en el mensaje de commit, no solo en este spec.
 5. Verificación por cada paso (§8); verificación de link real de `WORD1` queda pendiente de entorno hasta poder ejecutarla.
+
+## 10. Familias de handle cruzando TUs — análisis previo al lote 2 (2026-08-10)
+
+Hecho después de commitear `elsubs2.c` (`3c7c0db`), antes de elegir el siguiente archivo. Método: extracción del argumento de los 147 sitios (los 6 símbolos, script sobre las 17 TU de §5), agrupado por identificador base, y verificación individual en el código (declaración `extern`/global vs. local) para cada grupo con más de una TU — no basta con que el nombre coincida.
+
+**Categoría A — global compartido real, mismo tipo de riesgo que `hevt` (§ya documentado en el commit de `elsubs2.c`):**
+
+| Familia | TUs y símbolos | Evidencia |
+|---|---|---|
+| `hevt`/`lphevtHead`/`phevt` | `eldde.c` (Lock/Unlock/Free, ~15 sitios) + `elsubs2.c` (Lock/Unlock, ya migrado en `3c7c0db`) + `quit.c:809` (Free) | ya documentado |
+| `hPlaybackHook` | `eldde.c:40` declara `HANDLE hPlaybackHook;` (global) + `quit.c:321` `extern HANDLE hPlaybackHook;` (Free) | `eldde.c` Lock, `quit.c` Free — mismo objeto |
+| `lphrgbKeyState` | `eldde.c:42` declara `HANDLE FAR *lphrgbKeyState;` (global) + `quit.c:798` `extern ... far *lphrgbKeyState;` | `eldde.c` Lock/Free/Unlock, `quit.c` Lock/Unlock/Free — mismo objeto, ambos TUs gestionan el ciclo completo |
+
+Los tres apuntan al mismo par `eldde.c` + `quit.c`. Implicación: cuando le toque el turno a `eldde.c` (si su parte no-DDE llega a migrarse — ver §11), debe ir en el mismo lote que `quit.c` completo (5 sitios), no aparte.
+
+**Categoría B — falso positivo por nombre genérico, verificado que NO comparten objeto (migrables por TU independiente):**
+
+- `hsz` (`help.c`, `spelcore.c`): local en cada función, sin `extern`, objetos distintos.
+- `pghd->ghsz` (`etcmd.c`, `spelcore.c`): `pghd` es parámetro `struct GHD *` (tipo compartido, `splshare.h:64`); cada TU tiene su propia función alocadora sobre instancias de dueño distinto (`FCopySzToGhdET`/`vpetlib->*` en `etcmd.c`; `FCopySzToGhd`/`vpspl->*` en `spelcore.c`) — ciclo completo alloc→lock→unlock→free dentro de cada TU.
+- `hData` en `debug/debug2.c` (no confundir con el `hData` de `eldde.c`/`ddeclnt.c`, categoría C): local, ciclo completo dentro de una sola función.
+- `h` (`debug/debug1.c`, `rcinit.c`): locales sin relación entre sí; además ambos son código muerto (ver actualización en §12).
+
+## 11. Categoría C — handles DDE cruzando proceso vía mensajes de Windows (BLOQUEADO, fuera de alcance de este issue)
+
+**No es un problema de orden de lote como la Categoría A — es una pregunta de diseño abierta, sin resolver.**
+
+Cuatro sitios verificados en el árbol (no los 48 de `eldde.c` completos — ver alcance de la verificación más abajo):
+
+- **`eldde.c` `hExec`** (`ElDDEExecute`, líneas 176–218): alocado localmente con `OurGlobalAlloc(GMEM_DDE,...)`, pero posteado a otra ventana/proceso vía `FPostDdeDcl(dcl, WM_DDE_EXECUTE, 0, hExec)` — el handle viaja por el sistema de mensajes real de Windows/Wine hacia el receptor DDE, que puede ser un proceso externo.
+- **`eldde.c` `hCmds`** (líneas 1385–1436): bloqueado con `GlobalLockClip` (ya excluido del contrato, decisión Qt-6 de portapapeles) pero desbloqueado con `GlobalUnlock` (2 sitios, sí en alcance de este issue) — es un macro/comando **recibido** vía `WM_DDE_EXECUTE` desde otro proceso.
+- **`eldde.c` `wLow`** (handler `WM_DDE_DATA`, líneas 540–620) y **`ddeclnt.c` `wLow`** (líneas 770–920): mismo patrón — el handle llega en el propio mensaje `WM_DDE_DATA`, se bloquea con `GlobalLockClip` (excluido) y se libera con `GlobalFree` (en alcance). El propio código confirma que es un bloque de datos que **otro proceso** alocó y envió.
+- **`eldde.c`/`ddeclnt.c` `hData`** (`ddli.hData` y variantes de `ElDDEExecute`): mismo patrón de protocolo DDE.
+
+**Argumento central:** en los cuatro casos, el `Lock` ya vive permanentemente fuera del contrato `OpusShellMemory` (`GlobalLockClip`, decisión Qt-6 ya tomada), pero el `Free`/`Unlock` emparejado sí está contado entre los 147 sitios de este issue. `OpusMemLock`/`OpusMemUnlock`/`OpusMemFree` (`OpusShellMemory.cpp`) operan sobre un registro privado (`OpusHandleImpl*`), no envuelven `GlobalAlloc`/`HGLOBAL` de Wine. Si el handle lo aloca un proceso externo real vía `WM_DDE_*` (no este código), envolver su liberación/desbloqueo en `OpusMemFree`/`OpusMemUnlock` puede ser **incorrecto de raíz** — memoria ajena reinterpretada como el struct interno del contrato — no un problema de "todavía no se migró la otra TU" que se arregla reordenando lotes (a diferencia de la Categoría A).
+
+**Alcance de la verificación — explícito, no asumir más de lo comprobado:** se verificaron estos 4 casos concretos, no los 48 sitios de `eldde.c` uno por uno. El patrón (par `GlobalLockClip` + `Free`/`Unlock` sobre un handle de mensaje DDE) es consistente en los 4, pero esto es **un patrón observado, no un hallazgo cerrado sobre toda la TU** — antes de tocar `eldde.c` o `ddeclnt.c` hace falta una revisión completa sitio por sitio, no solo extrapolar desde estos 4.
+
+**Estado: BLOQUEADO.** Ningún sitio DDE de `eldde.c` ni `ddeclnt.c` se migra bajo ninguna circunstancia sin autorización nueva y específica del mantenedor — distinta de la ya dada para el resto de los 147 sitios en issue #3 — hasta que exista una decisión de diseño explícita sobre si estos sitios quedan excluidos del contrato `OpusShellMemory` (como ya pasó con `GlobalLockClip`) o se resuelven de otra forma.
+
+## 12. Código muerto bajo condición no compilada — actualizado (6 sitios, 3 TU, no 3)
+
+Además de `initwin.c:781` y `rcinit.c:84,86` (bajo `OPUS_X64`, ya documentado en §5), **`Opus/debug/debug1.c` tiene sus 3 sitios completos** (100% del archivo — `GlobalLock`, `GlobalUnlock`, `GlobalFree`, todos dentro de `FakeRtfClipboard`) bajo `#ifdef RPDEBUG`. `RPDEBUG` no está definido en ningún `.h` ni en `CMakeLists.txt` del árbol — código muerto, mismo tratamiento que los otros dos. Total actualizado: **6 sitios, 3 TU** (`initwin.c` 1, `rcinit.c` 2, `debug/debug1.c` 3), dos flags de exclusión distintos (`OPUS_X64`, `RPDEBUG`). `debug/debug1.c` queda fuera de cualquier lista de candidatos "seguros para migrar ya" por esta razón, no solo por pertenecer a `Opus/debug/`.
+
+## 13. `res.c`/`OurGlobalAlloc` — el asignador central, no un archivo más de la lista (2026-08-10, previo al lote 2)
+
+Encontrado al evaluar `res.c` como candidato al lote 2. No es una familia de handle más — es una dependencia estructural que atraviesa la mayoría de las 17 TU.
+
+`Opus/res.c` define `OurGlobalAlloc`/`GlobalAlloc2`/`OurGlobalReAlloc` (comentario propio del código: *"Perform a GlobalAlloc. if it fails reduce our swap area and try again."*) — el punto de entrada de asignación que casi todo el árbol usa en vez de llamar `GlobalAlloc`/`GlobalReAlloc` directamente. Internamente, `OurGlobalAlloc`/`OurGlobalReAlloc` sí llaman la `GlobalAlloc`/`GlobalReAlloc` reales — son 2 de los 4 sitios en alcance de `res.c` en la tabla de §5.
+
+**Verificado por grep, no asumido:** `OurGlobalAlloc`/`OurGlobalReAlloc` se llaman desde **12 de las 17 TU** en alcance: `eldde.c`, `ddeclnt.c`, `etcmd.c`, `filecvt.c`, `help.c`, `rcinit.c`, `spelcore.c`, `res.c`, `raremsg.c`, `rtfout2.c`, `debug/debug2.c`, `debug/debug1.c`. Confirmado además, específicamente, que el handle que cada una de estas TU asigna ahí es el mismo que sus propios sitios `GlobalLock`/`GlobalUnlock`/`GlobalFree` en alcance tocan después (no una coincidencia de nombre): `help.c:265` (`hHlp`) y `help.c:2110` (`hText`); `spelcore.c:681,687` (`pghd->ghsz`) y `spelcore.c:727,797` (`hsz`); `debug/debug2.c:714` (`hData`).
+
+**Consecuencia:** migrar los 2 sitios `GlobalAlloc`/2 `GlobalReAlloc` de `res.c` por sí solos cambiaría de golpe la representación en tiempo de ejecución de *todo* handle obtenido vía `OurGlobalAlloc` — es decir, de las 12 TU consumidoras simultáneamente — mientras ninguna de ellas (salvo que se migre en el mismo lote) tenga sus propios `Lock`/`Unlock`/`Free` migrados. Es el mismo tipo de corrupción que la Categoría A (`hevt`) y la Categoría C (DDE), pero en vez de 2-3 TU compartiendo un handle, son potencialmente **todas las TU que dependen de `OurGlobalAlloc`** a la vez. Migrar `res.c` en un lote pequeño y aislado (como pide §6) es exactamente lo que rompe esto — sería el lote menos aislado de los 147 sitios, no el más simple.
+
+**Implicación para el orden general, no solo para `res.c`:** cualquier TU cuyos handles en alcance provengan de `OurGlobalAlloc` (la mayoría de las 12 listadas arriba) hereda el mismo riesgo que ya se documentó para `elsubs2.c`/`hevt` — el "productor" (`res.c`, sin migrar) y el "consumidor" (la TU en cuestión, si se migra) quedan desincronizados hasta que `res.c` se migre. La diferencia entre `elsubs2.c` y estas 12 TU es que `elsubs2.c` no asigna nada — solo bloquea/desbloquea un handle ajeno (issue documentado, aceptado porque WORD1 no arranca hoy). Migrar `help.c` o `spelcore.c` (que sí enlazan en WORD1, a diferencia de `debug/*`) repetiría el mismo riesgo pero sobre TU que si el bloqueador de arranque de Fase 6 se resuelve, sí se ejecutan — acumular esto sin resolverlo es la deuda técnica que la granularidad de §6 buscaba evitar, no solo "todavía no le tocó el turno a esa TU".
+
+**`res.c` queda fuera de la lista de candidatos para lotes tempranos.** Su migración requiere, o bien migrar sus 12 TU consumidoras en el mismo lote (contradice la granularidad de §6), o bien migrarlo al final, después de que todas ellas ya estén migradas — decisión de orden explícita pendiente, no asumida aquí. `Opus/debug/debugwin.c` es la única TU de las 17 que **no** depende de `OurGlobalAlloc` en absoluto (verificado, cero coincidencias) — no tiene alocador propio, son 3 funciones puente (`GlobalAllocFP`/`GlobalLockClipFP`/`GlobalReAllocFP`) que reciben el handle ya armado como parámetro genérico de quien las llama.
