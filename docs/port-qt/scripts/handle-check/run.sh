@@ -5,7 +5,7 @@
 # (cmake --build build/linux-winelib-debug --target opus_core_build).
 set -e
 
-CORE_LIB="../../../../build/linux-winelib-debug/opus_core_build-prefix/src/opus_core_build-build"
+CORE_LIB="../../../../out/linux-winelib-debug/core/lib"
 
 cd "$(dirname "$0")"
 

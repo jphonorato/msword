@@ -1359,6 +1359,9 @@ target_compile_definitions(opus_original_startup_probe PRIVATE
     WIN WIN23 CRLF NONATIVE OPUS_X64 NOMINMAX UNICODE _UNICODE
 )
 target_link_libraries(opus_original_startup_probe PRIVATE opus_original_engine opus_x64_runtime user32 dbghelp)
+if(OPUS_WINELIB_BUILD)
+    target_link_libraries(opus_original_startup_probe PRIVATE opus_shell_memory)
+endif()
 set_target_properties(opus_original_startup_probe PROPERTIES
     FOLDER "Original Opus x64/port probes"
     RUNTIME_OUTPUT_DIRECTORY "${MSWORD_BUILD_ROOT}/probes"

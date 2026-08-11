@@ -1,3 +1,5 @@
+/* No compilado por ningún target al 2026-08-11 (verificado: cero referencias en src/CMakeLists.txt, src/core/CMakeLists.txt, src/port/tools/host/CMakeLists.txt y *.cmake). Ver docs/superpowers/specs/2026-08-11-opus-memory-passthrough-checklist-audit.md §3.1. */
+
 #include "opus_x64_compat.h"
 #include "inter.h"
 
