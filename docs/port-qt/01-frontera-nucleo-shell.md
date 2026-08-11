@@ -940,16 +940,62 @@ el veredicto de `opustlbx/`— quedan cerradas aquí:
 **Nueva, abierta, no resuelta en este documento — encontrada al hacer
 Fase 1 de B3 (§B3.3), no buscada a propósito:**
 
-3. **§B2.1 describe la estructura equivocada.** La cita central del
-   contrato de medición de texto (`Opus/wordtech/format.h:379-410`,
+3. **§B2.1 describe la estructura equivocada. RESUELTO 2026-08-11 — no invalida
+   §B2.2/§B2.3, corrige la narrativa.** La cita central del contrato de
+   medición de texto (`Opus/wordtech/format.h:379-410`,
    `dxuFrac`/`bmpchdxu`/`struct FONTREC far * far *qqftr`) es código
    `#ifdef MAC`, muerto en este build. El `struct FTI` real que se compila
-   bajo `WIN`/`OPUS_X64` está en `Opus/fontwin.h:126-152` y es
-   estructuralmente distinto: sin acumulador de fracción, con
-   `int rgdxp[256]` inline en vez de un puntero a tabla externa, y
-   `HFONT hfont`. No se sabe todavía si esto invalida la estrategia de
-   §B2.3 (ppem entero + `PreferFullHinting`, medida contra el
-   comportamiento observable de `GetTextExtent`/`GetTextMetrics`, no
-   contra el layout interno de `struct FTI`) o si solo invalida la
-   narrativa de acompañamiento. Bloqueante para *empezar a implementar*
-   B2, no para lo que ya se cerró de B3 o B5.
+   bajo `WIN`/`OPUS_X64` está en `Opus/fontwin.h:126-152`, y su gemelo de
+   caché es `struct FCE` (`Opus/fontwin.h:96-124`, primeros
+   `cbFtiFceSame` bytes idénticos a `FTI` por diseño). Ninguno de los dos
+   tiene acumulador de fracción — **la tabla de anchos real no vive
+   inline en `FTI`, vive en `FCE.hqrgdxp`**: un handle Win16 (`HQ`, la
+   misma familia de handle que el contrato B3 ya cubre) a un array de
+   **256 `int`** (uno por valor de byte 0-255, ancho ya en píxeles
+   enteros, sin fracción), asignado con `HqAllocLcb(256*sizeof(int))`
+   (`Opus/initwin.c:2946`). El consumidor de layout no lee `FTI`/`FCE`
+   directamente carácter a carácter: copia anchos a `vfli.rgdxp[]`
+   (`struct` de resultado de línea formateada, `Opus/disp1.c:761` y
+   alrededores) durante `FormatLine`, y esa copia sí es aritmética entera
+   plana, sin fracción — confirma, no contradice, la ausencia de
+   acumulador.
+
+   **Consecuencia sobre la estrategia de §B2.3: ninguna.** La estrategia
+   (ppem entero + `QFont::PreferFullHinting`, medida contra el
+   comportamiento observable de `GetTextExtent`/`GetTextMetrics`) nunca
+   dependió del layout interno de `FONTREC`/`FTI` — se validó contra el
+   *comportamiento* de GDI, no contra una estructura de datos. Un array
+   de 256 enteros en píxeles es, si acaso, más simple de rellenar que el
+   modelo con acumulador de fracción que §B2.1 describía: no cambia qué
+   pide `OpusShellCharWidths` (avances enteros), solo el nombre de la
+   estructura interna de destino, que el contrato ya no expone.
+
+   **Consecuencia sobre el contrato (`OpusShellFontMetrics.h`):
+   `OpusFontMetrics`/`OpusShellFontMetrics()` siguen intactos** (ascenso,
+   descenso, overhang — los mismos campos existen en `FCE`/`FTI` con los
+   mismos nombres `dypAscent`/`dypDescent`/`dxpOverhang`).
+   `OpusShellCharWidths(key, chFirst, cch, rgdxu)` **sigue siendo la
+   firma correcta**, pero en este build el llamador real siempre pedirá
+   `chFirst=0, cch=256` (el rango completo de `FCE.hqrgdxp`) — no hace
+   falta soporte de rango parcial en la primera implementación, aunque el
+   contrato ya lo permite si algún consumidor futuro lo necesitara.
+   **Nuevo, no cubierto por el contrato de hoy:** `FCE`/`FTI` tienen campos
+   que `OpusFontMetrics` no expone (`dypXtraAscent`, `fVisiBad`, `fPrvw`,
+   `dxpBorder`/`dypBorder`, `dxpExpanded`) — no se sabe todavía cuáles lee
+   el motor de layout fuera de ascenso/descenso/overhang/anchos; auditar
+   antes de dar la primera implementación de `OpusShellFontMetrics()` por
+   completa.
+
+   **Sigue sin resolver, y sí es nuevo trabajo antes de implementar:**
+   el sitio exacto donde `FCE.hqrgdxp` se rellena *en vivo* vía GDI para
+   fuentes de pantalla (no restauradas desde el stream de preferencias
+   serializado, que es el único camino de llenado localizado hasta ahora
+   — `Opus/initwin.c:2909-2965`, y ese es una restauración de caché
+   persistida, no una medición en vivo). `Opus/dispspec.c:787,796`
+   (citado en §B2.1 original como "el punto de llenado") mide un solo
+   carácter a la vez (`GetTextExtent(hdc,&ch,1)`) para pintar texto ya
+   formateado, no para rellenar la tabla de 256 — puede ser un camino
+   distinto del que realmente construye `FCE.hqrgdxp` para una fuente
+   nueva. Localizar ese sitio es el primer paso real de implementar B2,
+   no cosmético: ese es "el único punto de llenado" que §B2.1 afirma que
+   existe, y todavía no está verificado cuál es.
