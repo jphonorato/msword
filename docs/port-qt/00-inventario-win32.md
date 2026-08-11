@@ -1,6 +1,6 @@
 # Fase Qt-0 v2 — Inventario de acoplamiento Win32
 
-**Árbol medido:** commit `9df9ab4` (2026-08-10) — con cambios sin comitear en el árbol de trabajo
+**Árbol medido:** commit `bdc51c5` (2026-08-11) — con cambios sin comitear en el árbol de trabajo
 **Generado por:** `docs/port-qt/scripts/audit_win32_v2.py`
 **Spec:** `docs/superpowers/specs/2026-08-10-qt-branch-fase0-design.md`
 
@@ -490,7 +490,7 @@ Ordenado por categoría (prioridad de la frontera primero), luego por sitios.
 | `BOOL` | Tipos primitivos | 1926 | 160 | pendiente | qwindows.h |
 | `WORD` | Tipos primitivos | 449 | 88 | pendiente | qwindows.h |
 | `LPSTR` | Tipos primitivos | 412 | 66 | pendiente | qwindows.h |
-| `LONG` | Tipos primitivos | 142 | 46 | pendiente | qwindows.h |
+| `LONG` | Tipos primitivos | 143 | 46 | pendiente | qwindows.h |
 | `FARPROC` | Tipos primitivos | 91 | 25 | pendiente | qwindows.h |
 | `BYTE` | Tipos primitivos | 67 | 29 | pendiente | qwindows.h |
 | `DWORD` | Tipos primitivos | 50 | 23 | pendiente | qwindows.h |
@@ -940,11 +940,11 @@ Ordenado por categoría (prioridad de la frontera primero), luego por sitios.
 | Entrada/cursor | 111 | 0 | 28 |
 | Persistencia de configuración | 43 | 0 | 12 |
 | Tipos HANDLE-like | 1445 | 0 | 120 |
-| Tipos primitivos | 3199 | 0 | 174 |
+| Tipos primitivos | 3200 | 0 | 174 |
 | Geometría | 330 | 0 | 49 |
 | Convenciones ABI | 0 | 2058 | 0 |
 | Constantes Win16 | 5965 | 1 | 179 |
-| **TOTAL** | **12983** | **2059** | |
+| **TOTAL** | **12984** | **2059** | |
 
 ## Vista 4 — Headers (dimensión de dependencia, no unidades portables)
 
