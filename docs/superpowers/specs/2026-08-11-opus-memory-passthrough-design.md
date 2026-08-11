@@ -132,7 +132,9 @@ El shell (capa `src/port/`, no `src/core/`) implementa `OpusMemPassthroughOps` s
 
 No hay diferencia de mecanismo entre las cuatro categorías — todas comparten la misma tabla de ops y el mismo `IsOwn()`. Lo que las distingue es **qué flags de asignación** hacen que `OpusMemAlloc` produzca un handle ajeno en primer lugar (§4), no un mecanismo de enrutado distinto por categoría. Concretamente:
 
-- **A** (`hevt`/`lphevtHead`/`lphrgbKeyState`, `eldde.c` productor sin migrar): el productor sigue llamando `GlobalAlloc` real directamente (no pasa por `OpusMemAlloc` — no está migrado). El consumidor migrado (`elsubs2.c`) recibe ese handle, lo pasa a `OpusMemLock`, `IsOwn()` da falso, delega en `ops.Lock`. Cuando `eldde.c` se migre más adelante (fuera de alcance de este documento), pasará a asignar vía `OpusMemAlloc` con flags planos (sin `GMEM_DDESHARE`/`GMEM_LOWER`) y el handle se volverá propio de punta a punta — la mecánica de passthrough no cambia, solo el flujo converge.
+- **A** (`hevt`/`lphevtHead`/`lphrgbKeyState`, `eldde.c` productor sin migrar): el productor sigue llamando `GlobalAlloc` real directamente (no pasa por `OpusMemAlloc` — no está migrado). El consumidor migrado (`elsubs2.c`) recibe ese handle, lo pasa a `OpusMemLock`, `IsOwn()` da falso, delega en `ops.Lock`.
+
+  **Corrección 2026-08-11 (§9.2): la afirmación original de este párrafo — que al migrar `eldde.c` el handle "se vuelve propio de punta a punta" — es incorrecta para esta familia específica.** Los tres sitios de asignación (`eldde.c:805,821,1176,1240` para `hevt`/`*lphevtHead`; `eldde.c:1321` para `*lphrgbKeyState`) usan `GMEM_SENDKEYS` (`dde.h:29`, `= GMEM_LOWER|GMEM_MOVEABLE`), y el bit `GMEM_LOWER` (`0x1000`) enruta siempre a `OPUS_MEM_FOREIGN` bajo §4 — es el flag literal del sitio de llamada, no un efecto de que `eldde.c` esté o no migrado. Migrar `eldde.c` no cambia el flag; el handle sigue pasando por `ops.Alloc` incluso después de la migración completa del productor. **Verificado que esto es solo cuestión de flag, no de manipulación real de segmento/selector**: `AllocSelector`/`PrestoChangoSelector`/`FreeSelector` en `eldde.c:1300-1312` operan exclusivamente sobre `hPlaybackHook` (Categoría D) — `hevt`/`lphevtHead`/`lphrgbKeyState` se alocan con `GlobalAlloc`/`GlobalReAlloc` planos, sin ningún selector real de por medio. Conclusión correcta: **Categoría A permanece permanentemente en el camino foreign, igual que B1/B2/B3 — no converge a propio, pero el mecanismo funciona sin problema**, porque `ops.Alloc` reenvía `GMEM_LOWER` a la `GlobalAlloc` real de Wine sin ninguna dificultad (a diferencia de D, que no tiene equivalente conceptual posible en absoluto). No es una reclasificación a D — D sigue reservada a los sitios con manipulación real de selector/segmento (`hPlaybackHook`, `hCode`, `hfontPhy`).
 - **B1/B2/B3** (DDE, DLL externa, WinHelp/portapapeles): el sitio migrado llama `OpusMemAlloc` con los flags Win16 originales intactos (`GMEM_DDESHARE`, `gmemLibShare`, `GMEM_SHARE|GMEM_NOT_BANKED`). `OpusMemAlloc` ve el bit de enrutado (§4), llama `ops.Alloc` en vez de `malloc`, y el handle resultante nunca entra en `OwnHandles()`. Todas las llamadas posteriores (`Lock`/`Unlock`/`Free`/etc.) sobre ese handle van a `ops` automáticamente porque `IsOwn()` da falso.
 
 ---
@@ -318,8 +320,105 @@ decisión del mantenedor antes de implementar: o se acepta que A vive permanente
 en el camino foreign (documentando la corrección a §3.3), o se reclasifica `hevt`
 como D (con la misma discusión que ya tuvo `hPlaybackHook`).
 
-### 9.3 Ítems 3 y 4 — no ejecutados
+**Corrección aplicada** (2026-08-11, tras verificación pedida por el mantenedor): se
+descartó la reclasificación a D. Verificado contra el árbol que
+`AllocSelector`/`PrestoChangoSelector`/`FreeSelector` (`eldde.c:1300-1312`) operan
+exclusivamente sobre `hPlaybackHook` — `hevt`/`lphevtHead` (`hData`, alocado
+`GMEM_FIXED|GMEM_LOWER` en `eldde.c:1261`) y `lphrgbKeyState`
+(`GMEM_SENDKEYS`, `eldde.c:1321`) son `GlobalAlloc`/`GlobalReAlloc` planos, sin
+selector real de por medio. §3.3 (arriba) ya quedó corregido con la conclusión
+correcta: A permanece permanentemente en el camino foreign, igual que B1/B2/B3 — el
+mecanismo funciona sin problema porque `ops.Alloc` reenvía `GMEM_LOWER` a la
+`GlobalAlloc` real de Wine sin dificultad; no hay vacío de diseño, solo una premisa de
+convergencia incorrecta en el texto original.
 
-Pendientes para una sesión posterior, por decisión explícita: documentar este hallazgo
-y detenerse aquí en vez de continuar con el punto de instalación de
-`OpusMemSetPassthrough` (ítem 3) y el diseño del test de round-trip cruzado (ítem 4).
+### 9.3 Ítem 3 — punto exacto de instalación de `OpusMemSetPassthrough`
+
+**Precedente ya existente en el árbol para el mismo problema** (estado compartido
+entre TUs de `Opus/`, instalado una vez antes de que cualquier TU pueda usarlo):
+`OpusRegisterOriginalDialogCallbacks()`, definida en
+`src/port/original/opus_sdm_runtime.cpp:2416-2428`, rellena siete punteros a función
+globales (`g_list_font_name`, `g_font_name_to_value`, etc.) — mismo patrón estructural
+que `OpusMemPassthroughOps`: una tabla de function pointers implementada por `src/port/`
+para que `Opus/` la consuma sin que el núcleo conozca la implementación real.
+
+Se instala en `src/port/original/opus_original_startup_probe.cpp::wWinMain`
+(líneas 461-465), el `wWinMain` real de `WORD1` (`WORD1_SOURCES` en
+`src/CMakeLists.txt:1239` — no `opus_product_entry.cpp`, que es un target de
+verificación de enlace distinto, no el binario final). Orden exacto en esa función:
+
+```
+SetUnhandledExceptionFilter / AddVectoredExceptionHandler / _RTC_SetErrorFuncW
+ResetRibbonTrace()
+OpusRegisterOriginalDialogCallbacks(...)   // línea 461 — precedente exacto
+    <-- OpusMemSetPassthrough(&kWineMemOps) iría aquí, mismo bloque
+OpusOriginalWinMain(...)                    // línea 473 — primer punto que ejecuta Opus/
+```
+
+**Propuesta concreta:** llamar `OpusMemSetPassthrough(&kWineMemOps)` inmediatamente
+después de `OpusRegisterOriginalDialogCallbacks(...)` (línea ~465) y antes de
+`OpusOriginalWinMain(...)` (línea 473), en el mismo `wWinMain`. `kWineMemOps` es una
+tabla `static const OpusMemPassthroughOps` nueva, implementada en
+`src/port/original/` (candidato: nuevo archivo `opus_mem_passthrough_ops.cpp`, junto a
+`opus_sdm_runtime.cpp`, siguiendo la misma convención de un archivo por contrato de
+`src/port/`), envolviendo `GlobalAlloc`/`GlobalLock`/`GlobalUnlock`/`GlobalReAlloc`/
+`GlobalSize`/`GlobalFree` reales de Wine.
+
+**Guard necesario:** la instalación solo tiene sentido bajo
+`#if defined(__GNUC__) && !defined(_MSC_VER)` — el build MSVC no pasa por
+`OpusMem*` en ningún sitio migrado (rama `#else` preserva las llamadas `Global*`
+originales sin cambios, spec de migración base, cambio propuesto por sitio), así que
+instalar un passthrough ahí no tiene consumidor y añadiría una dependencia sin uso.
+Mismo guard que ya usa el resto de la migración mecánica.
+
+No instalado en esta sesión — solo el punto y la justificación, tal como pidió el
+checklist.
+
+### 9.4 Ítem 4 — diseño de la prueba de round-trip cruzada
+
+Referencia de formato ya en el árbol: `docs/port-qt/scripts/handle-check/` — programa
+de un solo uso (no parte del build/CTest), compilado y enlazado con **`wineg++`** (no
+`winegcc`, ver comentario en `handle_check.c` sobre `libstdc++`), que ejercita
+`OpusMemAlloc → Lock → escribir patrón → Unlock → Lock → verificar patrón →
+OpusMemHandle → Free → Lock tras Free (debe dar NULL)`, más un modo `--double-free`
+que espera terminación anormal (`abort()`, exit 134 bajo Wine). `OpusShellConfig_test.cpp`
+y `OpusShellFontSubstitution_test.cpp` (en `src/core/src/`, sí parte del build, bajo
+`OPUS_CORE_BUILD_TESTS`) siguen el mismo patrón `Check()`/contador de fallos pero
+corren con el compilador nativo, no con `wineg++` — no sirven de referencia para el
+enlace cruzado, solo para el formato de aserciones. La prueba del camino foreign
+necesita ambos: el patrón de aserciones de estos dos, y el enlace `wineg++` de
+`handle-check/`.
+
+**Diseño propuesto** (no implementado): `docs/port-qt/scripts/handle-check-foreign/`,
+mismo formato de carpeta que `handle-check/` (`README.md` + `run.sh` + `.c`), tres
+casos:
+
+1. **Caso A — handle producido fuera del contrato (simula Categoría A hoy, `eldde.c`
+   sin migrar).** `GlobalAlloc` real de Wine directo (no `OpusMemAlloc`) → escribir
+   patrón por el puntero real → `OpusMemSetPassthrough(&wineOps)` instalado →
+   `OpusMemLock(h)` sobre ese handle (simula `elsubs2.c` migrado) → verificar que el
+   patrón se lee igual que en `handle-check/` → `OpusMemUnlock` → `OpusMemFree` →
+   confirmar que el handle ya no es válido (`GlobalLock` real posterior debe fallar,
+   no `OpusMemLock` — el handle nunca estuvo en `OwnHandles()`). Mismas aserciones que
+   `handle_check.c`, pero el `Alloc` inicial es `GlobalAlloc` real, no `OpusMemAlloc`.
+
+2. **Caso B — handle producido con flags foreign vía el contrato (simula B1/B2/B3
+   migrados).** `OpusMemAlloc(cb, OPUS_MEM_DDESHARE)` (o `OPUS_MEM_LOWER`) con `ops`
+   instalado → confirmar que el puntero devuelto por `OpusMemLock` es utilizable
+   (escribir/leer patrón) → confirmar, con una sonda aparte que llame `GlobalLock`
+   real de Wine sobre el mismo valor de handle, que **es** un `HGLOBAL` real (no un
+   `OpusHandleImpl*`) — round-trip cruzado en el sentido literal: entra por
+   `OpusMemAlloc`, sale verificable por la API de Wine directa. Esto es lo que
+   `handle-check/` no prueba (ahí todo el ciclo es `OpusMem*`, nunca se cruza a
+   `Global*` real a mitad de camino).
+
+3. **Caso C — sin `ops` instalado, `OpusMemAlloc` con flags foreign debe fallar
+   cerrado.** Sin llamar `OpusMemSetPassthrough` (o llamándolo con `NULL` primero) →
+   `OpusMemAlloc(cb, OPUS_MEM_DDESHARE)` → debe devolver `NULL` (§6 riesgo 2 del
+   passthrough, "debe fallar, no degradar a malloc privado"). Verificación negativa,
+   mismo espíritu que `--double-free` en `handle-check/`: confirma que el modo de
+   fallo es ruidoso, no silencioso.
+
+`run.sh` sigue el mismo patrón de `handle-check/run.sh`: compila con `wineg++ -I.../core/include ... -lopus_shell_memory`, corre los tres casos como binarios o modos (`--case-a`/`--case-b`/`--case-c`, mismo estilo que `--double-free`), cada uno con código de salida propio, verificado por el script. No entra al CTest normal (mismo estatus que `handle-check/`: "no forma parte del build", herramienta de verificación puntual) salvo que se decida lo contrario al implementar.
+
+No implementado en esta sesión — solo el diseño, tal como pidió el checklist.
