@@ -10,6 +10,15 @@
 int main(void) {
     HDC hdc = CreateDCA("DISPLAY", NULL, NULL, NULL);
     const char *names[] = { "Tms Rmn", "Symbol", "Helv", "Courier" };
+    /* lfPitchAndFamily per name, matching Opus/initwin.c's boot table
+       (ffid/prq pairs) exactly as Opus/LOADFONT.C:864 combines them:
+       plf->lfPitchAndFamily = (pffn->ffid & maskFfFfid) | fcid.prq; */
+    const BYTE pitchAndFamily[] = {
+        FF_ROMAN | VARIABLE_PITCH,        /* Tms Rmn */
+        FF_DECORATIVE | DEFAULT_PITCH,    /* Symbol */
+        FF_SWISS | VARIABLE_PITCH,        /* Helv */
+        FF_MODERN | FIXED_PITCH,          /* Courier */
+    };
     for (unsigned k = 0; k < sizeof(names) / sizeof(*names); k++) {
         LOGFONTA lf;
         ZeroMemory(&lf, sizeof lf);
@@ -17,6 +26,7 @@ int main(void) {
         lf.lfWeight = FW_NORMAL;
         lf.lfItalic = 0;
         lf.lfCharSet = ANSI_CHARSET;
+        lf.lfPitchAndFamily = pitchAndFamily[k];
         lstrcpynA(lf.lfFaceName, names[k], LF_FACESIZE);
 
         HFONT hf = CreateFontIndirectA(&lf);

@@ -12,26 +12,58 @@
 namespace {
 
 int g_failures = 0;
+int g_checks = 0;
 
 void Check(bool condition, const char *what) {
+    ++g_checks;
     if (!condition) {
         std::fprintf(stderr, "FALLÓ: %s\n", what);
         ++g_failures;
     }
 }
 
+/* Por-nombre: no los 4 nombres de época resuelven a la misma familia
+   (§B2.6) -- Tms Rmn y Courier tienen su propio archivo, solo Symbol y
+   Helv coinciden en Liberation Sans. Una constante única compartida no
+   detectaría una tabla con el mapeo cruzado equivocado entre nombres. */
+struct ExpectedEntry {
+    const char *eraName;
+    const char *expectedPath;
+};
+
+const ExpectedEntry kExpected[] = {
+    { "Tms Rmn", "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf" },
+    { "Symbol",  "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf" },
+    { "Helv",    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf" },
+    { "Courier", "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf" },
+};
+
 }  // namespace
 
 int main() {
-    const char *kExpected =
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf";
+    for (const auto &expected : kExpected) {
+        const char *path = OpusShellSubstituteFontFile(expected.eraName);
+        Check(path != nullptr, expected.eraName);
+        if (path == nullptr) {
+            continue;
+        }
+        Check(std::strcmp(path, expected.expectedPath) == 0, expected.eraName);
 
-    const char *names[] = { "Tms Rmn", "Symbol", "Helv", "Courier" };
-    for (const char *name : names) {
-        const char *path = OpusShellSubstituteFontFile(name);
-        Check(path != nullptr, name);
-        if (path != nullptr) {
-            Check(std::strcmp(path, kExpected) == 0, name);
+        /* Red de seguridad contra tabla obsoleta: la ruta debe ser
+           realmente abrible en esta máquina, no solo coincidir como
+           cadena. Una máquina sin las fuentes Liberation instaladas en
+           esa ruta exacta debe fallar la prueba de forma ruidosa, no
+           producir anchos de carácter incorrectos en silencio más
+           adelante. */
+        std::FILE *fp = std::fopen(path, "rb");
+        char msg[256];
+        std::snprintf(msg, sizeof msg,
+                      "%s: archivo de fuente '%s' debe poder abrirse -- "
+                      "¿faltan las fuentes Liberation en esta máquina?",
+                      expected.eraName, path);
+        Check(fp != nullptr, msg);
+        if (fp != nullptr) {
+            std::fclose(fp);
         }
     }
 
@@ -46,10 +78,10 @@ int main() {
 
     if (g_failures == 0) {
         std::printf("OpusShellFontSubstitution_test: %d verificaciones, todas bien.\n",
-                    8);
+                    g_checks);
         return 0;
     }
-    std::fprintf(stderr, "OpusShellFontSubstitution_test: %d fallo(s).\n",
-                 g_failures);
+    std::fprintf(stderr, "OpusShellFontSubstitution_test: %d fallo(s) de %d verificaciones.\n",
+                 g_failures, g_checks);
     return 1;
 }

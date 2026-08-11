@@ -209,6 +209,10 @@ if(OPUS_WINELIB_BUILD)
     set_target_properties(opus_shell_config_test PROPERTIES
         IMPORTED_LOCATION "${OPUS_CORE_PREFIX}/bin/opus_shell_config_test")
     add_dependencies(opus_shell_config_test opus_core_build)
+    add_executable(opus_shell_font_substitution_test IMPORTED GLOBAL)
+    set_target_properties(opus_shell_font_substitution_test PROPERTIES
+        IMPORTED_LOCATION "${OPUS_CORE_PREFIX}/bin/opus_shell_font_substitution_test")
+    add_dependencies(opus_shell_font_substitution_test opus_core_build)
 endif()
 
 # Rebuild the command constants from Microsoft's checked-in command compiler
@@ -1353,6 +1357,7 @@ add_test(NAME opus_sdm_cab_test COMMAND $<TARGET_FILE:opus_sdm_cab_test>)
 add_test(NAME opus_original_command_test COMMAND $<TARGET_FILE:opus_original_command_test>)
 if(OPUS_WINELIB_BUILD)
     add_test(NAME opus_shell_config_test COMMAND $<TARGET_FILE:opus_shell_config_test>)
+    add_test(NAME opus_shell_font_substitution_test COMMAND $<TARGET_FILE:opus_shell_font_substitution_test>)
 endif()
 
 # The tests below all launch the WORD1 binary itself (directly or via

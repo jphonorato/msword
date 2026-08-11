@@ -21,14 +21,17 @@ struct SubstitutionEntry {
 };
 
 /* Los 4 nombres de época de la tabla maestra de arranque
-   (Opus/initwin.c, vhsttbFont, ftc 0-3). Los cuatro resuelven a la misma
-   familia bajo el oráculo medido -- ver §B2.6, incluido Symbol, que no
-   recibe tratamiento de charset simbólico especial. */
+   (Opus/initwin.c, vhsttbFont, ftc 0-3). No los cuatro resuelven a la
+   misma familia -- ver §B2.6: Tms Rmn resuelve a Liberation Serif y
+   Courier a Liberation Mono; solo Symbol y Helv coinciden en Liberation
+   Sans (ambos piden una familia sans-serif vía ffid), y Symbol no recibe
+   tratamiento de charset simbólico especial pese a lo que su nombre
+   sugeriría. */
 const SubstitutionEntry kSubstitutionTable[] = {
-    { "Tms Rmn", "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf" },
+    { "Tms Rmn", "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf" },
     { "Symbol",  "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf" },
     { "Helv",    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf" },
-    { "Courier", "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf" },
+    { "Courier", "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf" },
 };
 
 }  // namespace

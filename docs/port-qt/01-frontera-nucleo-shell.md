@@ -319,40 +319,92 @@ Medido con la sonda `docs/port-qt/scripts/fidelity/font_substitution.c`
 (`vhsttbFont`, `ftc` 0-3):
 
 ```
-Tms Rmn    -> Liberation Sans          charset=0 overhang=0
+Tms Rmn    -> Liberation Serif         charset=0 overhang=0
 Symbol     -> Liberation Sans          charset=0 overhang=0
 Helv       -> Liberation Sans          charset=0 overhang=0
-Courier    -> Liberation Sans          charset=0 overhang=0
+Courier    -> Liberation Mono          charset=0 overhang=0
 ```
 
-Los cuatro resuelven a la misma familia, incluido `Symbol`: contra lo que el
-`ANSI_CHARSET` pedido en el `LOGFONTA` sugeriría, el oráculo devuelve
-`tmCharSet=0` (ANSI) para los cuatro, no un charset simbólico para `Symbol`.
-No hay tratamiento especial que preservar del lado shell — `Symbol` se
-sustituye exactamente igual que los otros tres, no hace falta una fuente de
-símbolos ni una tabla de glifos aparte.
+**Corrección respecto a una medición anterior de esta sección:** la primera
+versión de la sonda construía el `LOGFONTA` con `ZeroMemory` y nunca fijaba
+`lfPitchAndFamily`, quedando en 0 (`DEFAULT_PITCH | FF_DONTCARE`) para los
+cuatro nombres — eso hacía que Wine ignorase la familia tipográfica al
+resolver y los cuatro colapsaran a `Liberation Sans`. El motor real siempre
+fija ese campo: `Opus/LOADFONT.C:864`,
+`plf->lfPitchAndFamily = (pffn->ffid & maskFfFfid) | fcid.prq;`, con
+`ffid`/`prq` tomados de la tabla maestra de arranque
+(`Opus/initwin.c:1543-1583`):
 
-Resolución de familia a archivo físico, verificada cruzado (no se acepta la
+| Nombre de época | `ffid` | `prq` |
+|---|---|---|
+| `Tms Rmn` | `FF_ROMAN` | `VARIABLE_PITCH` |
+| `Symbol` | `FF_DECORATIVE` | `DEFAULT_PITCH` (0) |
+| `Helv` | `FF_SWISS` | `VARIABLE_PITCH` |
+| `Courier` | `FF_MODERN` | `FIXED_PITCH` |
+
+Con la sonda corregida para fijar `lfPitchAndFamily` a `ffid | prq` por
+nombre (igual que hace el motor), **no los cuatro resuelven a la misma
+familia**: `Tms Rmn` resuelve a Liberation Serif y `Courier` a Liberation
+Mono; solo `Symbol` y `Helv` coinciden en Liberation Sans, porque ambos
+piden una familia `sans-serif` (`FF_DECORATIVE` y `FF_SWISS`
+respectivamente) bajo Wine/fontconfig en este entorno.
+
+Sobre `Symbol` en particular: lo llamativo no es el charset devuelto —pedir
+`ANSI_CHARSET` y recibir `tmCharSet=0` (ANSI) es exactamente lo esperado,
+no una contradicción— sino que el *nombre* `Symbol` sugeriría una fuente de
+símbolos y en cambio el motor pide, a propósito, `ANSI_CHARSET` para esa
+entrada: `Opus/initwin.c:1559` fija
+`ChsPffn(pffn) = ANSI_CHARSET;` con el comentario original de Microsoft
+("weirdly, this is correct for Postscript; other printers will have to
+tell us what they do — enumeration will override these settings if
+necessary"), y `Opus/LOADFONT.C:880` (`plf->lfCharSet = ChsPffn(pffn);`)
+traslada ese charset sin modificarlo al `LOGFONTA`. La sonda, al pedir
+`ANSI_CHARSET` para `Symbol`, reproduce fielmente el comportamiento del
+motor — no es un artefacto de la sonda. No hay tratamiento especial que
+preservar del lado shell más allá de eso: `Symbol` se sustituye por una
+fuente sans-serif normal, no hace falta una fuente de símbolos ni una
+tabla de glifos aparte.
+
+Resolución de familia a archivo físico, verificada cruzada (no se acepta la
 respuesta de `fc-match` sin confirmar contra la tabla `name` del propio
-archivo):
+archivo), para las 3 familias distintas involucradas:
 
 ```
+$ fc-match -f '%{file}\n' "Liberation Serif"
+/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf
+$ fc-scan --format '%{family}\n' /usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf
+Liberation Serif
+
 $ fc-match -f '%{file}\n' "Liberation Sans"
 /usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf
-
 $ fc-scan --format '%{family}\n' /usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf
 Liberation Sans
+
+$ fc-match -f '%{file}\n' "Liberation Mono"
+/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf
+$ fc-scan --format '%{family}\n' /usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf
+Liberation Mono
 ```
 
-Coincide: la familia que reporta la propia tabla `name` del archivo es la
-misma que `fc-match` resolvió. Tabla final:
+Coincide en los tres casos: la familia que reporta la propia tabla `name`
+de cada archivo es la misma que `fc-match` resolvió. Tabla final:
 
 | Nombre de época | Familia resuelta | Archivo físico |
 |---|---|---|
-| `Tms Rmn` | Liberation Sans | `/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf` |
+| `Tms Rmn` | Liberation Serif | `/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf` |
 | `Symbol` | Liberation Sans | `/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf` |
 | `Helv` | Liberation Sans | `/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf` |
-| `Courier` | Liberation Sans | `/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf` |
+| `Courier` | Liberation Mono | `/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf` |
+
+**Nota de cara al futuro (B2, selección de ppem):** `Opus/LOADFONT.C:829-837`
+tiene un "HACK" documentado que, específicamente para `Courier`, mantiene
+`lfHeight` positivo en vez de negativo como en el resto de los nombres —
+selecciona la fuente por altura de celda, no por altura de carácter, porque
+la fuente Courier de Windows tenía píxeles internos molestos en su área de
+"leading". Verificado que esto no cambia a qué familia resuelve Courier
+aquí (sigue siendo Liberation Mono), pero cualquier trabajo posterior de
+selección de ppem (B2) tendrá que reproducir ese signo distinto para
+Courier, no solo el mapeo de familia.
 
 Implementado como tabla estática en
 `src/core/include/OpusShellFontSubstitution.h` /
