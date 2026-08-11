@@ -16,6 +16,9 @@
 #define NOKANJI
 #include "word.h"
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "OpusShellMemory.h"    /* Qt-2 B3: OpusMem* */
+#endif
 #include "heap.h"
 #include "doc.h"
 #include "dlbenum.h"
@@ -1578,7 +1581,12 @@ long *pcb; /* cb count of far memory we get */
 	*pcb = 0;
 	while (cbAlloc >= cbMinDMFarMem)
 		{
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		if ((hFarMem = (HANDLE)OpusMemAlloc((unsigned long)cbAlloc,
+				OpusMemFlagsFromWin16(GHND))) == NULL)
+#else
 		if ((hFarMem = GlobalAlloc(GHND, cbAlloc)) == NULL)
+#endif
 			{
 			cbAlloc >>= 2;
 			}
@@ -1600,7 +1608,11 @@ FAllocDMFarMem()
 		ErrorEid(eidWinFailure, " AllocDMFarMem");
 		return fFalse;
 		}
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	DMFarMem = OpusMemLock((OpusHandle)hDMFarMem);
+#else
 	DMFarMem = GlobalLock(hDMFarMem);
+#endif
 	Assert(cbDMFarMem > 0);
 	return fTrue;
 }

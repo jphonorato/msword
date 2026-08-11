@@ -63,6 +63,28 @@ typedef struct OpusHandleImpl *OpusHandle;
    pasarlos, pero tampoco cambian el comportamiento. */
 #define OPUS_MEM_ZEROINIT 0x0001u
 
+/* Traduce los flags Win16 de una llamada GlobalAlloc/GlobalReAlloc a los
+   de este contrato. GMEM_MOVEABLE y GMEM_FIXED distinguían estrategias
+   del heap segmentado de 16 bits sin contraparte aquí -- se ignoran, no
+   es error pasarlos. GMEM_ZEROINIT es el único bit con semántica propia,
+   e implementada de verdad (no solo traducida sin efecto): OpusMemAlloc
+   (OpusShellMemory.cpp) hace memset(0) sobre el bloque cuando el flag
+   está presente, y OpusMemRealloc lo hace sobre el tramo nuevo al crecer.
+   Primer sitio real que ejerce esta rama: Opus/catalog.c HGrabFarMem, vía
+   GHND (= GMEM_MOVEABLE|GMEM_ZEROINIT) --
+   docs/superpowers/specs/2026-08-10-opus-memory-migration-design.md §4,
+   lote 2. Literal 0x0040u en vez de la macro GMEM_ZEROINIT: este header
+   no incluye Opus/lib/qwindows.h (lado núcleo, no depende del SDK Win16
+   vendorizado, ver 01-frontera-nucleo-shell.md). Valor confirmado en
+   Opus/lib/qwindows.h:1736. */
+static inline unsigned OpusMemFlagsFromWin16(unsigned win16Flags)
+{
+    unsigned flags = 0;
+    if (win16Flags & 0x0040u /* GMEM_ZEROINIT */)
+        flags |= OPUS_MEM_ZEROINIT;
+    return flags;
+}
+
 OpusHandle    OpusMemAlloc(unsigned long cb, unsigned flags);
 void         *OpusMemLock(OpusHandle h);     /* fija y devuelve puntero */
 void          OpusMemUnlock(OpusHandle h);   /* libera la fijación */
