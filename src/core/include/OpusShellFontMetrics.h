@@ -6,13 +6,20 @@
  *
  * El núcleo nunca adquiere un HDC ni selecciona fuentes: pide la tabla de
  * avances una vez por fuente y hace su propia aritmética entera sobre
- * struct FTI (Opus/wordtech/format.h), exactamente como hoy. El shell es
- * responsable de reproducir el redondeo entero de GDI bajo el oráculo
- * Winelib -- estrategia validada empíricamente en §B2.3: ppem entero más
- * QFont::PreferFullHinting sobre QRawFont. Ninguna de las dos funciones de
- * este contrato expone un tipo de Qt ni de Win32.
+ * struct FTI/FCE (Opus/fontwin.h:96-152; el sitio real de relleno es
+ * Opus/LOADFONT.C:187 C_LoadFcid -- format.h/FONTREC es código #ifdef MAC
+ * muerto en este build, ver 01-frontera-nucleo-shell.md pregunta abierta
+ * #3), exactamente como hoy. El shell es responsable de reproducir el
+ * redondeo entero de GDI bajo el oráculo Winelib -- estrategia validada
+ * empíricamente en §B2.3: ppem entero más QFont::PreferFullHinting sobre
+ * QRawFont. Ninguna de las dos funciones de este contrato expone un tipo
+ * de Qt ni de Win32.
  *
- * Solo declaraciones. Sin implementación en este header.
+ * Implementación: src/core/src/OpusShellFontMetrics.cpp. Cubre hoy solo
+ * los 4 `ftc` del contrato de sustitución (OpusShellFontSubstitution.h) --
+ * ver el comentario de cabecera de la implementación para el resto de
+ * limitaciones de este primer corte (sin síntesis de negrita/cursiva,
+ * resolución de pantalla fija a 96 ppp).
  */
 
 #ifdef __cplusplus

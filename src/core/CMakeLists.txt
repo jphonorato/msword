@@ -19,7 +19,7 @@ set(CMAKE_AUTOMOC ON)
 # repetir el set_target_properties.
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
 
 add_library(opus_shell_config STATIC
     src/OpusShellConfig.cpp
@@ -51,6 +51,33 @@ if(OPUS_CORE_BUILD_TESTS)
     add_test(NAME opus_shell_font_substitution_test
              COMMAND $<TARGET_FILE:opus_shell_font_substitution_test>)
     install(TARGETS opus_shell_font_substitution_test RUNTIME DESTINATION bin)
+endif()
+
+# Contrato de medición de texto (B2, §B2.2-§B2.3). Primera implementación
+# real -- ver el comentario de cabecera de OpusShellFontMetrics.cpp para
+# las limitaciones explícitas de este corte (sin síntesis negrita/
+# cursiva, 96 ppp fijo, tabla ftc->nombre hardcodeada a los 4 conocidos).
+add_library(opus_shell_font_metrics STATIC
+    src/OpusShellFontMetrics.cpp
+)
+target_include_directories(opus_shell_font_metrics PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+)
+target_link_libraries(opus_shell_font_metrics PRIVATE
+    opus_shell_font_substitution Qt6::Gui
+)
+install(TARGETS opus_shell_font_metrics ARCHIVE DESTINATION lib)
+
+if(OPUS_CORE_BUILD_TESTS)
+    add_executable(opus_shell_font_metrics_test
+        src/OpusShellFontMetrics_test.cpp
+    )
+    target_link_libraries(opus_shell_font_metrics_test PRIVATE
+        opus_shell_font_metrics Qt6::Gui
+    )
+    add_test(NAME opus_shell_font_metrics_test
+             COMMAND $<TARGET_FILE:opus_shell_font_metrics_test>)
+    install(TARGETS opus_shell_font_metrics_test RUNTIME DESTINATION bin)
 endif()
 
 # Contrato de memoria Win16 (B3). No depende de Qt: es malloc/realloc/free
@@ -98,6 +125,7 @@ target_link_libraries(opus_qt_shell PRIVATE
     opus_shell_config
     opus_shell_memory
     opus_shell_font_substitution
+    opus_shell_font_metrics
     Qt6::Widgets
 )
 install(TARGETS opus_qt_shell RUNTIME DESTINATION bin)

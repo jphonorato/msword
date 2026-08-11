@@ -23,6 +23,7 @@
  */
 
 #include "OpusShellConfig.h"
+#include "OpusShellFontMetrics.h"
 #include "OpusShellFontSubstitution.h"
 #include "OpusShellMemory.h"
 
@@ -93,6 +94,19 @@ QString RunSmokeChecks() {
                      (std::strcmp(out, "hello") == 0);
         lines << QStringLiteral("OpusShellConfig: %1")
                      .arg(cfgOk ? "OK (write/read round-trip)" : "FALLO");
+    }
+
+    /* OpusShellFontMetrics: reproduce el punto de dato medido en §B2.3
+       (Liberation Serif 14pt, '@' == 18 px bajo el oráculo Winelib). */
+    {
+        OpusFontKey key{0, 28, 0};
+        unsigned short w = 0;
+        int rc = OpusShellCharWidths(&key, '@', 1, &w);
+        bool fontMetricsOk = (rc == 0) && (w == 18);
+        lines << QStringLiteral("OpusShellFontMetrics: %1")
+                     .arg(fontMetricsOk
+                              ? "OK ('@' Tms Rmn 14pt == 18px, B2.3)"
+                              : QStringLiteral("FALLO (w=%1)").arg(w));
     }
 
     return lines.join('\n');
