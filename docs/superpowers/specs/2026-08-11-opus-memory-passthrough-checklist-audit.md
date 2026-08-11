@@ -673,10 +673,14 @@ trabajo aparte, aceptando que "119/147 = 81%" mide un subconjunto arbitrario. **
 de B1/B3, así que casi con certeza cambian el reparto por categoría, no solo el total.
 
 **P2 — Los 16 sitios de `spelcore.c`/`etcmd.c` que el enrutado por flag clasifica como propios pero
-cruzan a una DLL Win16, y los 2 de `raremsg.c` que ceden el bloque al portapapeles.** Bajo §4 literal
-recibirían un puntero de `malloc`. Opciones: enrutar por subsistema además de por flag; o marcar esos
-sitios como excluidos; o aceptar el riesgo apoyándose en que las DLL Win16 no cargan (afirmación **no
-verificable**, ver §6). Requiere decisión antes de migrar esas TUs.
+cruzan a una DLL Win16, y el de `raremsg.c` que cede el bloque al portapapeles. RESUELTO 2026-08-11.**
+`docs/superpowers/specs/2026-08-11-opus-memory-p2-boundary-crossing-decision.md` añade
+`OPUS_MEM_ESCAPES` (`OpusShellMemory.h`, código ya aplicado) — bit sin correspondencia Win16 que el
+call site migrado pasa explícitamente para forzar el camino foreign en las 4 alocaciones reales que lo
+necesitan (`spelcore.c:681`, `etcmd.c:1125,1252`, `raremsg.c:1337`). `raremsg.c` `hdata2` (procedencia
+en tiempo de ejecución) queda confirmado que **no** necesita el bit — `IsOwn()` ya lo resuelve. No se
+migran los call sites aquí (`src/Opus/`, requiere autorización); el flag exacto a usar queda escrito
+para cuando se migren.
 
 **P3 — `filecvt.c:1469,1488` (`FCopySzToGhsz`/`FCopyStToGhsz`). RESUELTO 2026-08-11.**
 `…-passthrough-design.md` §4.2 escribe como invariante que `OpusMemRealloc` nunca cambia el handle
@@ -696,11 +700,23 @@ silencio. Los ~14 sitios que descartan el retorno quedan formalmente correctos.
 `IsOwn(h)` y **nunca** por flags — cita el caso real que lo disparaba (`filecvt.c`: nace `0x2002`,
 realloca `0x0002`) como motivación en el propio texto.
 
-**P6 — ¿El test foreign es gating?** Recomendado sí, pero introduce dependencia de un prefijo Wine
-inicializado para el conjunto gating. CI ya lo satisface (`wineboot --init` antes del `ctest`); un
-desarrollador sin prefijo vería un fallo nuevo. Nota: el conjunto gating **ya está rojo localmente**
-(faltan binarios de `opus_original_sttb_test`, `opus_original_plc_test`, `opus_x64_runtime_test`,
-`opus_sdm_cab_test` por el bloqueador `disp.h:248`).
+**P6 — ¿El test foreign es gating? IMPLEMENTADO 2026-08-11 (mecanismo + test), gating tal como
+recomendado.** El mecanismo de passthrough diseñado en `…-passthrough-design.md` §2-§4 (que no
+existía en el árbol, ver §2.5 arriba) se implementó en `OpusShellMemory.h`/`.cpp`:
+`OpusMemPassthroughOps`, `OpusMemSetPassthrough`, `IsOwn()`/`OwnHandles()`, y las 6 funciones del
+contrato reescritas con enrutado propio/ajeno. `opus_shell_memory_foreign_test`
+(`src/port/tests/opus_shell_memory_foreign_test.cpp`), registrado en CTest bajo
+`OPUS_WINELIB_BUILD` sin label (gating), implementa los casos A/B/C/D1/D2/E de §4.4 y las dos tablas
+`opsWine`/`opsGuard` de §4.5. **Compila y enlaza limpio** (`wineg++` contra `libopus_shell_memory.a`
+nativo — el enlace cruzado que `handle-check/run.sh` ya había demostrado, aquí como test real, no
+script suelto). **No se pudo ejecutar en esta sesión**: el prefijo Wine de este entorno carece de
+soporte multiarch/`wine32` (`wine32 is missing`, confirmado también con un binario `hello world`
+trivial que no llega a imprimir su primera línea) — limitación del sandbox de esta sesión, no del
+código; CI (`wineboot --init` + entorno con `wine32:i386`) debería ejecutarlo sin este problema. Nota
+que sigue en pie: el conjunto gating **ya está rojo localmente** por otros bloqueadores
+(`opus_original_sttb_test`, `opus_original_plc_test`, `opus_x64_runtime_test`, `opus_sdm_cab_test`
+por `disp.h:248`) — este test nuevo no se pudo confirmar en verde, solo confirmar que compila y
+enlaza.
 
 **P7 — Contrato de doble `OpusMemFree` sobre handle foreign.** Wine no aborta ni diagnostica (§4.2 A). O
 el núcleo reenvía siempre y se documenta que no hay red, o lleva un registro de handles foreign vivos y

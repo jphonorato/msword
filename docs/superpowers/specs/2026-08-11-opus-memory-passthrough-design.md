@@ -143,12 +143,15 @@ No hay diferencia de mecanismo entre las cuatro categorías — todas comparten 
 
 `OpusMemFlagsFromWin16()` hoy descarta `GMEM_SHARE`/`GMEM_DDESHARE` (`0x2000`) y `GMEM_LOWER`/`GMEM_NOT_BANKED` (`0x1000`) — el hallazgo de §1.2/§8 del documento de propuesta. Bajo passthrough dejan de descartarse: son la señal de enrutado.
 
+**`OPUS_MEM_ESCAPES` (añadido 2026-08-11, resuelve P2):** no traduce ningún flag Win16 -- el bit lo aporta explícitamente el call site migrado, no `OpusMemFlagsFromWin16()`. Cubre los sitios donde el flag Win16 original es plano (`GMEM_MOVEABLE`/`GHND`, sin `DDESHARE` ni `LOWER`) pero el handle sale del contrato de todos modos: entregado a una DLL Win16 externa vía `CallOtherStack` (`spelcore.c`/`etcmd.c`, 16 sitios) o cedido al portapapeles del sistema vía `SetClipboardData` (`raremsg.c`, 1 sitio). Sitios exactos y ejemplo de migración: `docs/superpowers/specs/2026-08-11-opus-memory-p2-boundary-crossing-decision.md`.
+
 ```c
 /* OpusShellMemory.h */
 #define OPUS_MEM_ZEROINIT 0x0001u
 #define OPUS_MEM_DDESHARE 0x0002u  /* GMEM_SHARE | GMEM_DDESHARE, Win16 0x2000 */
 #define OPUS_MEM_LOWER    0x0004u  /* GMEM_LOWER | GMEM_NOT_BANKED, Win16 0x1000 */
-#define OPUS_MEM_FOREIGN  (OPUS_MEM_DDESHARE | OPUS_MEM_LOWER)
+#define OPUS_MEM_ESCAPES  0x0008u  /* sin bit Win16 -- ver P2 abajo */
+#define OPUS_MEM_FOREIGN  (OPUS_MEM_DDESHARE | OPUS_MEM_LOWER | OPUS_MEM_ESCAPES)
 
 static inline unsigned OpusMemFlagsFromWin16(unsigned win16Flags)
 {

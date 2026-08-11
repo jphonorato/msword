@@ -273,6 +273,21 @@ if(OPUS_WINELIB_BUILD)
     set_target_properties(opus_shell_memory PROPERTIES
         IMPORTED_LOCATION "${OPUS_CORE_PREFIX}/lib/libopus_shell_memory.a")
     add_dependencies(opus_shell_memory opus_core_build)
+
+    # Prueba de round-trip del camino foreign del passthrough (P6 de
+    # 2026-08-11-opus-memory-passthrough-checklist-audit.md §7). Vive fuera
+    # de src/core/ (necesita windows.h de Wine) y se compila con wineg++
+    # -- el compilador de este proyecto bajo OPUS_WINELIB_BUILD -- no con
+    # el g++ nativo del ExternalProject de arriba. Enlace cruzado
+    # wineg++-binario / g++-nativo-libreria ya demostrado funcional por
+    # docs/port-qt/scripts/handle-check/run.sh; aquí es declarativo, igual
+    # que WORD1 con opus_shell_memory más abajo.
+    add_executable(opus_shell_memory_foreign_test
+        port/tests/opus_shell_memory_foreign_test.cpp
+    )
+    target_include_directories(opus_shell_memory_foreign_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/core/include")
+    target_link_libraries(opus_shell_memory_foreign_test PRIVATE opus_shell_memory)
 endif()
 
 # Rebuild the command constants from Microsoft's checked-in command compiler
@@ -1432,6 +1447,8 @@ add_test(NAME opus_original_plc_test COMMAND $<TARGET_FILE:opus_original_plc_tes
 add_test(NAME opus_sdm_cab_test COMMAND $<TARGET_FILE:opus_sdm_cab_test>)
 add_test(NAME opus_original_command_test COMMAND $<TARGET_FILE:opus_original_command_test>)
 if(OPUS_WINELIB_BUILD)
+    add_test(NAME opus_shell_memory_foreign_test
+             COMMAND $<TARGET_FILE:opus_shell_memory_foreign_test>)
     add_test(NAME opus_shell_config_test COMMAND $<TARGET_FILE:opus_shell_config_test>)
     add_test(NAME opus_shell_font_substitution_test COMMAND $<TARGET_FILE:opus_shell_font_substitution_test>)
 endif()
