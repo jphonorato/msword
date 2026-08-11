@@ -718,9 +718,25 @@ que sigue en pie: el conjunto gating **ya está rojo localmente** por otros bloq
 por `disp.h:248`) — este test nuevo no se pudo confirmar en verde, solo confirmar que compila y
 enlaza.
 
-**P7 — Contrato de doble `OpusMemFree` sobre handle foreign.** Wine no aborta ni diagnostica (§4.2 A). O
-el núcleo reenvía siempre y se documenta que no hay red, o lleva un registro de handles foreign vivos y
-la puede dar. Afecta a qué asevera el caso E y al riesgo 4 del §6 del diseño.
+**P7 — Contrato de doble `OpusMemFree` sobre handle foreign. RESUELTO 2026-08-11.** Opción elegida: el
+núcleo reenvía siempre, sin registro de handles foreign vivos — no la alternativa de llevar una tabla y
+dar red. Implementado en `OpusMemFree` (`src/core/src/OpusShellMemory.cpp`), rama `else` foreign (línea
+~246): sin `IsOwn(h)`, no hay `OpusHandleImpl` propio sobre el que poner tombstone, así que no hay
+mecanismo posible para detectar la segunda liberación desde este lado — se reenvía sin más a
+`gOps->Free` si hay ops instalada. Es la opción correcta porque coincide con lo medido, no con lo
+deseable: §4.2 hallazgo A midió que Wine no aborta en un segundo `GlobalFree` (la primera llamada libera,
+la segunda devuelve el propio handle por convención de fallo Win32, `GetLastError()==0`, proceso vivo) —
+emular una aserción que Wine mismo no hace sería una afirmación falsa sobre el comportamiento real, y
+llevar un registro paralelo de handles foreign vivos solo para simular la aserción duplicaría el problema
+de sincronización (¿cuándo se da de baja un handle que otro subsistema pudo haber reciclado?) sin aportar
+protección real, porque el paso final sigue siendo `gOps->Free` sobre memoria que no es de este contrato.
+Verificado por `src/port/tests/opus_shell_memory_foreign_test.cpp`, `CaseE_NoDoubleFreeAbort()`: dos
+`OpusMemFree` consecutivos sobre el mismo handle foreign, ambos reenviados (`g_wineCounters.free` llega a
+2, no se queda en 1 por supresión silenciosa), proceso no aborta. Contrapartida aceptada, sin matices: un
+doble-free real en un call site de `src/Opus/` todavía no migrado a `OPUS_MEM_ESCAPES`/foreign **no será
+detectado** por este contrato mientras viaje por el camino foreign — la red de tombstone de
+`OpusMemFree` solo existe en la rama `IsOwn(h)`, y eso es el trade-off que se acepta aquí, no un defecto
+pendiente.
 
 **P8 — `struct GHD` con `unsigned ghsz` de 32 bits en `splshare.h:64-68`** frente a `HANDLE ghsz` en
 `etcmd.c:160-164`. Trunca handles de 64 bits en `spelcore.c:681,687` y `SPELL.C:1300`. Preexistente e
