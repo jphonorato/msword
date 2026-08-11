@@ -7,6 +7,7 @@ fidelidad byte a byte es alcanzable con Qt. No forman parte del build.
 |---|---|---|
 | `gdi_metrics.c` | oráculo | Reproduce la forma de `Opus/dispspec.c:787,796`: `GetTextExtentPoint32A(cch=1) - tmOverhang` para los 95 caracteres ASCII imprimibles |
 | `gdi_synth.c` | oráculo | Mide `tmOverhang` en negrita y cursiva sintetizadas, y la sustitución de los nombres de fuente de época |
+| `font_substitution.c` | oráculo | Resuelve los 4 nombres de época por defecto (`Tms Rmn`, `Symbol`, `Helv`, `Courier`) a familia real vía `GetTextFaceA`, para §B2.6 |
 | `qt_metrics.cpp` | Qt | Avances en unidades de diseño más la aritmética de conversión, en variante con y sin redondeo previo del tamaño em |
 | `qt_hint.cpp` | Qt | El mismo glifo bajo los cuatro modos de hinting, para aislar grid-fitting de aritmética |
 | `qt_full.cpp` | Qt | Estrategia que rige: ppem entero más `QFont::PreferFullHinting` |
