@@ -887,16 +887,25 @@ El orden no es arbitrario: cada paso deja verificable el siguiente.
 4. **Enumeración de handles serializados (§B3.3) — cerrada.** Ninguna
    estructura persistida tiene campo handle. No quedó como inventario
    pendiente: se hizo antes de diseñar el header, no después.
-5. **Medición de texto (B2) — implementación inicial cerrada, con
-   limitaciones explícitas.** `src/core/src/OpusShellFontMetrics.cpp`
-   implementa el contrato con la estrategia de §B2.3, verificado contra
-   el punto de dato ya medido (Tms Rmn 14pt, `@` = 18px). Cubre los 4
-   `ftc` conocidos, peso regular únicamente (`catr != 0` falla
-   controlado -- GDI sintetiza negrita/cursiva, `QRawFont` no), pantalla
-   a 96 ppp fija (sin impresora). Sigue siendo la pieza de la que depende
-   la restricción de fidelidad, y la que hace que `wordtech/` pueda
-   compilar sin GDI -- eso todavía no ocurre: este paso cierra el
-   contrato de medición aislado, no su conexión a `wordtech/`.
+5. **Medición de texto (B2) — implementación inicial cerrada, verificada
+   con 2660 puntos de dato, no solo uno.** `src/core/src/
+   OpusShellFontMetrics.cpp` implementa el contrato con la estrategia de
+   §B2.3. `opus_shell_font_metrics_fidelity_test` compara contra una
+   tabla capturada del oráculo Winelib real
+   (`docs/port-qt/scripts/fidelity/capture.py` →
+   `opus_shell_font_metrics_oracle_table.h`): 4 nombres de época × 7
+   tamaños (8-36pt) × 95 caracteres ASCII imprimibles = 2660 anchos.
+   **2660/2660 coinciden exactamente** con el oráculo -- no aproximado,
+   no "cerca". Ascenso/descenso, que §B2.3 no cubría, se comparan también
+   (±1px, redondeo distinto de `ascent()`/`descent()` de Qt contra
+   `tmAscent`/`tmDescent` enteros de GDI). Cubre los 4 `ftc` conocidos,
+   peso regular únicamente (`catr != 0` falla controlado -- GDI sintetiza
+   negrita/cursiva, `QRawFont` no), pantalla a 96 ppp fija (sin
+   impresora). Sigue siendo la pieza de la que depende la restricción de
+   fidelidad, y la que hace que `wordtech/` pueda compilar sin GDI -- eso
+   todavía no ocurre: este paso cierra el contrato de medición
+   verificado a escala, no su conexión a `wordtech/` (que sigue en
+   `Opus/`, árbol restringido).
 6. **`error.c`, luego `editspec.c` y `undo.c` (§B4.3) — contrato
    implementado.** `src/core/src/OpusShellSpine.cpp`:
    `OpusShellReportError` (`QMessageBox::Critical`,

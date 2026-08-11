@@ -78,6 +78,23 @@ if(OPUS_CORE_BUILD_TESTS)
     add_test(NAME opus_shell_font_metrics_test
              COMMAND $<TARGET_FILE:opus_shell_font_metrics_test>)
     install(TARGETS opus_shell_font_metrics_test RUNTIME DESTINATION bin)
+
+    # Prueba de fidelidad amplia: 2660 puntos de dato capturados del
+    # oráculo Winelib real (docs/port-qt/scripts/fidelity/capture.py),
+    # no solo el punto único de opus_shell_font_metrics_test. Ver
+    # OpusShellFontMetrics_fidelity_test.cpp.
+    add_executable(opus_shell_font_metrics_fidelity_test
+        src/OpusShellFontMetrics_fidelity_test.cpp
+    )
+    target_include_directories(opus_shell_font_metrics_fidelity_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    )
+    target_link_libraries(opus_shell_font_metrics_fidelity_test PRIVATE
+        opus_shell_font_metrics Qt6::Gui
+    )
+    add_test(NAME opus_shell_font_metrics_fidelity_test
+             COMMAND $<TARGET_FILE:opus_shell_font_metrics_fidelity_test>)
+    install(TARGETS opus_shell_font_metrics_fidelity_test RUNTIME DESTINATION bin)
 endif()
 
 # Contrato de espina de mensajes/ventanas (B4) -- solo los dos fragmentos
