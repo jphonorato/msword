@@ -210,7 +210,9 @@ if(OPUS_WINELIB_BUILD)
             -DCMAKE_BUILD_TYPE=Release
             -DCMAKE_INSTALL_PREFIX=${OPUS_CORE_PREFIX}
             -DOPUS_CORE_BUILD_TESTS=ON
-        BUILD_BYPRODUCTS "${OPUS_CORE_PREFIX}/lib/libopus_shell_config.a"
+        BUILD_BYPRODUCTS
+            "${OPUS_CORE_PREFIX}/lib/libopus_shell_config.a"
+            "${OPUS_CORE_PREFIX}/lib/libopus_shell_memory.a"
         BUILD_ALWAYS 1
         USES_TERMINAL_CONFIGURE 1
         USES_TERMINAL_BUILD 1
@@ -263,6 +265,14 @@ if(OPUS_WINELIB_BUILD)
         IMPORTED_LOCATION "${OPUS_CORE_PREFIX}/lib/libopus_shell_config.a"
         INTERFACE_LINK_LIBRARIES Qt6::Core)
     add_dependencies(opus_shell_config opus_core_build)
+
+    # opus_shell_memory: sin dependencia Qt6, a diferencia de
+    # opus_shell_config -- IMPORTED_LOCATION basta, no hace falta
+    # find_package(Qt6) ni INTERFACE_LINK_LIBRARIES.
+    add_library(opus_shell_memory STATIC IMPORTED GLOBAL)
+    set_target_properties(opus_shell_memory PROPERTIES
+        IMPORTED_LOCATION "${OPUS_CORE_PREFIX}/lib/libopus_shell_memory.a")
+    add_dependencies(opus_shell_memory opus_core_build)
 endif()
 
 # Rebuild the command constants from Microsoft's checked-in command compiler
@@ -1231,6 +1241,7 @@ target_compile_definitions(WORD1 PRIVATE
 target_link_libraries(WORD1 PRIVATE opus_original_engine opus_x64_runtime user32 dbghelp)
 if(OPUS_WINELIB_BUILD)
     target_link_libraries(WORD1 PRIVATE opus_shell_config)
+    target_link_libraries(WORD1 PRIVATE opus_shell_memory)
 endif()
 if(MSVC)
     target_compile_options(WORD1 PRIVATE /J /W3 /wd4005 /utf-8)
