@@ -887,10 +887,16 @@ El orden no es arbitrario: cada paso deja verificable el siguiente.
 4. **Enumeración de handles serializados (§B3.3) — cerrada.** Ninguna
    estructura persistida tiene campo handle. No quedó como inventario
    pendiente: se hizo antes de diseñar el header, no después.
-5. **Medición de texto (B2)** con la comparación contra el oráculo activa desde
-   el primer commit, usando la estrategia de §B2.3. Es la pieza de la que
-   depende la restricción de fidelidad, y la que hace que `wordtech/` compile
-   sin GDI.
+5. **Medición de texto (B2) — implementación inicial cerrada, con
+   limitaciones explícitas.** `src/core/src/OpusShellFontMetrics.cpp`
+   implementa el contrato con la estrategia de §B2.3, verificado contra
+   el punto de dato ya medido (Tms Rmn 14pt, `@` = 18px). Cubre los 4
+   `ftc` conocidos, peso regular únicamente (`catr != 0` falla
+   controlado -- GDI sintetiza negrita/cursiva, `QRawFont` no), pantalla
+   a 96 ppp fija (sin impresora). Sigue siendo la pieza de la que depende
+   la restricción de fidelidad, y la que hace que `wordtech/` pueda
+   compilar sin GDI -- eso todavía no ocurre: este paso cierra el
+   contrato de medición aislado, no su conexión a `wordtech/`.
 6. **`error.c`, luego `editspec.c` y `undo.c` (§B4.3).** Callbacks de error y
    de cambio de documento.
 7. **Inversión del bucle de mensajes (§B4.1).** Último, porque hasta aquí el
