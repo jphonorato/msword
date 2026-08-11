@@ -4,6 +4,9 @@
 
 #include "word.h"
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "OpusShellMemory.h"    /* Qt-2 B3: OpusMem* */
+#endif
 #include "debug.h"
 #include "heap.h"
 #include "rerr.h"
@@ -323,10 +326,18 @@ FSendKeysPending()
 	if (lphevtHead != NULL && *lphevtHead != NULL)
 		{
 		EVT FAR *lpevt;
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		lpevt = OpusMemLock((OpusHandle)*lphevtHead);
+#else
 		lpevt = GlobalLock(*lphevtHead);
+#endif
 		Assert(lpevt != NULL);
 		fKeys = lpevt->ieventMac > 0;
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemUnlock((OpusHandle)*lphevtHead);
+#else
 		GlobalUnlock(*lphevtHead);
+#endif
 		}
 	return fKeys;
 }
