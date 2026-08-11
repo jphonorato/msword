@@ -311,6 +311,56 @@ reducido a rasterizador de glifos y proveedor de avances.
   sitio contado puede estar desactivado en la configuración de build real.
   Afecta el dimensionamiento, no el contrato.
 
+### B2.6 Tabla de sustitución de fuentes
+
+Medido con la sonda `docs/port-qt/scripts/fidelity/font_substitution.c`
+(mismo entorno que §B2.3: Wine 10.0, Debian trixie) para los 4 nombres de
+época que `Opus/initwin.c` carga en la tabla maestra de arranque
+(`vhsttbFont`, `ftc` 0-3):
+
+```
+Tms Rmn    -> Liberation Sans          charset=0 overhang=0
+Symbol     -> Liberation Sans          charset=0 overhang=0
+Helv       -> Liberation Sans          charset=0 overhang=0
+Courier    -> Liberation Sans          charset=0 overhang=0
+```
+
+Los cuatro resuelven a la misma familia, incluido `Symbol`: contra lo que el
+`ANSI_CHARSET` pedido en el `LOGFONTA` sugeriría, el oráculo devuelve
+`tmCharSet=0` (ANSI) para los cuatro, no un charset simbólico para `Symbol`.
+No hay tratamiento especial que preservar del lado shell — `Symbol` se
+sustituye exactamente igual que los otros tres, no hace falta una fuente de
+símbolos ni una tabla de glifos aparte.
+
+Resolución de familia a archivo físico, verificada cruzado (no se acepta la
+respuesta de `fc-match` sin confirmar contra la tabla `name` del propio
+archivo):
+
+```
+$ fc-match -f '%{file}\n' "Liberation Sans"
+/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf
+
+$ fc-scan --format '%{family}\n' /usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf
+Liberation Sans
+```
+
+Coincide: la familia que reporta la propia tabla `name` del archivo es la
+misma que `fc-match` resolvió. Tabla final:
+
+| Nombre de época | Familia resuelta | Archivo físico |
+|---|---|---|
+| `Tms Rmn` | Liberation Sans | `/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf` |
+| `Symbol` | Liberation Sans | `/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf` |
+| `Helv` | Liberation Sans | `/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf` |
+| `Courier` | Liberation Sans | `/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf` |
+
+Implementado como tabla estática en
+`src/core/include/OpusShellFontSubstitution.h` /
+`src/core/src/OpusShellFontSubstitution.cpp` — ver ese header para el
+contrato. Solo cubre estos 4 nombres; `Script` y `Modern` quedan fuera de
+alcance de esta medición (no están en la tabla maestra de arranque, ver
+`01-frontera-nucleo-shell.md`, "Secuencia recomendada para Qt-2", paso 2).
+
 ---
 
 ## B3 — Contrato de memoria Win16
