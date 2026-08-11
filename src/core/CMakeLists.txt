@@ -80,6 +80,31 @@ if(OPUS_CORE_BUILD_TESTS)
     install(TARGETS opus_shell_font_metrics_test RUNTIME DESTINATION bin)
 endif()
 
+# Contrato de espina de mensajes/ventanas (B4) -- solo los dos fragmentos
+# con firma concreta de §B4.3 (error.c, editspec.c/undo.c). La inversión
+# de control completa (paso 7 de la secuencia Qt-2) no se implementa
+# aquí -- ver OpusShellSpine.h.
+add_library(opus_shell_spine STATIC
+    src/OpusShellSpine.cpp
+)
+target_include_directories(opus_shell_spine PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+)
+target_link_libraries(opus_shell_spine PRIVATE Qt6::Widgets)
+install(TARGETS opus_shell_spine ARCHIVE DESTINATION lib)
+
+if(OPUS_CORE_BUILD_TESTS)
+    add_executable(opus_shell_spine_test
+        src/OpusShellSpine_test.cpp
+    )
+    target_link_libraries(opus_shell_spine_test PRIVATE
+        opus_shell_spine Qt6::Widgets
+    )
+    add_test(NAME opus_shell_spine_test
+             COMMAND $<TARGET_FILE:opus_shell_spine_test>)
+    install(TARGETS opus_shell_spine_test RUNTIME DESTINATION bin)
+endif()
+
 # Contrato de memoria Win16 (B3). No depende de Qt: es malloc/realloc/free
 # nativo detrás de un handle opaco con contador de fijación -- ver
 # docs/port-qt/01-frontera-nucleo-shell.md §B3 y el comentario de cabecera

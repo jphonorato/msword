@@ -897,8 +897,18 @@ El orden no es arbitrario: cada paso deja verificable el siguiente.
    la restricción de fidelidad, y la que hace que `wordtech/` pueda
    compilar sin GDI -- eso todavía no ocurre: este paso cierra el
    contrato de medición aislado, no su conexión a `wordtech/`.
-6. **`error.c`, luego `editspec.c` y `undo.c` (§B4.3).** Callbacks de error y
-   de cambio de documento.
+6. **`error.c`, luego `editspec.c` y `undo.c` (§B4.3) — contrato
+   implementado.** `src/core/src/OpusShellSpine.cpp`:
+   `OpusShellReportError` (`QMessageBox::Critical`,
+   `Qt::ApplicationModal` -- equivalente real de `MB_SYSTEMMODAL`) y
+   `OpusShellAlert` (`QApplication::beep()`). Probado con un diálogo modal
+   real, auto-cerrado desde `QTimer::singleShot` una vez que
+   `QApplication::activeModalWidget()` lo confirma activo -- no un stub.
+   No conectado todavía a ningún call site de `Opus/` (esos tres archivos
+   siguen sin migrar, siguen usando `MessageBox`/`MessageBeep` reales) ni
+   a `opus_qt_shell` (deliberado: un diálogo modal disparado
+   automáticamente en cada arranque del andamiaje sería ruido, no una
+   comprobación útil).
 7. **Inversión del bucle de mensajes (§B4.1).** Último, porque hasta aquí el
    núcleo puede seguir siendo conducido por el binario Winelib, que es el
    oráculo. Invertirlo antes de tener la medición verificada quitaría el
