@@ -1619,6 +1619,15 @@ FAllocDMFarMem()
 
 
 /* %%Function:FreeDMFarMem %%Owner:CHIC */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+FreeDMFarMem()
+{
+	OpusMemUnlock((OpusHandle)hDMFarMem);
+	OpusMemFree((OpusHandle)hDMFarMem);
+	hDMFarMem = DMFarMem = NULL;
+	cbDMFarMem = 0;
+}
+#else
 FreeDMFarMem()
 {
 	if (GlobalUnlock(hDMFarMem) != 0)
@@ -1627,6 +1636,7 @@ FreeDMFarMem()
 	hDMFarMem = DMFarMem = NULL;
 	cbDMFarMem = 0;
 }
+#endif
 
 
 /* %%Function:FEnsureHstDMQPath %%Owner:CHIC */
