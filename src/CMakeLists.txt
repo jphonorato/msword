@@ -78,15 +78,26 @@ if(OPUS_WINELIB_BUILD)
     # winegcc already searches it by default; this find_path only locates it
     # so opus_windows_sdk.h.in can be filled in with the same @ONLY
     # substitution the native-Windows branch below uses.
+    #
+    # The layout of this tree varies across wine-devel packagings: some put
+    # windows/windows.h directly under <prefix>/include/wine (older/other
+    # distros), others nest it one level deeper under <prefix>/include/wine/wine
+    # (confirmed on this VPS with wine64-tools/libwine-dev 10.0~repack). Rather
+    # than assume one layout -- this project's development environment is now
+    # multi-machine (Debian VPS + Fedora desktop), and each may package
+    # wine-devel differently -- search PATHS with PATH_SUFFIXES covering both
+    # known layouts.
     find_path(OPUS_WINE_INCLUDE_DIR
         NAMES windows/windows.h
         PATHS /usr/include/wine /usr/local/include/wine
+        PATH_SUFFIXES "" "wine"
         DOC "Wine's Win32 header tree (contains windows/windows.h)"
     )
     if(NOT OPUS_WINE_INCLUDE_DIR)
         message(FATAL_ERROR
             "Could not locate Wine's windows/windows.h under /usr/include/wine "
-            "or /usr/local/include/wine. Install wine-devel.")
+            "or /usr/local/include/wine (including their nested 'wine/' "
+            "subdirectory). Install wine-devel.")
     endif()
     set(OPUS_WINDOWS_SDK_HEADER "${OPUS_WINE_INCLUDE_DIR}/windows/windows.h")
 else()
@@ -199,6 +210,7 @@ if(OPUS_WINELIB_BUILD)
             -DCMAKE_BUILD_TYPE=Release
             -DCMAKE_INSTALL_PREFIX=${OPUS_CORE_PREFIX}
             -DOPUS_CORE_BUILD_TESTS=ON
+        BUILD_BYPRODUCTS "${OPUS_CORE_PREFIX}/lib/libopus_shell_config.a"
         BUILD_ALWAYS 1
         USES_TERMINAL_CONFIGURE 1
         USES_TERMINAL_BUILD 1
@@ -213,6 +225,44 @@ if(OPUS_WINELIB_BUILD)
     set_target_properties(opus_shell_font_substitution_test PROPERTIES
         IMPORTED_LOCATION "${OPUS_CORE_PREFIX}/bin/opus_shell_font_substitution_test")
     add_dependencies(opus_shell_font_substitution_test opus_core_build)
+
+    # opus_shell_config es la biblioteca real que WORD1 enlaza (contrato
+    # OpusShellProfile*, §B5 de docs/port-qt/01-frontera-nucleo-shell.md).
+    # opus_shell_config_test arriba solo importa el binario de test, no
+    # basta para resolver los call sites migrados en Opus/. find_package
+    # aquí (además del que ya corre dentro de core/CMakeLists.txt, en un
+    # ExternalProject_Add separado y con namespace de targets propio -- su
+    # Qt6::Core no es visible aquí) es necesario porque Qt6::Core es
+    # dependencia PUBLIC de opus_shell_config y sus link deps transitivas
+    # no se propagan a través de un IMPORTED STATIC declarado a mano.
+    #
+    # Bajo winegcc, la detección ABI de CMake falla (ver comentario en
+    # cmake/toolchain-winelib.cmake), lo que deja CMAKE_LIBRARY_ARCHITECTURE
+    # vacío; find_package(Qt6) en modo Config entonces nunca revisa las
+    # rutas multiarch estándar (p. ej. /usr/lib/x86_64-linux-gnu/cmake/Qt6
+    # en Debian/Ubuntu, /usr/lib64/cmake/Qt6 en Fedora). El entorno de
+    # desarrollo de este proyecto es multi-máquina (VPS Debian + equipo
+    # Fedora doméstico), así que no se puede hardcodear una ruta de
+    # distribución concreta: se deriva Qt6_DIR de `qmake6 -query
+    # QT_INSTALL_LIBS`, que resuelve al mismo directorio real que usaría
+    # find_package si la detección ABI no estuviera rota, sin importar la
+    # distro.
+    find_program(QMAKE6_EXECUTABLE NAMES qmake6 qmake-qt6)
+    if(QMAKE6_EXECUTABLE)
+        execute_process(
+            COMMAND ${QMAKE6_EXECUTABLE} -query QT_INSTALL_LIBS
+            OUTPUT_VARIABLE QT6_INSTALL_LIBS
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+        set(Qt6_DIR "${QT6_INSTALL_LIBS}/cmake/Qt6" CACHE PATH
+            "Ruta a Qt6Config.cmake, derivada de qmake6 -query (evita depender de CMAKE_LIBRARY_ARCHITECTURE, que winegcc deja vacío)")
+    endif()
+    find_package(Qt6 REQUIRED COMPONENTS Core)
+    add_library(opus_shell_config STATIC IMPORTED GLOBAL)
+    set_target_properties(opus_shell_config PROPERTIES
+        IMPORTED_LOCATION "${OPUS_CORE_PREFIX}/lib/libopus_shell_config.a"
+        INTERFACE_LINK_LIBRARIES Qt6::Core)
+    add_dependencies(opus_shell_config opus_core_build)
 endif()
 
 # Rebuild the command constants from Microsoft's checked-in command compiler
@@ -1179,6 +1229,9 @@ target_compile_definitions(WORD1 PRIVATE
     WIN WIN23 CRLF NONATIVE OPUS_X64 NOMINMAX UNICODE _UNICODE
 )
 target_link_libraries(WORD1 PRIVATE opus_original_engine opus_x64_runtime user32 dbghelp)
+if(OPUS_WINELIB_BUILD)
+    target_link_libraries(WORD1 PRIVATE opus_shell_config)
+endif()
 if(MSVC)
     target_compile_options(WORD1 PRIVATE /J /W3 /wd4005 /utf-8)
     target_link_options(WORD1 PRIVATE /DYNAMICBASE /HIGHENTROPYVA /NXCOMPAT /MANIFEST:NO)

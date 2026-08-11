@@ -28,6 +28,7 @@ target_include_directories(opus_shell_config PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
 )
 target_link_libraries(opus_shell_config PUBLIC Qt6::Core)
+install(TARGETS opus_shell_config ARCHIVE DESTINATION lib)
 
 # Contrato de sustitución de fuentes de época (§B2.6). Tabla de datos
 # estática, medida contra el oráculo Winelib -- ver
