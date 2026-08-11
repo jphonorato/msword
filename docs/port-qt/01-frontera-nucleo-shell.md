@@ -986,16 +986,60 @@ Fase 1 de B3 (§B3.3), no buscada a propósito:**
    antes de dar la primera implementación de `OpusShellFontMetrics()` por
    completa.
 
-   **Sigue sin resolver, y sí es nuevo trabajo antes de implementar:**
-   el sitio exacto donde `FCE.hqrgdxp` se rellena *en vivo* vía GDI para
-   fuentes de pantalla (no restauradas desde el stream de preferencias
-   serializado, que es el único camino de llenado localizado hasta ahora
-   — `Opus/initwin.c:2909-2965`, y ese es una restauración de caché
-   persistida, no una medición en vivo). `Opus/dispspec.c:787,796`
-   (citado en §B2.1 original como "el punto de llenado") mide un solo
-   carácter a la vez (`GetTextExtent(hdc,&ch,1)`) para pintar texto ya
-   formateado, no para rellenar la tabla de 256 — puede ser un camino
-   distinto del que realmente construye `FCE.hqrgdxp` para una fuente
-   nueva. Localizar ese sitio es el primer paso real de implementar B2,
-   no cosmético: ese es "el único punto de llenado" que §B2.1 afirma que
-   existe, y todavía no está verificado cuál es.
+   **Localizado 2026-08-11: `C_LoadFcid()` en `Opus/LOADFONT.C:187` (bajo
+   `#if defined(DEBUG) || defined(OPUS_X64)` — vivo en este build).** Es
+   la función de carga/caché de fuente completa (comentario de cabecera:
+   "last `ifceMax` fonts requested through LoadFcid are kept in a LRU
+   cache"), no algo escondido en `dispspec.c`. Camino de relleno real
+   para fuente de paso variable, `LOADFONT.C:391-434`:
+
+   1. `CreateFontIndirect(&lf)` (`:315`) selecciona la fuente física.
+   2. `GetTextMetrics(hdc, &tm)` (`:340`).
+   3. `pfce->hqrgdxp = HqAllocLcb(256 * sizeof(int))` (`:398`, rama
+      `OPUS_X64`) — el mismo array de 256 `int` ya identificado.
+   4. Relleno bulk: `GetCharWidth(hdc, chDxpMin, chDxpMax-2, lpdxp)`
+      (`:421`, API Win32 real, no una función del proyecto) para los
+      caracteres 0-253; el 254 se rellena aparte
+      (`OurGetCharWidth(hdc, chDxpMax-1, chDxpMax-1, ...)`, `:426`).
+      Dos casos caen al *fallback* carácter-por-carácter en vez del bulk:
+      modo vista previa (`vfPrvwDisp`, `:415-416`) siempre, y cualquier
+      driver que falle `GetCharWidth` (`:421-425`, con
+      `ReportSz("Driver does not support GetCharWidth!")`).
+   5. **`OurGetCharWidth()` (`LOADFONT.C:976-991`) es literalmente el
+      bucle `GetTextExtentPoint32A(hdc, &ch, 1, &size)` carácter por
+      carácter que la sonda de §B2.3 ya reproduce** — mismo mecanismo, no
+      uno análogo. Para pantalla (no impresora, no preview) todo pasa por
+      `GetCharWidth`, no por este fallback, pero ambos son wrappers finos
+      sobre la misma medición de GDI subyacente.
+   6. Corrección de overhang: si `pfce->dxpOverhang != 0`, se resta de
+      **toda** la tabla ya rellenada (`:428-434`), una sola vez sobre el
+      array — no por-carácter durante el relleno. Neto idéntico al
+      `GetTextExtent(hdc,&ch,1) - tm.tmOverhang` por-carácter que usa la
+      sonda de §B2.3 (resta distribuye sobre suma), así que **la
+      estrategia medida en §B2.3 ya reproduce este paso sin cambio
+      adicional** — no hay una corrección de overhang nueva que
+      incorporar.
+   7. `LLoadFce:` (`:523`) es el punto de convergencia con el camino de
+      restauración desde stream (`initwin.c:2909-2965`): copia
+      `pfce->hqrgdxp` a `pfti->rgdxp[256]` vía `bltbh` (`:544-547`) sea
+      cual sea el origen del array. Fuente de paso fijo: sin tabla,
+      `pfce->dxpWidth = tm.tmAveCharWidth` (`:386`) replicado a las 256
+      posiciones con `SetWords` (`:539`).
+
+   **Consecuencia:** cerrado. §B2.3 no necesita ajuste — midió
+   exactamente el mecanismo que `C_LoadFcid` usa (GDI per-char / bulk
+   `GetCharWidth`, mismo neto tras overhang). El único hallazgo nuevo,
+   real: **`OpusFontKey.ftc` no basta como clave de entrada del contrato
+   sin la tabla `ftc → nombre de época` que hoy solo existe dentro de
+   `Opus/initwin.c` (`vhsttbFont`, orden verificado: `ibstFontDefault` =
+   Tms Rmn, `+1` Symbol, `+2` Helv, `+3` Courier —
+   `Opus/initwin.c:1541-1583`).** `OpusShellFontMetrics()`/
+   `OpusShellCharWidths()` tal como están declaradas reciben `ftc` (un
+   entero sin significado fuera de esa tabla), pero el shell
+   (`OpusShellFontSubstitution`) solo conoce nombres de época (cadenas).
+   Antes de escribir la implementación real hace falta decidir: (a) el
+   núcleo traduce `ftc → nombre` antes de llamar al shell (el contrato ya
+   dice "el núcleo traduce", §B2.2, así que esto puede ser tan simple
+   como añadir esa tabla de 4 entradas al lado núcleo del wrapper, no al
+   header de frontera); o (b) el contrato cambia para recibir el nombre
+   directamente. (a) no requiere tocar `OpusShellFontMetrics.h`.
