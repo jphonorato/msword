@@ -678,22 +678,23 @@ recibirían un puntero de `malloc`. Opciones: enrutar por subsistema además de 
 sitios como excluidos; o aceptar el riesgo apoyándose en que las DLL Win16 no cargan (afirmación **no
 verificable**, ver §6). Requiere decisión antes de migrar esas TUs.
 
-**P3 — `filecvt.c:1469,1488` (`FCopySzToGhsz`/`FCopyStToGhsz`).** El handle llega por valor y la función
-devuelve `BOOL`: si `ops.Realloc` alguna vez devolviera un handle distinto, **no hay forma de propagarlo
-sin cambiar la firma**, y la firma está en el árbol restringido. Opciones: cambiar la firma (requiere
-autorización explícita para `src/Opus/`); dejar constancia del riesgo y no tocar esos sitios; o hacer que
-`ops.Realloc` garantice por construcción que nunca reubica (posible: los flags reales siempre llevan
-`GMEM_MOVEABLE`, y sin él la llamada falla — §2.3).
+**P3 — `filecvt.c:1469,1488` (`FCopySzToGhsz`/`FCopyStToGhsz`). RESUELTO 2026-08-11.**
+`…-passthrough-design.md` §4.2 escribe como invariante que `OpusMemRealloc` nunca cambia el handle
+(camino propio por construcción; camino foreign porque los flags reales siempre llevan `GMEM_MOVEABLE`,
+verificado empíricamente en §2.3). El invariante convierte "la firma no puede propagar un handle nuevo"
+de riesgo latente a hecho irrelevante — nunca hay un handle nuevo que propagar. No se toca la firma de
+`src/Opus/`, no hace falta autorización.
 
-**P4 — ¿Se escribe como invariante que `OpusMemRealloc` nunca cambia el handle?** Hoy es cierto en el
-camino propio por implementación (`OpusShellMemory.cpp:121`), no por contrato. Si se documenta como
-invariante en el header, los ~14 sitios que descartan el retorno quedan formalmente correctos y el ítem 2
-del checklist se cierra de verdad. Si no, siguen dependiendo de un detalle no escrito.
+**P4 — ¿Se escribe como invariante que `OpusMemRealloc` nunca cambia el handle? RESUELTO 2026-08-11.**
+Escrito en `…-passthrough-design.md` §4.2: invariante de contrato, no detalle de implementación —
+exigido en ambos caminos (propio y foreign), con la obligación explícita de que `gOps.Realloc` falle
+controladamente (`NULL`) si algún día recibe un flag sin `GMEM_MOVEABLE`, en vez de reubicar en
+silencio. Los ~14 sitios que descartan el retorno quedan formalmente correctos.
 
-**P5 — Ambigüedad de §4 sobre el enrutado de `Realloc`.** El encabezado del bloque dice
-"`OpusMemAlloc`/`OpusMemRealloc`" pero solo muestra `OpusMemAlloc`. Debe decir explícitamente que
-`OpusMemRealloc` enruta por `IsOwn(h)` y **nunca** por flags — hay un caso real que lo dispara
-(`filecvt.c`: nace `0x2002`, realloca `0x0002`).
+**P5 — Ambigüedad de §4 sobre el enrutado de `Realloc`. RESUELTO 2026-08-11.**
+`…-passthrough-design.md` §4.1 añade el cuerpo de `OpusMemRealloc` explícitamente, con enrutado por
+`IsOwn(h)` y **nunca** por flags — cita el caso real que lo disparaba (`filecvt.c`: nace `0x2002`,
+realloca `0x0002`) como motivación en el propio texto.
 
 **P6 — ¿El test foreign es gating?** Recomendado sí, pero introduce dependencia de un prefijo Wine
 inicializado para el conjunto gating. CI ya lo satisface (`wineboot --init` antes del `ctest`); un

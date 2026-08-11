@@ -179,6 +179,71 @@ extern "C" OpusHandle OpusMemAlloc(unsigned long cb, unsigned flags) {
 
 `gOps.Alloc` en `src/port/` traduce `OPUS_MEM_DDESHARE`/`OPUS_MEM_LOWER` de vuelta a `GMEM_DDESHARE`/`GMEM_LOWER` reales para la llamada a `GlobalAlloc` de Wine — la reconstrucción exacta de flags (p. ej. si además hace falta `GMEM_MOVEABLE`) es detalle de esa implementación, no de este contrato.
 
+### 4.1 `OpusMemRealloc`: enrutado por `IsOwn(h)`, no por flags (resuelve P5)
+
+**Corrección 2026-08-11 (auditoría del checklist §8, P5):** el encabezado de este
+bloque decía "`OpusMemAlloc`/`OpusMemRealloc`" pero solo mostraba el cuerpo de
+`OpusMemAlloc`. Ambigüedad real, no cosmética: si alguien implementa `Realloc`
+copiando el patrón de `Alloc` (enrutado por el bit `flags & OPUS_MEM_FOREIGN` del
+argumento), un bloque `DDESHARE` ajeno realloc'ado con flags reducidos —
+`filecvt.c:1336,1469,1488` nace con `gmemLibShare = 0x2002` (`OPUS_MEM_DDESHARE`) pero
+realloca con `GMEM_MOVEABLE = 0x0002` (sin el bit) — se enrutaría al heap privado y
+corrompería el handle. `Realloc` **no tiene** ese grado de libertad: el handle ya
+existe, y su procedencia (propio/ajeno) está decidida desde `Alloc`, no desde los
+flags del sitio de `Realloc`.
+
+```c
+extern "C" OpusHandle OpusMemRealloc(OpusHandle h, unsigned long cb, unsigned flags) {
+    if (!IsOwn(h)) {
+        if (gOps.Realloc == nullptr) {
+            return nullptr;   /* mismo fallo controlado que Alloc, ver §5.2 */
+        }
+        return gOps.Realloc(h, cb, flags & OPUS_MEM_FOREIGN);
+    }
+    /* camino propio existente, sin cambios */
+    ...
+    return h;
+}
+```
+
+`flags` en `Realloc` solo sirve para reconstruir los bits Win16 que `gOps.Realloc`
+reenvía a `GlobalReAlloc`, igual que en `Alloc` — nunca para decidir a qué tabla ir.
+La decisión de tabla es `IsOwn(h)`, punto.
+
+### 4.2 Invariante: `OpusMemRealloc` nunca cambia el handle (resuelve P3, P4)
+
+**Se declara como invariante del contrato, no como detalle de implementación:**
+`OpusMemRealloc` (en cualquiera de los dos caminos) **nunca devuelve un `OpusHandle`
+distinto del que recibió**, salvo fallo (`NULL`).
+
+- **Camino propio:** cierto por construcción hoy (`OpusShellMemory.cpp:102-122`) — la
+  identidad es el `OpusHandleImpl*`, `std::realloc` solo cambia `h->ptr`. Pasa de
+  "detalle de implementación que nadie ha escrito" a invariante exigida: una
+  implementación futura de `OpusShellMemory.cpp` que cambiara esto rompería contrato,
+  no solo un detalle interno.
+- **Camino foreign:** verificado empíricamente contra Wine 10.0 (auditoría del
+  checklist §8, §2.3) que un `HGLOBAL` `GMEM_MOVEABLE` no cambia de valor en
+  `GlobalReAlloc`, incluido bajo estrés (400 reallocs, crecer 8 B → 1 MB) — y que sin
+  `GMEM_MOVEABLE` la llamada falla siempre (`err=8`), nunca reasigna un handle nuevo
+  en su lugar. Los flags reales de todos los sitios de `Realloc` en A/B1/B2/B3
+  (`GMEM_SENDKEYS`, `GMEM_MOVEABLE` plano) llevan `GMEM_MOVEABLE`. `gOps.Realloc` debe
+  documentar la misma garantía como parte de su contrato de implementación: si algún
+  día un flag sin `GMEM_MOVEABLE` llega a `Realloc`, debe fallar controladamente
+  (`NULL`), no devolver un handle reubicado en silencio.
+
+**Consecuencia directa sobre `filecvt.c:1469,1488` (`FCopySzToGhsz`/`FCopyStToGhsz`,
+P3 del checklist):** esas dos funciones reciben el handle **por valor** y devuelven
+`BOOL` — no hay forma sintáctica de propagar un handle nuevo al llamador aunque
+existiera uno. Con esta invariante escrita, ese problema no existe: no hace falta
+tocar la firma (que vive en `src/Opus/`, árbol restringido, y requeriría
+autorización explícita). El invariante convierte "la firma no puede propagar un
+handle nuevo" de riesgo latente a hecho irrelevante — nunca hay un handle nuevo que
+propagar. Si en el futuro `gOps.Realloc` se implementa sobre un backend donde el
+invariante no se sostiene (no Wine, o una versión de Wine que cambie su tabla de
+handles moveables), **eso es una violación de contrato de esa implementación de
+`ops`, no un caso que el llamador deba manejar** — y debe detectarse con un assert en
+`gOps.Realloc`, no dejarse pasar en silencio.
+
 **Extensión aditiva, no rotura de ABI de la firma:** `OpusMemFlagsFromWin16` sigue devolviendo `unsigned`, dos bits nuevos en un espacio que solo usaba uno. Ningún call site existente que no pase `GMEM_DDESHARE`/`GMEM_SHARE`/`GMEM_LOWER`/`GMEM_NOT_BANKED` ve `flags` cambiar de valor.
 
 ---
