@@ -215,6 +215,7 @@ if(OPUS_WINELIB_BUILD)
             "${OPUS_CORE_PREFIX}/lib/libopus_shell_memory.a"
             "${OPUS_CORE_PREFIX}/lib/libopus_shell_font_substitution.a"
             "${OPUS_CORE_PREFIX}/lib/libopus_shell_font_metrics.a"
+            "${OPUS_CORE_PREFIX}/lib/libopus_shell_spine.a"
         BUILD_ALWAYS 1
         USES_TERMINAL_CONFIGURE 1
         USES_TERMINAL_BUILD 1
@@ -275,7 +276,7 @@ if(OPUS_WINELIB_BUILD)
         find_library(OPENGL_glx_LIBRARY NAMES GLX PATHS "${QT6_INSTALL_LIBS}")
         find_library(OPENGL_gl_LIBRARY NAMES GL PATHS "${QT6_INSTALL_LIBS}")
     endif()
-    find_package(Qt6 REQUIRED COMPONENTS Core Gui)
+    find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
     add_library(opus_shell_config STATIC IMPORTED GLOBAL)
     set_target_properties(opus_shell_config PROPERTIES
         IMPORTED_LOCATION "${OPUS_CORE_PREFIX}/lib/libopus_shell_config.a"
@@ -309,6 +310,21 @@ if(OPUS_WINELIB_BUILD)
     set_target_properties(opus_shell_memory PROPERTIES
         IMPORTED_LOCATION "${OPUS_CORE_PREFIX}/lib/libopus_shell_memory.a")
     add_dependencies(opus_shell_memory opus_core_build)
+
+    # opus_shell_spine: contrato de espina de mensajes (§B4). Enlaza
+    # Qt6::Widgets (QMessageBox/QTimer) -- debe quedar en
+    # INTERFACE_LINK_LIBRARIES por el mismo motivo que Qt6::Core arriba.
+    # Diagnosticado 2026-08-12: faltaba enteramente este bloque desde el
+    # commit ea5f908 (B4.4, conecta error.c:1618 a OpusShellReportError),
+    # que cableó el call site real en src/Opus/ pero no agregó la
+    # dependencia de enlace aquí -- WORD1 quedaba con una referencia sin
+    # definir a OpusShellReportError en cuanto se intentaba enlazar de
+    # punta a punta (ver docs/port-qt/01-frontera-nucleo-shell.md).
+    add_library(opus_shell_spine STATIC IMPORTED GLOBAL)
+    set_target_properties(opus_shell_spine PROPERTIES
+        IMPORTED_LOCATION "${OPUS_CORE_PREFIX}/lib/libopus_shell_spine.a"
+        INTERFACE_LINK_LIBRARIES Qt6::Widgets)
+    add_dependencies(opus_shell_spine opus_core_build)
 
     # Prueba de round-trip del camino foreign del passthrough (P6 de
     # 2026-08-11-opus-memory-passthrough-checklist-audit.md §7). Vive fuera
@@ -1306,6 +1322,7 @@ if(OPUS_WINELIB_BUILD)
     target_link_libraries(WORD1 PRIVATE opus_shell_config)
     target_link_libraries(WORD1 PRIVATE opus_shell_memory)
     target_link_libraries(WORD1 PRIVATE opus_shell_font_metrics)
+    target_link_libraries(WORD1 PRIVATE opus_shell_spine)
 endif()
 if(MSVC)
     target_compile_options(WORD1 PRIVATE /J /W3 /wd4005 /utf-8)
