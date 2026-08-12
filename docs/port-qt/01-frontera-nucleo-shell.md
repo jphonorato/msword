@@ -1581,3 +1581,316 @@ domina sobre `rgbms[1]`).
 (bloquea `WORD1` completo) y la falta de `wine32:i386` en este VPS (bloquea
 5 tests gating por enlace) son blockers de entorno distintos, sin relación
 con FAM/union — no se investigan ni se tocan aquí.
+
+### Verificación cruzada en Fedora 44 / GCC 16.1.1 (segunda máquina) — 2026-08-12
+
+**Estado real: el guard `__GNUC__ < 15` se comporta como se esperaba —
+GCC 16 toma la rama `#else` original, cero diagnósticos de FAM/union en
+todo el árbol.** Pero el build completo (`ninja -k 0`, reconfigurado limpio)
+y la suite de `src/core` **no quedan en verde** en esta máquina, por motivos
+enteramente ajenos al guard — un hueco de enlace real recién expuesto
+(`WORD1` → `opus_shell_spine`) y dos diferencias de entorno (convención de
+rutas de fuentes de Fedora, segfault de Qt). Se documentan las dos salidas
+de compilador lado a lado porque son las dos máquinas reales donde se probó
+este fix, no una proyección:
+
+| | VPS Debian (sección anterior) | Fedora 44 (esta sección) |
+|---|---|---|
+| Compilador | GCC 14.2.0 | **GCC 16.1.1** (`gcc (GCC) 16.1.1 20260515 (Red Hat 16.1.1-2)`) |
+| Rama del guard que compila | `#if` (`rgdr[1]`/`rgbms[1]`/`rgzpp[1]`) | **`#else`** (`rgdr[]`/`rgbms[]`/`rgzpp[]`, forma original sin workaround) |
+| `opus_original_engine` (207 TUs) | compila y linka limpio | **compila y linka limpio** |
+| `WORD1.exe` completo | bloqueado por `wrc`/codepage 1252 (ajeno) | **bloqueado por enlace: falta `opus_shell_spine`** (ajeno, ver más abajo) |
+| Suite `src/core` (5 tests) | 5/5 ✓ | **1/5 ✓** (4 fallos ajenos al guard, ver más abajo) |
+
+#### Comando y salida literal: versión de compilador
+
+```
+$ gcc --version
+gcc (GCC) 16.1.1 20260515 (Red Hat 16.1.1-2)
+Copyright (C) 2026 Free Software Foundation, Inc.
+Esto es software libre; vea el código para las condiciones de copia.  NO hay
+garantía; ni siquiera para MERCANTIBILIDAD o IDONEIDAD PARA UN PROPÓSITO EN
+PARTICULAR
+```
+
+#### Guard confirmado, contexto exacto (`git grep -n -A4 -B6 '__GNUC__ < 15'`)
+
+```
+src/Opus/rsb.h-35-struct RSBI {
+src/Opus/rsb.h-36-	union {
+src/Opus/rsb.h-37-	struct	{
+src/Opus/rsb.h:38:#if defined(__GNUC__) && !defined(_MSC_VER) && (__GNUC__ < 15)
+src/Opus/rsb.h-39-		struct BMS rgbms [1];  /* GCC <15 rejects FAM alone in struct (PR53548, r15-209) */
+src/Opus/rsb.h-40-#else
+src/Opus/rsb.h-41-		struct BMS rgbms [];
+src/Opus/rsb.h-42-#endif
+...
+src/Opus/rsb.h:77:#if defined(__GNUC__) && !defined(_MSC_VER) && (__GNUC__ < 15)
+src/Opus/rsb.h-78-		struct ZPP rgzpp[1];  /* GCC <15 rejects FAM alone in struct (PR53548, r15-209) */
+src/Opus/rsb.h-79-#else
+src/Opus/rsb.h-80-		struct ZPP rgzpp[];
+src/Opus/rsb.h-81-#endif
+...
+src/Opus/wordtech/disp.h-246-	union   {
+src/Opus/wordtech/disp.h-247-		HQ	hqpldre;    /* when fExternal true */
+src/Opus/wordtech/disp.h:248:#if defined(__GNUC__) && !defined(_MSC_VER) && (__GNUC__ < 15)
+src/Opus/wordtech/disp.h-249-		struct DR rgdr[1];  /* when fExternal false -- GCC <15 rejects FAM in union (PR53548, r15-209) */
+src/Opus/wordtech/disp.h-250-#else
+src/Opus/wordtech/disp.h-251-		struct DR rgdr[];   /* when fExternal false */
+src/Opus/wordtech/disp.h-252-#endif
+```
+
+Con `__GNUC__` = 16 en esta máquina, `(__GNUC__ < 15)` evalúa a falso en los
+tres sitios: se compila la rama `#else`, es decir **la forma original de
+Microsoft sin ningún workaround**, exactamente como debía ser. Confirmado
+no solo por lectura del guard sino por el resultado de compilación (próxima
+sección): cero apariciones de `flexible array member` en ningún log, en
+ninguna de las dos pasadas de build completas que se corrieron.
+
+#### Build limpio, `ninja -k 0`: reconfiguración + resultado
+
+```
+$ rm -rf out/linux-winelib-debug out/linux-winelib-release
+$ cmake --preset linux-winelib-debug
+-- The C compiler identification is GNU 16.1.1
+-- The CXX compiler identification is GNU 16.1.1
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/winegcc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/wineg++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE
+-- Performing Test HAVE_STDATOMIC
+-- Performing Test HAVE_STDATOMIC - Success
+-- Found WrapAtomic: TRUE
+-- Found OpenGL: /usr/lib64/libOpenGL.so
+-- Found WrapOpenGL: TRUE
+-- Found WrapVulkanHeaders: /usr/include
+-- Configuring done (3.4s)
+-- Generating done (0.1s)
+-- Build files have been written to: /home/exia/word1/msword/out/linux-winelib-debug
+$ ninja -k 0 -j4
+```
+
+(`-j4` en vez del paralelismo por defecto de 12: esta máquina tiene 7,7 GiB
+de RAM, no 32+; con -j12 el build de 370 objetivos arriesgaba OOM. `-k 0`
+se preservó tal cual se pidió — no limita reintentos, solo limita
+paralelismo.)
+
+El build avanzó **370/370 objetivos intentados** (sin bloqueo temprano por
+`disp.h`/`rsb.h` — la clase de error que bloqueaba el VPS ni aparece) y
+terminó con exactamente **3 `FAILED:`**, ninguno relacionado con FAM/union.
+Log completo (120118 líneas, 7,5 MB) guardado en
+`/tmp/claude-1000/-home-exia-word1-msword/ef583425-7fc7-457c-b877-9abeeaa77950/scratchpad/ninja-full-build.log`
+de esta sesión — no se incluye íntegro aquí por tamaño; se pega cada
+`FAILED:` completo, que es donde está toda la señal:
+
+```
+$ grep -c 'FAILED:' ninja-full-build.log
+3
+$ grep -c ' error:' ninja-full-build.log
+3
+$ grep -in 'flexible array' ninja-full-build.log ninja-targeted-retry.log
+(sin coincidencias)
+```
+
+**Fallo 1/3 — `opus_original_plc_test.exe`, enlace, no relacionado con el guard:**
+
+```
+FAILED: [code=2] /home/exia/word1/msword/build/tests/Debug/opus_original_plc_test.exe 
+: && /usr/bin/wineg++ -g -Wl,--dependency-file=CMakeFiles/opus_original_plc_test.dir/link.d CMakeFiles/opus_original_plc_test.dir/Opus/wordtech/clsplc.c.o CMakeFiles/opus_original_plc_test.dir/port/original/opus_asm_plc_adapters.cpp.o CMakeFiles/opus_original_plc_test.dir/port/original/opus_original_plc_test.c.o -o /home/exia/word1/msword/build/tests/Debug/opus_original_plc_test.exe  /home/exia/word1/msword/build/lib/Debug/libopus_x64_runtime.a  -luser32 && :
+/usr/bin/ld.bfd: /home/exia/word1/msword/build/lib/Debug/libopus_x64_runtime.a(opus_win16_platform.cpp.o): en la función `GetPhysicalFontHandle':
+/home/exia/word1/msword/src/port/original/opus_win16_platform.cpp:69:(.text+0x1aa): referencia a `GetCurrentObject' sin definir
+/usr/bin/ld.bfd: [...] referencia a `GetBitmapDimensionEx' sin definir
+/usr/bin/ld.bfd: [...] referencia a `SetBitmapDimensionEx' sin definir
+/usr/bin/ld.bfd: [...] referencia a `GetViewportExtEx' sin definir
+/usr/bin/ld.bfd: [...] referencia a `GetViewportOrgEx' sin definir
+/usr/bin/ld.bfd: [...] referencia a `SetViewportExtEx' sin definir
+/usr/bin/ld.bfd: [...] referencia a `SetViewportOrgEx' sin definir
+/usr/bin/ld.bfd: [...] referencia a `SetWindowExtEx' sin definir
+/usr/bin/ld.bfd: [...] referencia a `SetWindowOrgEx' sin definir
+/usr/bin/ld.bfd: [...] referencia a `GetTextExtentPoint32A' sin definir
+/usr/bin/ld.bfd: [...] referencia a `MoveToEx' sin definir
+/usr/bin/ld.bfd: [...] referencia a `ShellExecuteA' sin definir
+/usr/bin/ld.bfd: [...].exe.so: el símbolo oculto «SetWindowExtEx» no está definido
+/usr/bin/ld.bfd: falló el enlace final: valor incorrecto
+collect2: error: ld devolvió el estado de salida 1
+winegcc: /usr/bin/g++ failed
+```
+
+Causa: `src/CMakeLists.txt:1220` — `target_link_libraries(opus_original_plc_test
+PRIVATE opus_original_c_dialect opus_x64_runtime user32)` — no lista
+`gdi32` ni `shell32`, y `opus_win16_platform.cpp` (dentro de
+`opus_x64_runtime`) llama a las variantes `*Ex` de GDI (`gdi32`) y a
+`ShellExecuteA` (`shell32`). No es un hueco nuevo de esta sesión: no hay
+ningún cambio reciente en ese target — es preexistente, solo visible ahora
+porque en el VPS ni se llegaba a intentar enlazar (bloqueado antes por
+`disp.h`, y luego por falta de `wine32:i386`).
+
+**Fallo 2/3 — `opus_x64_runtime_test.exe`, enlace, no relacionado con el guard:**
+
+```
+FAILED: [code=2] /home/exia/word1/msword/build/tests/Debug/opus_x64_runtime_test.exe 
+: && /usr/bin/wineg++ -g -Wl,--dependency-file=CMakeFiles/opus_x64_runtime_test.dir/link.d CMakeFiles/opus_x64_runtime_test.dir/port/original/opus_x64_runtime_test.cpp.o CMakeFiles/opus_x64_runtime_test.dir/port/original/opus_x64_layout_test_fixture.c.o -o /home/exia/word1/msword/build/tests/Debug/opus_x64_runtime_test.exe  /home/exia/word1/msword/build/lib/Debug/libopus_x64_runtime.a  -luser32  -lgdi32 && :
+/usr/bin/ld.bfd: [...]opus_sdm_runtime.cpp.o: en la función `(anonymous namespace)::commit_ribbon_list_selection(...)':
+/home/exia/word1/msword/src/port/original/opus_sdm_runtime.cpp:1779:(.text+0x8a99): referencia a `OpusX64TraceRibbon' sin definir
+/usr/bin/ld.bfd: [...] (más 4 sitios, mismo símbolo)
+/usr/bin/ld.bfd: [...] en la función `run_word95_common_file_dialog(...)':
+/home/exia/word1/msword/src/port/original/opus_sdm_runtime.cpp:2184:(.text+0xabc7): referencia a `GetOpenFileNameA' sin definir
+/usr/bin/ld.bfd: [...]:2184:(.text+0xabe3): referencia a `GetSaveFileNameA' sin definir
+/usr/bin/ld.bfd: [...]:2186:(.text+0xabfd): referencia a `CommDlgExtendedError' sin definir
+/usr/bin/ld.bfd: [...].exe.so: el símbolo oculto «GetSaveFileNameA» no está definido
+/usr/bin/ld.bfd: falló el enlace final: valor incorrecto
+collect2: error: ld devolvió el estado de salida 1
+winegcc: /usr/bin/g++ failed
+```
+
+Dos causas distintas en el mismo fallo: (a) `GetOpenFileNameA`/
+`GetSaveFileNameA`/`CommDlgExtendedError` son de `comdlg32`, ausente del
+`target_link_libraries` (`src/CMakeLists.txt:1447`, solo lista `user32
+gdi32`); (b) `OpusX64TraceRibbon` — `extern "C" void OpusX64TraceRibbon(...)`
+está **declarada** en `opus_sdm_runtime.cpp:24` y **llamada** desde ahí, pero
+solo está **definida** en
+`port/original/opus_original_startup_probe.cpp:387`, que es fuente exclusiva
+del ejecutable `WORD1` — no forma parte de `libopus_x64_runtime.a`. Cualquier
+binario que enlace `opus_x64_runtime` sin también incluir el probe (como
+este test) queda con una referencia sin resolver por diseño del árbol
+actual, no por un error transitorio.
+
+**Fallo 3/3 — `WORD1.exe`, enlace, no relacionado con el guard — bloquea la Fase 4 completa en esta máquina:**
+
+```
+FAILED: [code=2] /home/exia/word1/msword/bin/WORD1.exe 
+: && /usr/bin/wineg++ -g -mwindows -municode -Wl,--dependency-file=CMakeFiles/WORD1.dir/link.d generated/original/word1.spec generated/original/word1.res CMakeFiles/WORD1.dir/port/original/opus_original_startup_probe.cpp.o -o /home/exia/word1/msword/bin/WORD1.exe  /home/exia/word1/msword/build/lib/Debug/libopus_original_engine.a  /home/exia/word1/msword/build/lib/Debug/libopus_x64_runtime.a  -luser32  -ldbghelp  core/lib/libopus_shell_config.a  core/lib/libopus_shell_memory.a  core/lib/libopus_shell_font_metrics.a  /usr/lib64/libQt6Gui.so.6.11.1  /usr/lib64/libGLX.so  /usr/lib64/libOpenGL.so  /usr/lib64/libQt6Core.so.6.11.1  core/lib/libopus_shell_font_substitution.a && :
+/usr/bin/ld.bfd: /home/exia/word1/msword/build/lib/Debug/libopus_original_engine.a(error.c.o): en la función `ErrorEidStartup':
+/home/exia/word1/msword/src/Opus/wordtech/error.c:1630:(.text+0xc4f): referencia a `OpusShellReportError' sin definir
+collect2: error: ld devolvió el estado de salida 1
+winegcc: /usr/bin/g++ failed
+ninja: build stopped: cannot make progress due to previous errors.
+```
+
+Causa, identificada con `git show`: el commit `ea5f908` (B4.4, "conecta
+`error.c:1618` al contrato `OpusShellReportError`") agregó la llamada real
+en `error.c` pero **no tocó `src/CMakeLists.txt`** — el target `WORD1`
+(línea 1298-1309) nunca recibió `opus_shell_spine` en su
+`target_link_libraries`, a diferencia de `opus_shell_config`,
+`opus_shell_memory` y `opus_shell_font_metrics`, que sí están (líneas
+1306-1308). El propio §B4.4 de este documento ya advertía la falta de
+verificación de punta a punta ("no se disparó ni se observó en ejecución
+esta sesión"), atribuyéndolo entonces al bloqueo de `disp.h` — en Fedora
+`disp.h` ya no bloquea, y este es el siguiente bloqueador real de la
+cadena, no una regresión de esta tarea. Reintentado explícitamente con
+`ninja -k 0 opus_original_plc_test opus_x64_runtime_test WORD1` tras el
+build completo: mismos tres fallos, idénticos, byte a byte en el mensaje
+de enlace (log en
+`.../scratchpad/ninja-targeted.log`).
+
+**No se tocó `src/CMakeLists.txt` ni ningún archivo de código en esta
+tarea** — los tres fallos se dejan diagnosticados, no corregidos, a la
+espera de decisión (afecta directamente a la Tarea 2 de esta misma sesión,
+que necesita un `WORD1.exe.so` enlazable).
+
+#### `ctest` de `src/core` — 1/5 ✓, 4 fallos ajenos al guard
+
+```
+$ cd out/linux-winelib-debug/opus_core_build-prefix/src/opus_core_build-build
+$ ctest --output-on-failure
+Test project /home/exia/word1/msword/out/linux-winelib-debug/opus_core_build-prefix/src/opus_core_build-build
+    Start 1: opus_shell_font_substitution_test
+1/5 Test #1: opus_shell_font_substitution_test .......***Failed    0.00 sec
+FALLÓ: Tms Rmn: archivo de fuente '/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf' debe poder abrirse -- ¿faltan las fuentes Liberation en esta máquina?
+FALLÓ: Symbol: archivo de fuente '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf' debe poder abrirse -- ¿faltan las fuentes Liberation en esta máquina?
+FALLÓ: Helv: archivo de fuente '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf' debe poder abrirse -- ¿faltan las fuentes Liberation en esta máquina?
+FALLÓ: Courier: archivo de fuente '/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf' debe poder abrirse -- ¿faltan las fuentes Liberation en esta máquina?
+OpusShellFontSubstitution_test: 4 fallo(s) de 16 verificaciones.
+
+    Start 2: opus_shell_font_metrics_test
+2/5 Test #2: opus_shell_font_metrics_test ............***Failed    0.10 sec
+[21 fallo(s), misma causa raíz: no puede abrir los .ttf en la ruta hardcodeada]
+
+    Start 3: opus_shell_font_metrics_fidelity_test
+3/5 Test #3: opus_shell_font_metrics_fidelity_test ...***Failed    0.11 sec
+[56 fallo(s), misma causa raíz]
+
+    Start 4: opus_shell_spine_test
+4/5 Test #4: opus_shell_spine_test ...................***Exception: SegFault  0.58 sec
+
+    Start 5: opus_shell_config_test
+5/5 Test #5: opus_shell_config_test ..................   Passed    0.01 sec
+
+20% tests passed, 4 tests failed out of 5
+```
+
+**Los 3 fallos de fuentes son un solo hallazgo, no tres:** las rutas
+hardcodeadas en `src/core/src/OpusShellFontSubstitution.cpp:31-34` y su
+espejo en `OpusShellFontSubstitution_test.cpp:35-38` asumen la convención
+Debian/Ubuntu (`/usr/share/fonts/truetype/liberation/…`). **Las fuentes sí
+están instaladas en esta máquina** — confirmado, no asumido:
+
+```
+$ rpm -q liberation-serif-fonts liberation-sans-fonts liberation-mono-fonts
+liberation-serif-fonts-2.1.5-15.fc44.noarch
+liberation-sans-fonts-2.1.5-15.fc44.noarch
+liberation-mono-fonts-2.1.5-15.fc44.noarch
+$ fc-match "Liberation Serif"
+LiberationSerif-Regular.ttf: "Liberation Serif" "Regular"
+$ find / -iname 'LiberationSerif-Regular.ttf' 2>/dev/null
+/usr/share/fonts/liberation-serif-fonts/LiberationSerif-Regular.ttf
+[...dos rutas más dentro de runtimes Flatpak, irrelevantes...]
+```
+
+Fedora empaqueta cada familia en su propio directorio
+(`liberation-serif-fonts/`, no `truetype/liberation/`). Es una diferencia
+de convención de empaquetado entre distribuciones, no una fuente ausente —
+el mismo bug de portabilidad que §B2.6/B2.7 de este documento ya resuelve
+para la *sustitución de nombre de época → familia* (vía `fc-match`), pero
+que **no se aplicó a la ruta de archivo físico**: ese segundo paso sigue
+hardcodeado a una ruta absoluta en vez de resolverse vía `fc-match -f
+'%{file}'` como hace la sonda de §B2.6. Es un bug real de portabilidad
+entre distros, descubierto por esta verificación cruzada — no estaba
+caracterizado antes porque el VPS es Debian y ahí la ruta sí existe. Fuera
+del alcance de esta tarea (solo pide verificar el guard FAM/union); se deja
+anotado para una tarea de port aparte, no se corrige aquí.
+
+**`opus_shell_spine_test` segfaulta**, causa no diagnosticada en esta
+tarea (esta máquina no tiene `gdb` ni `valgrind` instalados — ver Tarea 2
+de esta misma sesión para el mismo hueco de herramientas). Capturado por
+`systemd-coredump`:
+
+```
+$ coredumpctl list | tail -1
+Tue 2026-08-11 22:49:36 -04 27390 1000 1000 SIGSEGV present  .../core/bin/opus_shell_spine_test  1.7M
+```
+
+Sin `gdb`, `coredumpctl info` no produce un backtrace simbólico utilizable
+(solo lista de módulos cargados). No se investigó más a fondo: es un
+segundo hallazgo nuevo, no pedido por esta tarea, y comparte el mismo
+bloqueador de herramientas que la Tarea 2. Reproducido dos veces
+(`QT_QPA_PLATFORM=offscreen` incluido) con el mismo resultado, así que no es
+un fallo intermitente relacionado con la sesión Wayland de esta máquina.
+
+#### Conclusión de esta sección
+
+**El fix del guard `__GNUC__ < 15` queda verificado en las dos máquinas
+reales donde se probó, con las dos versiones de compilador documentadas
+explícitamente: GCC 14.2.0 (VPS Debian, toma la rama `#if`, con workaround)
+y GCC 16.1.1 (Fedora 44, esta sección, toma la rama `#else`, sin
+workaround) — ambas compilan `opus_original_engine` (207 TUs) limpio, cero
+diagnósticos de FAM/union en ningún caso.** Esa es la afirmación puntual que
+esta tarea pedía verificar, y se sostiene.
+
+**Lo que NO se sostiene es "el build/los tests están en verde en Fedora"**
+— no lo están, por motivos enteramente ajenos al guard: un hueco de enlace
+real (`WORD1`/`opus_shell_spine`, expuesto ahora que `disp.h` deja de
+bloquear antes de llegar ahí) y dos diferencias de entorno (convención de
+rutas de fuentes, segfault de Qt sin diagnóstico por falta de `gdb`).
+Documentado con el mismo rigor que el hallazgo del VPS: cada afirmación
+tiene su comando y su salida literal arriba, nada se da por bueno sin
+evidencia.
