@@ -1496,6 +1496,14 @@ add_dependencies(opus_word1_ui_test WORD1)
 target_compile_features(opus_word1_ui_test PRIVATE cxx_std_20)
 target_compile_definitions(opus_word1_ui_test PRIVATE NOMINMAX UNICODE _UNICODE)
 target_link_libraries(opus_word1_ui_test PRIVATE user32 gdi32)
+if(OPUS_WINELIB_BUILD)
+    # This target's entry point is wmain (console, unicode), unlike WORD1's
+    # WinMain (GUI, see -mwindows above) -- winegcc/wineg++ default to the
+    # GUI subsystem and look for WinMain, so without -mconsole the link
+    # fails with "undefined reference to WinMain" even though wmain is
+    # defined and used correctly.
+    target_link_options(opus_word1_ui_test PRIVATE -mconsole -municode)
+endif()
 if(MSVC)
     target_compile_options(opus_word1_ui_test PRIVATE /W4 /utf-8)
 endif()

@@ -8,6 +8,14 @@
 #include <utility>
 #include <vector>
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* _wcsicmp is declared in Wine's msvcrt headers (corecrt_wstring.h), not
+   in <windows.h>/<cwchar> as included here. Rather than pull in the
+   msvcrt header tree for one function, use the POSIX equivalent, which
+   has the same signature. */
+#define _wcsicmp wcscasecmp
+#endif
+
 namespace {
 
 constexpr UINT kWmCommand = 0x0111;
@@ -167,7 +175,7 @@ std::size_t count_dark_client_pixels(const HWND window,
     if (window == nullptr || !GetClientRect(window, &client)) {
         return 0;
     }
-    const int width = (std::min)(client.right, 800L);
+    const int width = (std::min)(client.right, static_cast<LONG>(800));
     const int top = (std::max)(0, y_first);
     const int bottom = (std::min)(client.bottom, static_cast<LONG>(y_limit));
     const int height = bottom - top;
@@ -376,8 +384,8 @@ bool make_foreground_and_focus(const HWND main_window, const HWND focus,
     if (!GetClientRect(focus, &client)) {
         return false;
     }
-    activation_point.x = (std::min)(client.right - 1, 20L);
-    activation_point.y = (std::min)(client.bottom - 1, 10L);
+    activation_point.x = (std::min)(client.right - 1, static_cast<LONG>(20));
+    activation_point.y = (std::min)(client.bottom - 1, static_cast<LONG>(10));
     if (activation_point.x < 0 || activation_point.y < 0 ||
         !ClientToScreen(focus, &activation_point) ||
         !SetCursorPos(activation_point.x, activation_point.y)) {
@@ -565,7 +573,7 @@ int fail(PROCESS_INFORMATION& process, const int code,
 
 }  // namespace
 
-int wmain(const int argument_count, wchar_t** arguments) {
+extern "C" int wmain(const int argument_count, wchar_t** arguments) {
     SetProcessDpiAwarenessContext(
         DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     if (argument_count < 2 || argument_count > 3) {
