@@ -245,7 +245,11 @@ struct PLDR
 	int     dyl;
 	union   {
 		HQ	hqpldre;    /* when fExternal true */
+#if defined(__GNUC__) && !defined(_MSC_VER) && (__GNUC__ < 15)
+		struct DR rgdr[1];  /* when fExternal false -- GCC <15 rejects FAM in union (PR53548, r15-209) */
+#else
 		struct DR rgdr[];   /* when fExternal false */
+#endif
 		};
 	};
 #define cwPLDR   (sizeof(struct PLDR) / sizeof(int))
