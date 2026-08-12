@@ -35,7 +35,11 @@ struct BMS {	/* structure giving a bitmap and its size */
 struct RSBI {
 	union {
 	struct	{
+#if defined(__GNUC__) && !defined(_MSC_VER) && (__GNUC__ < 15)
+		struct BMS rgbms [1];  /* GCC <15 rejects FAM alone in struct (PR53548, r15-209) */
+#else
 		struct BMS rgbms [];
+#endif
 		};
 	struct	{
 		struct BMS	bmsUArrow;
@@ -70,7 +74,11 @@ struct ZPP {	/* describes a drawing range of horz/vert RSB control */
 
 union GRPZPP {	/* describes all drawing ranges of horz/vert RSB control */
 		struct	{
+#if defined(__GNUC__) && !defined(_MSC_VER) && (__GNUC__ < 15)
+		struct ZPP rgzpp[1];  /* GCC <15 rejects FAM alone in struct (PR53548, r15-209) */
+#else
 		struct ZPP rgzpp[];
+#endif
 		};
 	struct	{
 		struct ZPP zppUArrow;
