@@ -337,3 +337,108 @@ que sí queda establecido con evidencia real:
 - **Reportar el assert de `dbghelp.dll` aguas arriba a Wine**, si el
   proyecto llega a depender de que el probe propio simbolice en vivo —
   hoy es un bloqueador de tooling, no del port.
+
+---
+
+## 8. ASan — descartado, no solo propuesto (2026-08-12)
+
+Se probó el candidato de §7 en aislamiento (binario Winelib trivial en
+`/tmp`, sin tocar `out/linux-winelib-*` ni ningún archivo de código) antes
+de invertir en reconfigurar el build real.
+
+**Paso 1 — `winegcc` no propaga `-fsanitize=address` al link final.** Su
+driver arma el comando de link él mismo y descarta la flag: el `.o` se
+compila instrumentado, pero el link final (`gcc -m64 -shared ... -ldl -lm
+-lc`, sin `-fsanitize=address` ni `-lasan`) deja `__asan_init`/
+`__asan_version_mismatch_check_v8` sin resolver (`ld: undefined
+reference`, `winegcc: /usr/bin/gcc failed`, código de salida 2).
+Confirmado con `winegcc -v` mostrando el comando de link real emitido.
+Se resuelve pasando `-lasan` explícito (`-Wl,--no-as-needed -lasan
+-lpthread -ldl -lrt -lm`): el binario linkea y produce `t.exe`/`t.exe.so`.
+
+**Paso 2 — corre bajo `wine` con `LD_PRELOAD=libasan.so`, y falla en la
+inicialización del propio ASan, antes de llegar a `main`:**
+
+```
+==PID==ERROR: AddressSanitizer failed to deallocate 0xc800 (51200) bytes
+at address 0x00007ffb3800 (error code: 22)
+```
+
+Se probaron cuatro combinaciones de `ASAN_OPTIONS`
+(`allocator_may_return_null=1`, `protect_shadow_gap=0`,
+`verify_asan_link_order=0`, y las cuatro juntas) más
+`WINEPRELOADRESERVE=0x0-0x0` (intento de desactivar la reserva de
+bajo-espacio-de-direcciones de `wine-preloader`) — mismo error en los
+cinco casos, sin cambio en el mensaje ni en el código de retorno.
+
+**Lectura:** es la misma clase de incompatibilidad que ya bloqueaba
+`valgrind --trace-children` en §4 — un gestor de memoria externo que
+reserva/desmapea su propio espacio de direcciones choca con la reserva
+que `wine-preloader` hace por adelantado para el layout Win32, antes de
+que corra ningún constructor de biblioteca. No es un bug de ASan ni de
+este build: es la tercera herramienta dinámica de las tres intentadas
+(`gdb`/`winedbg` en §2-3, `valgrind` en §4, ahora ASan) bloqueada por el
+mismo tipo de fricción de toolchain Winelib/x86-64, y no por el bug en
+sí. **Descartado como vía — no se reconfiguró el build real, no queda
+como "pendiente de intentar".**
+
+## 9. Revisión manual de `C_FormatLineDxa` — arrancada, sin causa raíz aislada aún
+
+Primer tramo del último punto de §7 ("revisar `C_FormatLineDxa` y su
+vecindario a mano"). Alcance cubierto en esta sesión, con evidencia:
+
+- **Los macros `CwFromCch`/`FChngSizeHCw`/`HAllocateCw` que gobiernan el
+  buffer `vhgrpchr` (la tabla de runs `CHR`/`CHRV`/`CHRT`/... que
+  `C_FormatLineDxa` llena) se verificaron consistentes, no son el bug.**
+  `CwFromCch(cch)` (`wordtech/word.h:196`) usa `sizeof(int)` — 4 bytes
+  tanto en Win16 original (`int` de 2 bytes → la unidad "cw" real ahí es
+  de 2 bytes) como en este build GCC x64 (`int` de 4 bytes → unidad "cw"
+  de 4 bytes). El macro original `heap.h:84`
+  (`FChngSizeHCw(h,cw,f) = FChngSizeHCb(h,(cw)<<1,f)`, asume unidad de 2
+  bytes) **no se usa en este build**: `heap.h:3-5` toma la rama
+  `#ifdef OPUS_X64` y solo incluye `opus_x64_heap.h`, cuya versión
+  (`FChngSizeHCw(h,cw,shrink) = OpusFChngSizeHCb(h, cw*sizeof(int),
+  shrink)`) multiplica por 4, no por 2 — coherente con la nueva unidad de
+  `CwFromCch` bajo `int` de 4 bytes. Sin mezcla de las dos definiciones
+  confirmada por lectura directa de `heap.h`. El patrón de crecimiento en
+  `FExpandGrpchr` (`fetch1.c:838-853`, +25% con reserva de `cbCHRE`) y su
+  único call site relevante también se leyeron completos — sin señal de
+  desajuste de tamaño.
+- `cbCHR`/`cbCHRT`/`cbCHRV`/`cbCHRDF`/`cbCHRFG` (`wordtech/format.h`) son
+  todos `sizeof(struct ...)` calculados por el propio compilador — a
+  diferencia del bug ya confirmado de `bitapp.h:29` (`DWORD` fijo
+  serializado contra un formato de archivo externo), esta tabla es
+  interna y autoconsistente: no hay una constante de formato fija de por
+  medio que pueda desalinearse bajo LP64. Se descarta como clase de bug
+  para este buffer específico.
+- Los ~15 puntos donde `vbchrMac`/`bchrPrev`/`ffs.bchr` se comparan
+  contra `vbchrMax` antes de indexar `(**vhgrpchr)[...]` (grep completo
+  de `format.c`) están todos guardados (`if ((vbchrMac += cbCHR...) <=
+  vbchrMax ...)` o equivalente) — no se encontró un guard faltante en
+  esta pasada, pero **no se verificó cada rama a mano línea por línea**,
+  solo el patrón general del guard.
+
+**No cubierto todavía — sigue pendiente:** el cuerpo completo de
+`C_FormatLineDxa` (`wordtech/format.c:454-1206+`, la función tiene más de
+600 líneas) no se leyó entero; el tramo revisado fue el de inicialización
+(454-750) y el subsistema de asignación del buffer de runs. Falta el
+cuerpo principal del bucle de formateo de línea (medición de ancho de
+carácter, tabs, campos/fórmulas, breaks) donde vive la llamada real a
+GDI/medición de texto que el crash de §5 alcanza fuera de `WORD1`.
+
+**Pista nueva, no perseguida aún, que cambia el ángulo de búsqueda:**
+esta rama del proyecto viene wireando progresivamente `WORD1` a los
+contratos `OpusShell*` (commits recientes: `00de60f2` conecta
+`C_LoadFcid` — medición de ancho de carácter en pantalla — a
+`OpusShellCharWidths`; `b803cc0` enlaza `opus_shell_font_metrics` en
+`WORD1`). Si el bucle de `C_FormatLineDxa` todavía llama a GDI real
+(`vpri.hdc`/`vfti`, HDC de pantalla) para algo que `C_LoadFcid` ya
+resuelve por el contrato Qt en otro punto del mismo flujo de formateo,
+un HDC nulo o un estado de fuente inconsistente entre las dos vías
+encajaría con "write a 0x0 en código fuera de `WORD1`" (§5) sin requerir
+corrupción de heap previa como explicación única. **No confirmado — es
+la siguiente hipótesis a probar, no un hallazgo.** `vpri.hdc` en sí
+resultó ser solo el HDC de impresora (`disp1.c`, `print.c`,
+`initwin.c`) por lectura de sus asignaciones — no es el HDC de pantalla
+que usaría el bucle de formateo, así que la hipótesis necesita
+identificar primero cuál variable sí lo es antes de poder probarse.
