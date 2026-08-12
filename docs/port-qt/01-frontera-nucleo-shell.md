@@ -743,6 +743,72 @@ Exigen extracción, no mapeo. Por orden de dificultad creciente:
   en §B1.3 y no deberían intentarse antes de que el contrato de medición de
   texto esté implementado y verificado.
 
+### B4.4 Conexión real del primer sitio: `error.c:1618`
+
+`Opus/wordtech/error.c`, función `ErrorEidStartup`, sustituye el `MessageBox`
+real por `OpusShellReportError(eid, szMsg)`, guardado bajo
+`#if defined(__GNUC__) && !defined(_MSC_VER)` — mismo patrón que §B2.7. MSVC
+sigue con `MessageBox` real, sin cambios.
+
+Verificado antes del cambio, `git grep -n 'MessageBox' src/Opus/wordtech/
+error.c`: la línea 1618 es la única llamada directa a `MessageBox` en el
+archivo — las otras tres coincidencias (1214, 1549, 1674) son
+`IdMessageBoxMstRgwMb`, el wrapper propio de Word, no la API Win32, y la de
+1582 es un comentario.
+
+Mapeo de parámetros contra la firma (`src/core/include/OpusShellSpine.h:46`,
+`void OpusShellReportError(int eid, const char *message);`):
+
+- `eid` — el mismo parámetro que ya recibe `ErrorEidStartup(eid)`, sin
+  transformación.
+- `message` ← `szMsg`, el texto que la propia función ya resuelve vía
+  `IemdFromEid`/`CopyEmdSt` antes de la llamada — el contenido del error no
+  pierde nada.
+- `szApp` (el título de la ventana) **no** tiene lugar en el contrato a
+  propósito: `OpusShellSpine.cpp:20` fija el título a `"Word"` traducido por
+  Qt, no al valor de `szApp`. `szApp` es una constante global de la app
+  (`extern CHAR szApp[]`, el mismo valor en cualquier sitio de llamada, no un
+  dato específico de este error), así que no hay pérdida de información *del
+  error*: es una decisión de presentación ya explícita en el header
+  (`OpusShellSpine.h:17`, "el shell decide la presentación"), no un recorte
+  improvisado en este cambio.
+- `MB_OK|MB_SYSTEMMODAL` ← ya fijos dentro de `OpusShellReportError`
+  (`QMessageBox::Ok`, `Qt::ApplicationModal`) — la llamada real en `error.c`
+  nunca varía esos flags entre invocaciones (es la única llamada), así que no
+  hay combinación de flags que el contrato deba parametrizar.
+
+Fallo controlado: sin cambios de comportamiento en caso de error — la ruta
+sigue siendo la misma función, mismos dos `Yield()` alrededor de la llamada
+(bug de Windows documentado en el comentario original), sin `try`/`catch` ni
+fallback silencioso añadido.
+
+**Diferencia real frente a §B2.7: esta vez sí se pudo compilar contra
+Winelib de punta a punta.** `error.c` no incluye `disp.h` ni `rsb.h` ni
+directa ni transitivamente (verificado por `git grep`, dos niveles, ver la
+sesión de reconocimiento previa) — no choca con el bloqueador de GCC 14 en
+`Opus/wordtech/disp.h:248`. `ninja
+CMakeFiles/opus_original_engine.dir/Opus/wordtech/error.c.o` bajo
+`wineg++`/`winegcc` real compiló sin errores (solo warnings preexistentes,
+ninguno en las líneas tocadas) y produjo el objeto
+(`error.c.o`, 41784 bytes). Esto es compilación real contra el árbol
+Winelib, no solo los 5 tests nativos de `src/core` — pero **no es
+ejecución**: `WORD1` completo sigue sin poder enlazarse/arrancar en este
+entorno (el resto del árbol sí choca con `disp.h`/GCC 14, y por separado
+`WORD1` tiene el bloqueador de arranque conocido,
+`word1_startup_blocked`), así que el diálogo modal real de
+`OpusShellReportError` en este sitio de llamada específico no se disparó ni
+se observó en ejecución esta sesión. Lo que sí está verificado en
+ejecución es el contrato en sí (`opus_shell_spine_test`, diálogo modal real
+vía `QMessageBox`/`QTimer`, commit 79b181f) — no la ruta completa desde
+`ErrorEidStartup` real.
+
+**Esto NO desbloquea `disp.h`/GCC 14.** Sigue siendo un bloqueador de
+entorno/toolchain aparte, sin tocar en esta sesión, que sigue afectando a
+`editspec.c`/`undo.c` (los otros dos sitios de §B4.3, ambos incluyen
+`disp.h`) y a la mayoría del árbol. Que `error.c` haya compilado limpio es
+una propiedad de ese archivo puntual (no incluye `disp.h`/`rsb.h`), no una
+resolución del problema de fondo.
+
 ---
 
 ## B5 — Contrato de persistencia de configuración

@@ -4,6 +4,14 @@
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
 #include "error.h"
 #include "debug.h"
+
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* Contrato de espina de mensajes del nucleo Qt (src/core/include/
+   OpusShellSpine.h, docs/port-qt/01-frontera-nucleo-shell.md SB4.3).
+   Reemplaza el MessageBox real de ErrorEidStartup, mas abajo -- solo
+   en el camino Winelib; MSVC sigue con MessageBox real. */
+#include "OpusShellSpine.h"
+#endif
 #ifdef WIN
 #include "message.h"
 #include "prompt.h"
@@ -1615,7 +1623,14 @@ int eid;
 		}
 #endif
     	Yield();/* windows bug work around */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+    	/* szApp (titulo) queda fuera del contrato a proposito -- el shell
+    	   decide la presentacion (OpusShellSpine.h:14-18); eid y szMsg,
+    	   que son el contenido real del error, se preservan integros. */
+    	OpusShellReportError(eid, szMsg);
+#else
     	MessageBox(NULL, (LPSTR)szMsg, (LPSTR)szApp, MB_OK|MB_SYSTEMMODAL);
+#endif
     	Yield();/* windows bug work around */
         }
 }
