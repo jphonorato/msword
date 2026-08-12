@@ -936,6 +936,115 @@ abierta al cerrar este paso — se resolvió por separado, ver más abajo.
 
 ---
 
+## Reconocimiento Qt-3: candidatos limpios de `disp.h`/`rsb.h` sin sitio real
+
+Tres TUs de `wordtech/` identificadas en el reconocimiento previo como
+limpias de `disp.h`/`rsb.h` (directa y transitivamente, mismo método de
+§B2.7/B4.4) pero sin asignar todavía a ninguna sección B:
+`src/Opus/wordtech/sttb.c`, `src/Opus/wordtech/inssubs.c`,
+`src/Opus/wordtech/prl.c`. El propósito de este reconocimiento era
+encontrar el siguiente sitio real conectable mientras `disp.h`/GCC 14
+sigue bloqueado. **Resultado: negativo en los tres — no hay ningún sitio
+que requiera (ni tenga ya) un contrato del núcleo Qt.** Se documenta igual
+que un resultado positivo, para no repetir la búsqueda.
+
+Verificado por `git log --oneline --all -- <archivo>` que ninguno de los
+tres fue tocado por trabajo de ninguna sección B previa (solo aparecen en
+`a1c4a1f Initial commit`, y `inssubs.c` además en dos commits de la fase
+de port original — `c40d4e0 Fase 3: compilar el motor a 0 errores` y
+`27a2f60 Full operating system font support` — ninguno de los dos toca
+`MessageBox`/`Global*`/GDI).
+
+### `src/Opus/wordtech/sttb.c`
+
+Cuatro familias de grep, cada una vacía:
+
+```
+$ git grep -n 'MessageBox' -- src/Opus/wordtech/sttb.c
+$ git grep -n 'MessageBeep' -- src/Opus/wordtech/sttb.c
+$ git grep -nE 'Global[A-Z][a-zA-Z]*' -- src/Opus/wordtech/sttb.c
+$ git grep -nE 'GetDC|ReleaseDC' -- src/Opus/wordtech/sttb.c
+$ git grep -nE 'HFONT|SelectObject|CreateFont|GetTextMetrics|GetTextExtent|GetCharWidth' -- src/Opus/wordtech/sttb.c
+```
+
+(sin salida en las cinco)
+
+Sí tiene una familia de API real, encontrada al inspeccionar el archivo:
+`HqAllocLcb`/`FreeHq`/`UnlockHq`/`HpOfHq` sobre el tipo `HQ`, 8 sitios
+(líneas 70, 111, 131, 177, 286, 494, 546, 736).
+
+| Sitio (línea) | API | Contrato existente/faltante | Complejidad |
+|---|---|---|---|
+| 70, 111, 131, 177, 286, 494, 546, 736 | `HQ`/`HqAllocLcb`/`FreeHq`/`UnlockHq`/`HpOfHq` | **No hace falta ninguno.** `HqAllocLcb` no es Win16 `GlobalAlloc` — es un macro ya resuelto por el port x64 (`src/port/original/opus_x64_heap.h:41`, `#define HqAllocLcb(cb) ((HQ)OpusHAllocateCb((size_t)(cb)))`), respaldado por un allocator nativo propio (`OpusHAllocateCb`/`OpusDerefH`, handles pointer-a-puntero estables, sin relación con memoria segmentada Win16). Fuera del alcance de B3: B3 son los ~201 sitios de `Global*`/`GMEM_*` reales (`GlobalAlloc`/`GlobalLock`/`GlobalFree` de la API Win32), no el `HQ` interno de Opus, que ya es portable tal cual. | **N/A — no es trabajo pendiente.** Ya ported, nada que sustituir. |
+
+`sttb.c` es un candidato disp.h-limpio, pero no un candidato de *trabajo*:
+no queda ningún sitio Win16/GDI real dentro del archivo.
+
+### `src/Opus/wordtech/inssubs.c`
+
+Mismas cinco familias, todas vacías:
+
+```
+$ git grep -n 'MessageBox' -- src/Opus/wordtech/inssubs.c
+$ git grep -n 'MessageBeep' -- src/Opus/wordtech/inssubs.c
+$ git grep -nE 'Global[A-Z][a-zA-Z]*' -- src/Opus/wordtech/inssubs.c
+$ git grep -nE 'GetDC|ReleaseDC' -- src/Opus/wordtech/inssubs.c
+$ git grep -nE 'HFONT|SelectObject|CreateFont|GetTextMetrics|GetTextExtent|GetCharWidth|CreateDC' -- src/Opus/wordtech/inssubs.c
+$ git grep -nE 'HqAllocLcb|LpLockHq|UnlockHq|FreeHq|HAllocateCw|HAllocateCb' -- src/Opus/wordtech/inssubs.c
+```
+
+(sin salida en las seis)
+
+Inspección adicional (barrido heurístico de toda llamada con mayúscula
+inicial, descartando las funciones internas de Opus obviamente propias)
+no encontró ninguna otra API Win16/GDI — el archivo es lógica de inserción
+de campos/números de página y conversión de bytes de archivo
+(`ReadRgchFromFn`, `WriteRgchToFn`, `PnAlloc`, `MapStc`, etc.), toda
+interna a Opus, ninguna cruza a Win32.
+
+| Sitio (línea) | API | Contrato existente/faltante | Complejidad |
+|---|---|---|---|
+| — | — | — | **No hay sitios.** Nada que conectar. |
+
+### `src/Opus/wordtech/prl.c`
+
+Mismas seis familias, todas vacías:
+
+```
+$ git grep -n 'MessageBox' -- src/Opus/wordtech/prl.c
+$ git grep -n 'MessageBeep' -- src/Opus/wordtech/prl.c
+$ git grep -nE 'Global[A-Z][a-zA-Z]*' -- src/Opus/wordtech/prl.c
+$ git grep -nE 'GetDC|ReleaseDC' -- src/Opus/wordtech/prl.c
+$ git grep -nE 'HFONT|SelectObject|CreateFont|GetTextMetrics|GetTextExtent|GetCharWidth|CreateDC' -- src/Opus/wordtech/prl.c
+$ git grep -nE 'HqAllocLcb|LpLockHq|UnlockHq|FreeHq|HAllocateCw|HAllocateCb' -- src/Opus/wordtech/prl.c
+```
+
+(sin salida en las seis)
+
+Mismo barrido heurístico: solo funciones internas de Opus sobre `PRL`/tabs
+(`AddPrlSorted`, `ApplyPrlSgc`, `ApplySprm`, `DeleteTabs`, etc.) más el
+macro ya portado `LpFromHp` (mismo `opus_x64_heap.h` que en `sttb.c`, no
+un sitio nuevo). Ninguna API Win16/GDI.
+
+| Sitio (línea) | API | Contrato existente/faltante | Complejidad |
+|---|---|---|---|
+| — | — | — | **No hay sitios.** Nada que conectar. |
+
+### Conclusión de este reconocimiento
+
+Ninguno de los tres es un candidato de trabajo Qt-3 viable, a pesar de
+estar limpios de `disp.h`/`rsb.h`: `sttb.c` solo toca memoria ya portable
+(`HQ`, fuera del alcance de B3), y `inssubs.c`/`prl.c` no tienen ninguna
+superficie Win16/GDI en absoluto. El siguiente sitio real conectable
+mientras `disp.h`/GCC 14 siga bloqueado no está entre estos tres — hace
+falta repetir la búsqueda sobre otro subconjunto de la lista de candidatos
+limpios ya inventariada (`src/Opus/debug/debugdde.c`, `debugdlg.c`,
+`debuggdi.c`, `debugrep.c`, `debugwin.c`, o el resto de TUs limpias de
+`Opus/` raíz listadas en el reconocimiento anterior), no asumir que
+"limpio de `disp.h`" implica "tiene trabajo pendiente".
+
+---
+
 ## Verificación de la frontera física: ¿enlaza de verdad?
 
 Hasta B5.2 solo se había confirmado que `opus_shell_config` compila de
