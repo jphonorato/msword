@@ -13,6 +13,17 @@
 #include <cstring>
 #include <cwchar>
 
+#if !defined(_MSC_VER)
+/* Wine 10.0's processthreadsapi.h (Debian package, this environment) does
+   not declare GetCurrentThreadStackLimits, unlike the Wine 11.0/Fedora
+   environment this file was originally built against (see
+   docs/port-linux/01-diagnostico-heap-corruption-arranque.md). It is a
+   real kernel32 export (Vista+); declare it locally so this Winelib build
+   links against whatever ntdll/kernel32 actually provides at runtime. */
+extern "C" WINBASEAPI void WINAPI GetCurrentThreadStackLimits(
+    PULONG_PTR LowLimit, PULONG_PTR HighLimit);
+#endif
+
 extern "C" int WINAPI OpusOriginalWinMain(HINSTANCE instance,
                                              HINSTANCE previous,
                                              LPSTR command_line,

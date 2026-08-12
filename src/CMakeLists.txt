@@ -1343,6 +1343,20 @@ if(OPUS_WINELIB_BUILD)
     find_program(OPUS_WINEBUILD_EXECUTABLE winebuild
         DOC "Wine module builder (optional; winegcc invokes it for .spec)")
 
+    # wrc needs Wine's locale table (nls-dir); some distro packagings (e.g.
+    # Debian's wine) don't ship wrc with a compiled-in default path, so it
+    # must be passed explicitly. Resolve relative to wrc's own install
+    # prefix instead of hardcoding a path -- keeps this portable across
+    # distros where wine is installed to /usr, /usr/local, or elsewhere.
+    get_filename_component(_opus_wrc_bindir "${OPUS_WRC_EXECUTABLE}" DIRECTORY)
+    get_filename_component(_opus_wine_prefix "${_opus_wrc_bindir}" DIRECTORY)
+    find_path(OPUS_WINE_NLS_DIR NAMES locale.nls
+        PATHS "${_opus_wine_prefix}/share/wine/nls" "${_opus_wine_prefix}/lib/wine/nls"
+        NO_DEFAULT_PATH
+        DOC "Wine NLS locale-table directory (for wrc --nls-dir)")
+    unset(_opus_wrc_bindir)
+    unset(_opus_wine_prefix)
+
     set(WORD1_SPEC "${CMAKE_CURRENT_BINARY_DIR}/generated/original/word1.spec")
     set(WORD1_RES  "${CMAKE_CURRENT_BINARY_DIR}/generated/original/word1.res")
 
@@ -1368,6 +1382,7 @@ if(OPUS_WINELIB_BUILD)
     add_custom_command(
         OUTPUT "${WORD1_RES}"
         COMMAND "${OPUS_WRC_EXECUTABLE}"
+            $<$<BOOL:${OPUS_WINE_NLS_DIR}>:--nls-dir=${OPUS_WINE_NLS_DIR}>
             -I "${CMAKE_CURRENT_SOURCE_DIR}/port"
             -o "${WORD1_RES}"
             "${CMAKE_CURRENT_SOURCE_DIR}/port/word1.rc"
