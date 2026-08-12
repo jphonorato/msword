@@ -1341,3 +1341,243 @@ Fase 1 de B3 (§B3.3), no buscada a propósito:**
    como añadir esa tabla de 4 entradas al lado núcleo del wrapper, no al
    header de frontera); o (b) el contrato cambia para recibir el nombre
    directamente. (a) no requiere tocar `OpusShellFontMetrics.h`.
+
+---
+
+## Bloqueador de build: `disp.h:248` en GCC 14 (VPS Debian) — solo diagnóstico
+
+**Estado real: reproducido y caracterizado, no resuelto.** No es un bug de este
+fork: reproducido también con `git stash` antes de cualquier cambio propio, así
+que es preexistente al trabajo de esta rama. No reproducible en Fedora
+44/GCC 16.1.1 (sin acceso a esa máquina en esta sesión — dato reportado, no
+reverificado aquí). No se tocó `src/Opus/` ni `src/OpusEtAl/`: solo lectura,
+compilación de prueba aislada y búsqueda.
+
+### El código exacto
+
+`Opus/wordtech/disp.h:235-250`:
+
+```c
+struct PLDR
+	{
+	int     idrMac;
+	int     idrMax;
+	int     cbDr;   /* set to cbDR */
+	int     brgdr;  /* set to point to rgdr */
+	int	fExternal;
+	struct PLDR **hpldrBack;
+	int     idrBack;
+	struct PT ptOrigin;
+	int     dyl;
+	union   {
+		HQ	hqpldre;    /* when fExternal true */
+		struct DR rgdr[];   /* when fExternal false */
+		};
+	};
+#define cwPLDR   (sizeof(struct PLDR) / sizeof(int))
+```
+
+La construcción es un flexible array member (`struct DR rgdr[]`) como miembro
+de una `union`, junto a `HQ hqpldre`. Presente desde el commit inicial del
+fork (`a1c4a1f`, `git blame` no muestra ningún commit posterior tocando estas
+líneas) — no es una regresión introducida en esta rama.
+
+### El error, literal
+
+Compilación real vía `cmake --build --preset linux-winelib-debug --target
+opus_original_engine`, disparado por `port/original/opus_x64_layout.c:6`
+(`#include "wordtech/disp.h"`):
+
+```
+/home/pablo/msword/src/Opus/wordtech/disp.h:248:27: error: flexible array member in union
+  248 |                 struct DR rgdr[];   /* when fExternal false */
+      |                           ^~~~
+winegcc: /usr/bin/gcc failed
+```
+
+Flags reales de esa TU (capturados con `ninja -t commands`):
+
+```
+winegcc -DCRLF -DNOMINMAX -DNONATIVE -DOPUS_X64 -DWIN -DWIN23 [...] \
+  -g -std=gnu89 -funsigned-char -fms-extensions -fpermissive -MD [...] \
+  -c src/port/original/opus_x64_layout.c
+```
+
+**Dato clave: `-fms-extensions` ya está activo en el build real** (línea de
+CMake existente) y el error persiste. No es un `-Werror` — es un `error:`
+directo del front-end de C, sin prefijo `[-W...]`, así que ningún flag de
+warning-a-error lo controla.
+
+### Causa exacta — confirmada, no supuesta
+
+Reproducido aislado (`gcc -std=gnu89 -fms-extensions -fpermissive`, mismo
+resultado). Con `-pedantic-errors` el mismo caso también dispara, por
+separado, `ISO C90 does not support flexible array members [-Wpedantic]` —
+pero ese es un diagnóstico *distinto* (gateable por `-Wpedantic`); el que
+realmente bloquea el build (`flexible array member in union`, sin sufijo
+`-W`) no aparece bajo ningún nombre de warning: es un `error_at()`
+incondicional en el front-end de C de GCC 14, en `c/c-decl.cc` (mensaje
+localizado en `#: c/c-decl.cc:9556` en el árbol fuente de
+`gcc-14_14.2.0-19.debian.tar.xz`, confirmado descargando el paquete fuente
+Debian real, no por inspección de memoria).
+
+**Por qué GCC 16 no lo reproduce — confirmado por búsqueda, no supuesto:**
+GCC aceptó oficialmente PR53548 ("allow flexible array members in unions")
+como commit `r15-209` (rama de desarrollo de GCC 15, mayo 2024), que
+convirtió este `error_at()` incondicional en un `pedwarn` (advertencia
+pedante, no error duro) y documentó la construcción como extensión soportada
+("Flexible Array Members in Unions" en la documentación oficial de GCC:
+<https://gcc.gnu.org/onlinedocs/gcc/Flexible-Array-Members-in-Unions.html>,
+confirma "GCC permits a C99 flexible array member (FAM) to be in a union").
+Debian `gcc-14.2.0` es anterior a ese cambio (GCC 14 se ramificó antes de
+mayo 2024); Fedora 44 con GCC 16.1.1 lo hereda. **Es una diferencia de
+versión del compilador, no de flags ni de modo de lenguaje** — por eso
+ningún flag de `-std=`/`-fms-extensions`/`-fplan9-extensions` lo mueve: el
+soporte no está condicionado a un flag, está condicionado a que el
+front-end tenga el parche aplicado.
+
+Referencias usadas (búsqueda web, no memoria del modelo):
+- <https://gcc.gnu.org/pipermail/gcc-cvs/2024-May/401756.html> — commit
+  `r15-209`, "C and C++ FE changes to support flexible array members in
+  unions and alone in structures."
+- <https://www.mail-archive.com/gcc-patches@gcc.gnu.org/msg364477.html> —
+  serie de parches posteriores (PR119001, febrero 2025) afinando casos de
+  inicialización, confirma que el soporte sigue activo y evolucionando en
+  ramas posteriores a GCC 15.
+- <https://gcc.gnu.org/onlinedocs/gcc/Flexible-Array-Members-in-Unions.html>
+
+### Flags probados — ninguno resuelve, en este orden
+
+Repro aislado (`/tmp/.../repro.c`, mismo patrón exacto: `union { HQ; struct
+DR rgdr[]; }`), cada uno con salida literal idéntica (`error: flexible array
+member in union`, exit 1):
+
+| Flag probado | Resultado |
+|---|---|
+| `-fms-extensions` (ya activo en el build real) | falla |
+| `-fplan9-extensions` | falla |
+| `-std=gnu17 -fms-extensions` | falla |
+| `-std=gnu2x -fms-extensions` | falla |
+| `-Wno-error=pedantic -fms-extensions` | falla (confirma que no es un `-Werror`; el error no tiene tag `-W`, así que no hay warning que degradar) |
+
+Ninguno de los cinco cambia el resultado. Esperable dado lo anterior: el
+`error_at()` de GCC 14 es incondicional, no depende de dialecto de C ni de
+extensión GNU/MS/Plan9 activada — solo del parche de front-end que llegó en
+GCC 15.
+
+### Candidato de código mínimo — NO aplicado, solo propuesto para revisión
+
+No hay flag de compilador que resuelva esto en GCC 14. El cambio mínimo
+sería en `disp.h`, guardado como exige la disciplina del proyecto para
+código Linux-only dentro de `Opus/`:
+
+```diff
+--- a/src/Opus/wordtech/disp.h
++++ b/src/Opus/wordtech/disp.h
+@@ -244,7 +244,11 @@ struct PLDR
+ 	union   {
+ 		HQ	hqpldre;    /* when fExternal true */
++#if defined(__GNUC__) && !defined(_MSC_VER) && (__GNUC__ < 15)
++		struct DR rgdr[1];  /* when fExternal false -- GCC <15 rejects FAM in union (PR53548, r15-209) */
++#else
+ 		struct DR rgdr[];   /* when fExternal false */
++#endif
+ 		};
+ 	};
+```
+
+Por qué `rgdr[1]` y no otra cosa: no es un patrón nuevo importado — es
+exactamente el idiom que ya usa `struct WWD` en el mismo archivo
+(`disp.h:471`, comentario original `/* WWD is a pldr */`), para el mismo
+propósito (tail de `struct DR` de tamaño variable tras un header fijo).
+Verificado antes de proponerlo: `cwPLDR` (única macro que depende de
+`sizeof(struct PLDR)`, `disp.h:251`) no tiene ningún sitio de uso en
+`src/Opus/**/*.c` (`grep` vacío) — así que el único efecto observable de
+pasar de `rgdr[]` a `rgdr[1]` (que `sizeof(struct PLDR)` crezca en
+`sizeof(struct DR)`) no llega a ningún cálculo de asignación real. Todo el
+acceso real al array es vía puntero (`&(pwwd)->rgdr[0]` en el macro
+`PdrGalley`, mismo archivo) o vía offsets calculados a mano con `cbDr`, no
+vía `sizeof` de la struct completa — el patrón pre-C99 "struct hack" que
+`rgdr[1]` implementa es semánticamente neutro aquí, no solo "compila".
+
+**No implementado.** Pendiente autorización explícita (issue de GitHub) para
+tocar `src/Opus/`, por disciplina del proyecto.
+
+### Aplicado y verificado 2026-08-12 — autorizado explícitamente
+
+El cambio anterior se aplicó tal cual (misma guarda, mismo idiom `[1]`),
+**más un segundo hallazgo del mismo tipo, expuesto solo al destrabar el
+primero:** `Opus/rsb.h:38` (`struct BMS rgbms []`, dentro de `struct RSBI`) y
+`Opus/rsb.h:73` (`struct ZPP rgzpp[]`, dentro de `union GRPZPP`), ambos
+diagnosticados por GCC 14 como *"flexible array member in a struct with no
+named members"* — variante distinta del mismo `error_at()` incondicional
+(cubierta por el mismo commit upstream `r15-209`/PR53548, que dice
+explícitamente "in unions **and alone in structures**"). Confirmado
+pre-existente con `git stash` antes de tocar `rsb.h`: el error ya estaba ahí,
+solo quedaba oculto detrás del bloqueo de `disp.h` porque `ninja` no llega a
+compilar `cmdwnd.c` (el primer TU que arrastra `rsb.h`) hasta que otro TU en
+paralelo falla primero. Ambos sitios recibieron la misma guarda `#if
+defined(__GNUC__) && !defined(_MSC_VER) && (__GNUC__ < 15)` con `rgbms[1]` /
+`rgzpp[1]`, autorizado explícitamente por el mantenedor tras reportar el
+hallazgo (no estaba en el alcance original aprobado, se pidió permiso aparte
+antes de tocar el segundo archivo).
+
+**Es un contorno de compatibilidad de versión de compilador, no un cambio de
+diseño.** El layout de `struct PLDR`, `struct RSBI` y `union GRPZPP` es el
+mismo en intención (tail de tamaño variable tras un header fijo/alias sobre
+campos nombrados); lo único que cambia es qué expresión de C acepta GCC 14
+para declararlo. Bajo GCC ≥15 (rama `#else` de cada guarda) el código sigue
+siendo el flexible array member `[]` original, sin ningún cambio de
+comportamiento — la guarda es simétrica y no toca el camino MSVC
+(`_MSC_VER` excluido) ni GCC ≥15.
+
+**Neutralidad de `cwPLDR` confirmada, no solo argumentada:** `grep -rn
+cwPLDR src/Opus` antes y después del cambio devuelve únicamente la
+definición de la macro (`disp.h:251`), cero sitios de uso. `izppMax`
+(`rsb.h:89`, `sizeof(union GRPZPP)/sizeof(struct ZPP)`) tampoco se movió:
+la rama nombrada de la unión (5 `struct ZPP`) sigue siendo estrictamente
+mayor que la rama con `rgzpp[1]` (1 `struct ZPP`), así que
+`sizeof(union GRPZPP)` no cambió — mismo razonamiento para `struct RSBI`
+frente a `ibmsMax`/`ibmsMax2`/`ibmsMax3` (constantes literales, no
+derivadas de `sizeof`, y en cualquier caso la rama nombrada de 5-9 `BMS`
+domina sobre `rgbms[1]`).
+
+**Verificación real ejecutada (VPS Debian, GCC 14.2.0, este build):**
+
+1. `cmake --build --preset linux-winelib-debug --target opus_original_engine`
+   — **compila y linka limpio (exit 0)**, sin ningún `error: flexible array
+   member ...` en la salida. Confirmado antes/después con `git stash`: sin
+   el fix, el mismo build para en `disp.h:248`; con el fix, no vuelve a
+   aparecer esa clase de error en ningún punto del árbol `Opus/`.
+2. `cmake --build --preset linux-winelib-debug --target WORD1` — **sigue sin
+   completar, pero por un motivo totalmente ajeno**: `wrc: Error: codepage
+   1252 not supported` al compilar `port/word1.rc` (falta de datos de
+   codepage en el `wrc` de este VPS). No relacionado con FAM/union, no
+   tocado, ya venía así.
+3. `ctest --test-dir out/linux-winelib-debug` (suite gating completa) — los
+   tests que dependen de `opus_original_engine`/enlace Winelib puro contra
+   `user32`/`gdi32`/`comdlg32`
+   (`opus_x64_runtime_test`, `opus_original_sttb_test`,
+   `opus_original_plc_test`, `opus_sdm_cab_test`,
+   `opus_original_command_test`) **no llegan a linkar en este VPS por falta
+   de `wine32:i386`/multiarch** (`it looks like wine32 is missing... apt-get
+   install wine32:i386`) — confirmado pre-existente con `git stash`, mismo
+   síntoma con o sin el fix de FAM. Bloqueador de entorno, no de código,
+   fuera de alcance de esta tarea.
+   Los tres que sí dependen de la frontera núcleo/shell cruzando
+   winegcc/wineg++ **compilan, linkan y pasan**: `opus_shell_memory_foreign_test`,
+   `opus_shell_config_test`, `opus_shell_font_substitution_test` — 3/3
+   ✓ (sin regresión).
+4. Suite propia de `src/core` (`OPUS_CORE_BUILD_TESTS`, compilador nativo,
+   `ctest --test-dir
+   out/linux-winelib-debug/opus_core_build-prefix/src/opus_core_build-build`)
+   — **5/5 ✓** (`opus_shell_font_substitution_test`,
+   `opus_shell_font_metrics_test`, `opus_shell_font_metrics_fidelity_test`,
+   `opus_shell_spine_test`, `opus_shell_config_test`). Esperable: `src/core`
+   nunca incluye `Opus/wordtech/disp.h` ni `Opus/rsb.h`, el cambio no podía
+   afectarlo; se corrió de todas formas por rigor, sin regresión.
+
+**Pendiente, fuera de esta tarea:** el bloqueador de `wrc`/codepage 1252
+(bloquea `WORD1` completo) y la falta de `wine32:i386` en este VPS (bloquea
+5 tests gating por enlace) son blockers de entorno distintos, sin relación
+con FAM/union — no se investigan ni se tocan aquí.
