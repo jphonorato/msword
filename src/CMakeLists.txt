@@ -213,6 +213,8 @@ if(OPUS_WINELIB_BUILD)
         BUILD_BYPRODUCTS
             "${OPUS_CORE_PREFIX}/lib/libopus_shell_config.a"
             "${OPUS_CORE_PREFIX}/lib/libopus_shell_memory.a"
+            "${OPUS_CORE_PREFIX}/lib/libopus_shell_font_substitution.a"
+            "${OPUS_CORE_PREFIX}/lib/libopus_shell_font_metrics.a"
         BUILD_ALWAYS 1
         USES_TERMINAL_CONFIGURE 1
         USES_TERMINAL_BUILD 1
@@ -259,12 +261,46 @@ if(OPUS_WINELIB_BUILD)
         set(Qt6_DIR "${QT6_INSTALL_LIBS}/cmake/Qt6" CACHE PATH
             "Ruta a Qt6Config.cmake, derivada de qmake6 -query (evita depender de CMAKE_LIBRARY_ARCHITECTURE, que winegcc deja vacío)")
     endif()
-    find_package(Qt6 REQUIRED COMPONENTS Core)
+
+    # Qt6Gui (necesario para OpusShellFontMetrics, QRawFont) depende de
+    # WrapOpenGL, que FindOpenGL.cmake resuelve normalmente vía
+    # CMAKE_LIBRARY_ARCHITECTURE -- vacío bajo winegcc por el mismo motivo
+    # que arriba. find_library sin ese sufijo tampoco mira el directorio
+    # multiarch por defecto, así que se le da como pista explícita
+    # QT6_INSTALL_LIBS: es el mismo directorio multiarch real (p. ej.
+    # /usr/lib/x86_64-linux-gnu) que qmake6 ya resolvió arriba, portable
+    # entre Debian/Fedora sin hardcodear una ruta de distro concreta.
+    if(QT6_INSTALL_LIBS)
+        find_library(OPENGL_opengl_LIBRARY NAMES OpenGL PATHS "${QT6_INSTALL_LIBS}")
+        find_library(OPENGL_glx_LIBRARY NAMES GLX PATHS "${QT6_INSTALL_LIBS}")
+        find_library(OPENGL_gl_LIBRARY NAMES GL PATHS "${QT6_INSTALL_LIBS}")
+    endif()
+    find_package(Qt6 REQUIRED COMPONENTS Core Gui)
     add_library(opus_shell_config STATIC IMPORTED GLOBAL)
     set_target_properties(opus_shell_config PROPERTIES
         IMPORTED_LOCATION "${OPUS_CORE_PREFIX}/lib/libopus_shell_config.a"
         INTERFACE_LINK_LIBRARIES Qt6::Core)
     add_dependencies(opus_shell_config opus_core_build)
+
+    # opus_shell_font_substitution: sin dependencia Qt6, igual que
+    # opus_shell_memory -- solo hace falta como dependencia de enlace de
+    # opus_shell_font_metrics (encadenada vía INTERFACE_LINK_LIBRARIES
+    # abajo, mismo motivo que Qt6::Core en opus_shell_config: un STATIC
+    # IMPORTED declarado a mano no hereda deps transitivas del build real).
+    add_library(opus_shell_font_substitution STATIC IMPORTED GLOBAL)
+    set_target_properties(opus_shell_font_substitution PROPERTIES
+        IMPORTED_LOCATION "${OPUS_CORE_PREFIX}/lib/libopus_shell_font_substitution.a")
+    add_dependencies(opus_shell_font_substitution opus_core_build)
+
+    # opus_shell_font_metrics: contrato de medición de texto (§B2). Enlaza
+    # Qt6::Gui (QRawFont) y opus_shell_font_substitution -- ambos deben
+    # quedar en INTERFACE_LINK_LIBRARIES por el mismo motivo que
+    # Qt6::Core arriba.
+    add_library(opus_shell_font_metrics STATIC IMPORTED GLOBAL)
+    set_target_properties(opus_shell_font_metrics PROPERTIES
+        IMPORTED_LOCATION "${OPUS_CORE_PREFIX}/lib/libopus_shell_font_metrics.a"
+        INTERFACE_LINK_LIBRARIES "Qt6::Gui;opus_shell_font_substitution")
+    add_dependencies(opus_shell_font_metrics opus_core_build)
 
     # opus_shell_memory: sin dependencia Qt6, a diferencia de
     # opus_shell_config -- IMPORTED_LOCATION basta, no hace falta
@@ -1269,6 +1305,7 @@ target_link_libraries(WORD1 PRIVATE opus_original_engine opus_x64_runtime user32
 if(OPUS_WINELIB_BUILD)
     target_link_libraries(WORD1 PRIVATE opus_shell_config)
     target_link_libraries(WORD1 PRIVATE opus_shell_memory)
+    target_link_libraries(WORD1 PRIVATE opus_shell_font_metrics)
 endif()
 if(MSVC)
     target_compile_options(WORD1 PRIVATE /J /W3 /wd4005 /utf-8)
