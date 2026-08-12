@@ -838,6 +838,21 @@ produciría MSVC.
 
 ---
 
+## Fase 2 — CERRADA (estado al 2026-08-12)
+
+Ambos criterios de cierre confirmados en vivo, build limpio:
+- `ninja opus_x64_runtime` enlaza (criterio original escrito de la fase).
+- `ninja -k 0 opus_original_engine`: 0 errores, 0 FAILED,
+  libopus_original_engine.a (207 objetos) — condición añadida antes de
+  cerrar, alcanzada ya en la sesión del 2026-08-09 (ver "Criterio Fase 3"
+  más abajo en este documento) pero nunca comiteada bajo esta etiqueta.
+
+El código de la fase (toolchain-winelib.cmake, OPUS_WINELIB_BUILD,
+presets linux-winelib-debug/release) ya estaba presente en main, fusionado
+de forma difusa junto con las Fases 4/5 y trabajo posterior de la rama Qt.
+Este commit es el cierre administrativo pendiente, no introduce cambios
+funcionales nuevos.
+
 ## Fase 2 — EN PROGRESO, sin cerrar (estado al 2026-08-09)
 
 **No confundir con las Fases 0 y 1: esta fase no tiene commit todavía.** El árbol de
