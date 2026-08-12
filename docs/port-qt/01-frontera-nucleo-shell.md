@@ -413,6 +413,83 @@ contrato. Solo cubre estos 4 nombres; `Script` y `Modern` quedan fuera de
 alcance de esta medición (no están en la tabla maestra de arranque, ver
 `01-frontera-nucleo-shell.md`, "Secuencia recomendada para Qt-2", paso 2).
 
+### B2.7 Conexión real al primer llamador: `C_LoadFcid`
+
+`Opus/LOADFONT.C:187 C_LoadFcid`, camino de pantalla (`!pfti->fPrinter`),
+sin vista previa (`!vfPrvwDisp`), paso variable
+(`tm.tmPitchAndFamily & maskFVarPitchTM`), llama a `OpusShellCharWidths`
+en vez de `GetCharWidth`/`OurGetCharWidth` para llenar
+`FCE.hqrgdxp`/`FTI.rgdxp`, guardado bajo
+`#if defined(__GNUC__) && !defined(_MSC_VER)` — MSVC sigue con GDI sin
+cambios. Mapeo de campos, verificado contra el sitio real:
+
+- `OpusFontKey.ftc` ← `fcid.ibstFont`. La tabla maestra de arranque
+  (`Opus/initwin.c:1541-1583`, ya citada en §B2.6) registra Tms Rmn,
+  Symbol, Helv, Courier en ese orden como `ibstFont` 0-3 — el mismo orden
+  que `EraNameFromFtc` en `OpusShellFontMetrics.cpp` ya asumía. No hacía
+  falta ninguna tabla de traducción nueva: `ibstFont` **es** el `ftc` que
+  el contrato espera, para estas 4 entradas.
+- `OpusFontKey.ps` ← `fcid.hps` (medios puntos — el mismo campo que
+  `C_FGraphicsFcidToPlf`, `Opus/LOADFONT.C:832`, ya usa para construir
+  `lfHeight`).
+- `OpusFontKey.catr` ← `(fcid.fBold ? 1 : 0) | (fcid.fItalic ? 2 : 0)`.
+  Solo importa que sea `0` o no: el contrato no sabe medir negrita ni
+  cursiva (limitación 2 de `OpusShellFontMetrics.cpp`), así que cualquier
+  atributo activo debe fallar controlado, no aproximarse.
+
+Fallo controlado: si `OpusShellCharWidths` devuelve error (fuente no
+soportada, `catr != 0`, o cualquier otro caso fuera del contrato), el
+camino nuevo salta a `LSystemFontErr` — el mismo destino que ya usa un
+fallo de `CreateFontIndirect` más arriba en la misma función. `fFallback`
+queda en `fTrue`, la fuente cae al stock/sistema y, al volver a entrar en
+el bloque de ancho variable, la guarda `!fFallback` ya existente lo salta
+por completo: se degrada a ancho fijo (`tm.tmAveCharWidth`) igual que
+cualquier otro fallo de fuente en este código, sin aproximar con GDI en
+silencio. No se implementó ningún camino nuevo de recuperación — se
+reutilizó el que ya existía.
+
+Overhang: no se fuerza `dxpOverhang = 0` en el sitio de integración —
+`pfce->dxpOverhang` sigue viniendo de `tm.tmOverhang` (GDI real, la misma
+llamada a `GetTextMetrics` que ya corría antes de este cambio, sin
+tocar). La sustracción de overhang del camino GDI (`LOADFONT.C:482-490`
+en el numerado actual) queda intacta pero fuera del camino nuevo, que no
+la necesita: §B2.5 midió `tmOverhang = 0` en los 8 casos de estilo bajo
+TrueType/Wine, así que en la práctica ambos caminos coinciden en el valor
+(0), no por una corrección aplicada dos veces.
+
+**Qué queda verificado end-to-end y qué no.** Los 5 tests de `src/core`
+(incluida `opus_shell_font_metrics_fidelity_test`, 2660/2660) siguen en
+verde tras este cambio — pero no ejercitan `Opus/LOADFONT.C`, solo la
+biblioteca nativa que ese archivo ahora llama. La conexión del lado
+Winelib (`Opus/` compilado con `wineg++`/`winegcc` contra el contrato) no
+se pudo compilar en esta sesión: `Opus/wordtech/disp.h:248` (`struct DR
+rgdr[]` dentro de una `union`) es rechazado por GCC 14 con "flexible
+array member in union" — error preexistente, confirmado con `git stash`
+contra el mismo commit antes de este cambio, en un archivo que este
+trabajo no toca. Bloquea la compilación de `loadfont.c.o` (y de
+`opus_x64_layout.c`, y por tanto de `WORD1` entero) en este entorno,
+independientemente de §B2.7. Es un bloqueador de entorno/toolchain, no
+del contrato ni de esta integración — pero significa que el enlace real
+`WORD1` → `opus_shell_font_metrics` (cableado en `src/CMakeLists.txt` en
+esta misma sesión, ver el commit de wiring) no se probó compilando de
+punta a punta, solo se verificó que el `find_package(Qt6 ... Gui)` y las
+declaraciones `IMPORTED` resuelven (`cmake --preset
+linux-winelib-debug` configura limpio). Aparte de eso, `WORD1` ya
+arranca con heap corruption conocido antes de llegar a un estado usable
+(`word1_startup_blocked`, ver `CLAUDE.md`) — así que aunque el bloqueador
+de `disp.h` no existiera, este cambio por sí solo no habría podido
+verificarse "contra layout real" corriendo el binario.
+
+**Conclusión sobre el criterio de desbloqueo de `scroll.c`/`disp3.c`/
+`pagevw.c`:** el código está conectado (§B2.7 cierra la ruta de llamada
+que faltaba), pero el criterio del documento — "B2 implementado y
+verificado contra layout real" — pide verificación en ejecución, no solo
+en compilación de tipos. Esa verificación no ocurrió esta sesión por dos
+bloqueadores independientes de este trabajo (compilación `disp.h`/GCC 14,
+arranque de `WORD1`). `scroll.c`/`disp3.c`/`pagevw.c` **siguen fuera de
+alcance** hasta que alguno de esos dos bloqueadores se resuelva y B2 se
+pueda observar produciendo paginación real.
+
 ---
 
 ## B3 — Contrato de memoria Win16
@@ -902,10 +979,16 @@ El orden no es arbitrario: cada paso deja verificable el siguiente.
    peso regular únicamente (`catr != 0` falla controlado -- GDI sintetiza
    negrita/cursiva, `QRawFont` no), pantalla a 96 ppp fija (sin
    impresora). Sigue siendo la pieza de la que depende la restricción de
-   fidelidad, y la que hace que `wordtech/` pueda compilar sin GDI -- eso
-   todavía no ocurre: este paso cierra el contrato de medición
-   verificado a escala, no su conexión a `wordtech/` (que sigue en
-   `Opus/`, árbol restringido).
+   fidelidad, y la que hace que `wordtech/` pueda compilar sin GDI.
+5b. **Primer llamador real conectado (§B2.7).** `Opus/LOADFONT.C:187
+   C_LoadFcid`, camino de pantalla/paso variable, llama a
+   `OpusShellCharWidths` en vez de GDI. Tests de `src/core` en verde
+   (incluida la fidelidad de 2660 puntos), pero sin verificación en
+   ejecución contra `WORD1` real -- dos bloqueadores independientes de
+   este trabajo lo impiden (compilación de `Opus/wordtech/disp.h` bajo
+   GCC 14, arranque de `WORD1` ya roto de antes). `scroll.c`/`disp3.c`/
+   `pagevw.c` siguen sin desbloquear: el criterio del documento pide
+   verificación contra layout real, no solo conexión de tipos.
 6. **`error.c`, luego `editspec.c` y `undo.c` (§B4.3) — contrato
    implementado.** `src/core/src/OpusShellSpine.cpp`:
    `OpusShellReportError` (`QMessageBox::Critical`,

@@ -13,6 +13,15 @@ DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
 #include "ch.h"
 #include "debug.h"
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* Contrato de medicion de texto del nucleo Qt (src/core/include/
+   OpusShellFontMetrics.h, docs/port-qt/01-frontera-nucleo-shell.md
+   SB2). Reemplaza GetCharWidth/OurGetCharWidth para el camino de
+   pantalla, paso variable, de C_LoadFcid -- ver el uso en
+   LNewMetrics abajo. Solo en el camino Winelib; MSVC sigue con GDI. */
+#include "OpusShellFontMetrics.h"
+#endif
+
 #ifdef PCJ
 /* #define DFONT */
 #endif /* PCJ */
@@ -393,6 +402,10 @@ LNewMetrics:
 		int idxp;
 		int FAR *lpdxp;
 		int mpchdxp [chDxpMax];
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusFontKey shellKey;
+		unsigned short rgdxuShell [chDxpMax - chDxpMin];
+#endif
 
 #ifdef OPUS_X64
 		if ((pfce->hqrgdxp = HqAllocLcb(
@@ -412,25 +425,68 @@ LNewMetrics:
 		lpdxp = (int FAR *) LpLockHq( pfce->hqrgdxp );
 		Assert( lpdxp != NULL );	/* Should be guaranteed */
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		if (!pfti->fPrinter && !vfPrvwDisp)
+			{
+			/* Camino de pantalla, paso variable: contrato Qt del shell
+			   (docs/port-qt/01-frontera-nucleo-shell.md SB2) en vez de
+			   GetCharWidth/OurGetCharWidth. ibstFont ya es el indice de
+			   vhsttbFont que el nucleo llama "ftc" (verificado contra
+			   Opus/initwin.c:1541-1583: Tms Rmn/Symbol/Helv/Courier se
+			   registran en ese orden como ibstFont 0-3, el mismo orden
+			   que EraNameFromFtc en OpusShellFontMetrics.cpp). hps ya
+			   esta en medios punto, igual que el "ps" del contrato
+			   (Opus/LOADFONT.C:832 usa fcid.hps de la misma forma). */
+			shellKey.ftc = fcid.ibstFont;
+			shellKey.ps = fcid.hps;
+			/* catr solo distingue peso regular (0, unico caso que el
+			   contrato sabe medir hoy) de cualquier atributo que aun no
+			   sintetiza -- el valor exacto de los bits no importa, solo
+			   que sea != 0 para que OpusShellCharWidths falle
+			   controlado (SB2.5/limitacion 2 de OpusShellFontMetrics.cpp:
+			   sin sintesis de negrita/cursiva). */
+			shellKey.catr = (fcid.fBold ? 1 : 0) | (fcid.fItalic ? 2 : 0);
+			if (OpusShellCharWidths( &shellKey, chDxpMin,
+					chDxpMax - chDxpMin, rgdxuShell ) != 0)
+				{
+				/* Sin impresora ni sintesis de negrita/cursiva en el
+				   contrato actual (limitaciones 2 y 3 de
+				   OpusShellFontMetrics.cpp) -- no deberia alcanzarse
+				   aqui salvo esos casos, y no se aproxima con GDI en
+				   silencio: se degrada al mismo camino de error que un
+				   fallo de CreateFontIndirect ya usa mas arriba. */
+				UnlockHq( pfce->hqrgdxp );
+				goto LSystemFontErr;
+				}
+			for (ch = 0; ch < chDxpMax - chDxpMin; ch++)
+				lpdxp [ch] = (int) rgdxuShell [ch];
+			/* dxpOverhang == 0 siempre en este camino (limitacion 4 de
+			   OpusShellFontMetrics.cpp, medido en SB2.5): no hace falta
+			   la resta de overhang que sigue al camino GDI abajo. */
+			}
+		else
+#endif
+			{
 /* WINDOWS BUG WORKAROUND (DAVIDBO): GetCharWidth RIPs on any mapping mode
 	other than MM_TEXT */
-		if (vfPrvwDisp)
-			OurGetCharWidth( hdc, chDxpMin, chDxpMax - 2, lpdxp);
-/* DRIVER BUG WORKAROUND (BL): Don't ask for n-255 or the EPSON24 and 
+			if (vfPrvwDisp)
+				OurGetCharWidth( hdc, chDxpMin, chDxpMax - 2, lpdxp);
+/* DRIVER BUG WORKAROUND (BL): Don't ask for n-255 or the EPSON24 and
 	several other raster printer drivers will crash when you ask for widths */
-		else  if (!GetCharWidth( hdc, chDxpMin, chDxpMax - 2, lpdxp ))
-			{
-			ReportSz("Driver does not support GetCharWidth!");
-			OurGetCharWidth( hdc, chDxpMin, chDxpMax - 2, lpdxp );
-			}
-		OurGetCharWidth( hdc, chDxpMax - 1, chDxpMax - 1, &lpdxp [chDxpMax-1] );
-		if (pfce->dxpOverhang)
-			{
-			lpdxpMin = lpdxp;
-			lpdxpT = lpdxpMin + (chDxpMax - chDxpMin - 1);
-			while (lpdxpT >= lpdxpMin)
+			else  if (!GetCharWidth( hdc, chDxpMin, chDxpMax - 2, lpdxp ))
 				{
-				*lpdxpT-- -= pfce->dxpOverhang;
+				ReportSz("Driver does not support GetCharWidth!");
+				OurGetCharWidth( hdc, chDxpMin, chDxpMax - 2, lpdxp );
+				}
+			OurGetCharWidth( hdc, chDxpMax - 1, chDxpMax - 1, &lpdxp [chDxpMax-1] );
+			if (pfce->dxpOverhang)
+				{
+				lpdxpMin = lpdxp;
+				lpdxpT = lpdxpMin + (chDxpMax - chDxpMin - 1);
+				while (lpdxpT >= lpdxpMin)
+					{
+					*lpdxpT-- -= pfce->dxpOverhang;
+					}
 				}
 			}
 		pfce->fFixedPitch = fFalse;
