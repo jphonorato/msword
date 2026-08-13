@@ -62,7 +62,19 @@
 					includes terminator */
 					
 struct GHD {
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	/* Field was unsigned, which matched handle width on Win16/Win32.  HANDLE
+	   is pointer-width here (Wine's windows.h under OPUS_X64, sizeof 8), so
+	   unsigned silently truncates the handle FCopySzToGhd stores -- and that
+	   handle now comes from the foreign side of the memory contract, i.e. a
+	   real HGLOBAL.  Matches the local struct GHD in etcmd.c:161, which
+	   never had this bug because it spells the field HANDLE.  Same
+	   platform-width guard as the KME union in wordwin.h.  MSVC keeps
+	   unsigned. */
+	HANDLE ghsz;
+#else
 	unsigned ghsz;
+#endif
 	int ichMac;
 	int ichMax;
 	};

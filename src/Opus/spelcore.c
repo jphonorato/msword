@@ -44,6 +44,9 @@
 #define NOKANJI
 #include "word.h"
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "OpusShellMemory.h"    /* Qt-2 B3: OpusMem* */
+#endif
 #include "heap.h"
 #include "doslib.h"
 #include "debug.h"
@@ -663,7 +666,11 @@ char *sz;
 	passed to speller */
 	while ((*sz++ = *lpch++) != '\0')
 		;
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)pghd->ghsz);
+#else
 	GlobalUnlock( pghd->ghsz );
+#endif
 	return fTrue;
 }
 
@@ -678,8 +685,35 @@ struct GHD *pghd;
 
 	if (pghd->ichMax == 0)
 		{
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		/* Qt-2 B3: this handle leaves the contract -- it is handed to the
+		   speller DLL through CallOtherStack (LMyLookUpWord and friends,
+		   below), so it must be a real HGLOBAL and not a block of the
+		   contract's private heap.  The Win16 flags of the original call
+		   (GMEM_MOVEABLE) cannot express that, hence OPUS_MEM_ESCAPES.
+		   res.c is not migrated in this batch, so the two behaviours of
+		   OurGlobalAlloc that this site depends on are reproduced here
+		   instead of being inherited. */
+		if ((DWORD)cch > 0x00010000L)
+			{
+			/* OurGlobalAlloc refuses blocks over 64K outright: this code
+			   does no segment arithmetic. */
+			SetErrorMat( matMem );
+			pghd->ghsz = NULL;
+			goto LError;
+			}
+		if ((pghd->ghsz = (HANDLE)OpusMemAlloc((unsigned long)cch,
+				OPUS_MEM_ESCAPES)) == NULL)
+			{
+			/* OurGlobalAlloc sets matMem itself when the allocation
+			   fails; LError sets it a second time, as it does today. */
+			SetErrorMat( matMem );
+			goto LError;
+			}
+#else
 		if ((pghd->ghsz = OurGlobalAlloc( GMEM_MOVEABLE, (DWORD)cch )) == NULL)
 			goto LError;
+#endif
 		goto LNewSiz;
 		}
 	else  if (pghd->ichMax < cch)
@@ -696,10 +730,18 @@ LNewSiz:
 
 	Assert( pghd->ichMax >= cch );
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if ((lpch = OpusMemLock((OpusHandle)pghd->ghsz)) != NULL)
+#else
 	if ((lpch = GlobalLock( pghd->ghsz )) != NULL)
+#endif
 		{
 		bltbx( (char far *)sz,lpch , pghd->ichMac = cch );
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemUnlock((OpusHandle)pghd->ghsz);
+#else
 		GlobalUnlock( pghd->ghsz );
+#endif
 		return fTrue;
 		}
 	else
@@ -729,7 +771,11 @@ int fSuggest;
 
 	StartLongOp();
 	MyGetAlternates(hsz);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	lpsz = OpusMemLock((OpusHandle)hsz);
+#else
 	lpsz = GlobalLock( hsz );
+#endif
 
 	if (*lpsz == 0)
 		{
@@ -765,9 +811,17 @@ int fSuggest;
 
 	FEnableMMChange();
 	EnableTmc(tmcSplMMSugg, fFalse);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)hsz);
+#else
 	GlobalUnlock(hsz);
+#endif
 	EndLongOp(fFalse);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemFree((OpusHandle)hsz);
+#else
 	GlobalFree(hsz);
+#endif
 LRet:
 	EndListBoxUpdate( tmcSplMMSuggList );
 }
@@ -799,7 +853,11 @@ AD ad;
 
 	MyGetAlternates(hsz);
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	lpsz = OpusMemLock((OpusHandle)hsz);
+#else
 	lpsz = GlobalLock(hsz);
+#endif
 	Assert(lpsz != NULL);
 
 
@@ -826,8 +884,13 @@ AD ad;
 				pch++;
 			}
 		}
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)hsz);
+	OpusMemFree((OpusHandle)hsz);
+#else
 	GlobalUnlock(hsz);
 	GlobalFree(hsz);
+#endif
 
 	return fRet;
 }
