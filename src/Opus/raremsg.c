@@ -22,6 +22,9 @@
 #define NOCOMM
 #include "word.h"
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "OpusShellMemory.h"    /* Qt-2 B3: OpusMem* */
+#endif
 #include "heap.h"
 #define NOIFK
 #define USEBCM
@@ -1303,6 +1306,42 @@ int kc, kt, w;
 
 #define pfedt (*hfedt)
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* H  O U R  O P U S  M E M  A L L O C */
+/* Qt-2 B3: sustituto de OurGlobalAlloc (res.c) para los bloques ya migrados
+   a OpusShellMemory.  res.c no está migrado en este lote, así que sus dos
+   comportamientos propios se replican aquí -- llamar a OpusMemAlloc pelado
+   los perdería: el rechazo de bloques mayores de 64K (res.c:1843) y
+   SetErrorMat(matMem) cuando la asignación falla (res.c:1871, dentro de
+   GlobalAlloc2), incluido el reintento con el área de swap reducida.
+   Prototipo ANSI, no K&R, porque es código nuevo bajo el guard de GCC y así
+   el tamaño no pasa por la promoción de argumentos sin prototipo.
+*/
+static HANDLE HOurOpusMemAlloc(unsigned long dwBytes, unsigned flags)
+{
+	HANDLE h;
+
+	/* note: one has to use special segment arithmetic to use objects greater
+	   than 64K.  since we don't do that, prevent us from ever getting such an
+	   object!
+	*/
+	if (dwBytes > 0x00010000L)
+		{
+		SetErrorMat(matMem);
+		return NULL;
+		}
+
+	if ((h = (HANDLE)OpusMemAlloc(dwBytes, flags)) == NULL)
+		{
+		ShrinkSwapArea();
+		if ((h = (HANDLE)OpusMemAlloc(dwBytes, flags)) == NULL)
+			SetErrorMat(matMem);
+		GrowSwapArea();
+		}
+	return h;
+}
+#endif
+
 /*----------------------------------------------------------------------------
 |    FFedtCopy
 |
@@ -1334,7 +1373,16 @@ FEDT ***phfedt;
 	pch = PchFromHsz(pfedt->hszText) + pfedt->ichMicSel;
 	cch = pfedt->ichMacSel - pfedt->ichMicSel;
 	cch += CchCountCh(pch, pch + cch, chLF);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	/* Qt-2 B3: OPUS_MEM_ESCAPES -- SetClipboardData (abajo) cede el bloque al
+	   portapapeles del sistema, así que el handle sale de este contrato y los
+	   flags Win16 planos (GHND) no lo señalizan.  Ver
+	   docs/superpowers/specs/2026-08-11-opus-memory-p2-boundary-crossing-decision.md §2.3 */
+	while ((hdata = HOurOpusMemAlloc((unsigned long)(long)(uns)(cch+1),
+			OpusMemFlagsFromWin16(GHND) | OPUS_MEM_ESCAPES)) == NULL)
+#else
 	while ((hdata = OurGlobalAlloc(GHND, (long)(uns)(cch+1))) == NULL)
+#endif
 		{
 		switch (LOWORD(FedtNotifyParent(&hfedt, FN_ERRSPACE|FN_OOMCOPY)))
 			{
@@ -1360,7 +1408,12 @@ LError:
 		*lpch++ = *pch++;
 		}
 	*lpch = 0;
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)hdata);
+#else
 	GlobalUnlock(hdata);
+#endif
+	/* a partir de aquí el bloque es del sistema: no se libera */
 	SetClipboardData(CF_TEXT, hdata);
 	CloseClipboard();
 	*phfedt = hfedt;
@@ -1431,9 +1484,17 @@ FEDT ***phfedt;
 		}
 	if (FFedtReplSel(&hfedt, lpch, CchLpszLen(lpch)))
 		FedtAdjustSel(hfedt);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)hdata2);
+#else
 	GlobalUnlock(hdata2);
+#endif
 	if (hdata != hdata2)
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree((OpusHandle)hdata2);
+#else
 		GlobalFree(hdata2);
+#endif
 	CloseClipboard();
 	*phfedt = hfedt;
 	return(TRUE);
@@ -1463,7 +1524,11 @@ HANDLE hdata;
 	int fStopAtLF = pfedt->fSingleLine;
 	HANDLE hdata2;
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if (hdata == NULL || (lpch = OpusMemLock((OpusHandle)hdata)) == NULL)
+#else
 	if (hdata == NULL || (lpch = GlobalLock(hdata)) == NULL)
+#endif
 		return(NULL);
 
 	lpchSav = lpch;
@@ -1475,8 +1540,17 @@ HANDLE hdata;
 			/* found an ugly character - allocate a work area and
 				copy modified text into it */
 /* NOTE: GHND 0-inits, no terminator necessary */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+			/* sin OPUS_MEM_ESCAPES: este bloque no se cede al portapapeles --
+			   su procedencia la resuelve IsOwn() en tiempo de ejecución, ver
+			   ...-p2-boundary-crossing-decision.md §2.3 */
+			hdata2 = HOurOpusMemAlloc(OpusMemSize((OpusHandle)hdata),
+					OpusMemFlagsFromWin16(GHND));
+			if (hdata2 == NULL || (lpch2 = OpusMemLock((OpusHandle)hdata2)) == NULL)
+#else
 			hdata2 = OurGlobalAlloc(GHND, GlobalSize(hdata));
 			if (hdata2 == NULL || (lpch2 = GlobalLock(hdata2)) == NULL)
+#endif
 				SetErrorMat(matMem);
 			else
 				{
@@ -1502,13 +1576,21 @@ HANDLE hdata;
 					*lpch2++ = ch;
 					lpch++;
 					}
+#if defined(__GNUC__) && !defined(_MSC_VER)
+				OpusMemUnlock((OpusHandle)hdata);
+#else
 				GlobalUnlock(hdata);
+#endif
 				}
 			hdata = hdata2;
 			break;
 			}
 		}
 	if (hdata != NULL)
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemUnlock((OpusHandle)hdata);
+#else
 		GlobalUnlock(hdata);
+#endif
 	return(hdata);
 }
