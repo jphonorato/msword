@@ -96,7 +96,13 @@ extern "C" OpusHandle OpusMemAlloc(unsigned long cb, unsigned flags) {
         if (gOps == nullptr || gOps->Alloc == nullptr) {
             return nullptr;
         }
-        return gOps->Alloc(cb, flags & OPUS_MEM_FOREIGN);
+        /* OPUS_MEM_ZEROINIT viaja junto a los bits de enrutado: no decide
+           qué tabla asigna, pero sí es semántica del bloque, y el camino
+           ajeno tiene que honrarlo igual que el propio (línea 115). Sin
+           esto, un sitio foreign nacido de GHND (= GMEM_MOVEABLE |
+           GMEM_ZEROINIT) perdía el cero en silencio -- primer caso real:
+           raremsg.c, hdata para el portapapeles, GHND|OPUS_MEM_ESCAPES. */
+        return gOps->Alloc(cb, flags & (OPUS_MEM_FOREIGN | OPUS_MEM_ZEROINIT));
     }
 
     OpusHandleImpl *h = new (std::nothrow) OpusHandleImpl();
@@ -189,7 +195,8 @@ extern "C" OpusHandle OpusMemRealloc(OpusHandle h, unsigned long cb,
        distinto del recibido, salvo fallo (NULL) -- responsabilidad de
        gOps->Realloc mantenerlo también en el camino ajeno. */
     if (h != nullptr && gOps != nullptr && gOps->Realloc != nullptr) {
-        return gOps->Realloc(h, cb, flags & OPUS_MEM_FOREIGN);
+        return gOps->Realloc(h, cb,
+                             flags & (OPUS_MEM_FOREIGN | OPUS_MEM_ZEROINIT));
     }
     return nullptr;
 }

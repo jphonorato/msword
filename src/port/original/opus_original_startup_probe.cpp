@@ -52,6 +52,14 @@ extern "C" void OpusRegisterOriginalDialogCallbacks(
     OpusOriginalListProc, OpusOriginalListProc, OpusOriginalListProc,
     OpusOriginalListProc, OpusFontValueProc, OpusFontValueProc,
     OpusFontNameFromValueProc);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* Instala la tabla real de OpusMemPassthroughOps sobre Global* de Wine
+   (port/original/opus_mem_passthrough.cpp). Guardado igual que los call
+   sites migrados de catalog.c/elsubs2.c: opus_shell_memory solo existe
+   como target bajo OPUS_WINELIB_BUILD, así que bajo MSVC esto sería un
+   símbolo sin resolver. */
+extern "C" void OpusInstallMemPassthrough(void);
+#endif
 
 namespace {
 
@@ -464,6 +472,25 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous,
     AddVectoredExceptionHandler(1, ObserveVectoredException);
 #if defined(_MSC_VER)
     _RTC_SetErrorFuncW(WriteRtcFailure);
+#endif
+#if defined(__GNUC__) && !defined(_MSC_VER)
+    /* Passthrough de memoria: primer statement tras instalar los
+       manejadores de excepción, y estrictamente antes de cualquier código
+       de Opus/ (OpusOriginalWinMain, más abajo). Un único store a un
+       puntero global, sin efectos secundarios, así que adelantarlo hasta
+       aquí no cuesta nada y cubre cualquier código que se inserte después
+       sin re-auditar el orden. Justificación completa y demostración de
+       que nada de Opus/ corre antes de wWinMain (censo de .init_array,
+       cero constructores globales que llamen Global* ni OpusMem*):
+       docs/superpowers/specs/2026-08-11-opus-memory-passthrough-checklist-audit.md
+       §3.2-§3.3.
+
+       Salvedad: la rama --self-test de arriba retorna antes de llegar
+       aquí, así que no instala el passthrough. Hoy es inocuo -- solo hace
+       GetModuleHandleW+GetProcAddress, ningún OpusMem* -- pero si esa rama
+       llegara a ejecutar código de Opus/, la instalación tendría que subir
+       al principio de la función. */
+    OpusInstallMemPassthrough();
 #endif
     ResetRibbonTrace();
 

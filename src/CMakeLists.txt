@@ -1307,6 +1307,15 @@ set(WORD1_SOURCES port/original/opus_original_startup_probe.cpp)
 if(WIN32)
     list(APPEND WORD1_SOURCES port/word1.rc port/winword.manifest)
 endif()
+if(OPUS_WINELIB_BUILD)
+    # Tabla real de OpusMemPassthroughOps sobre Global* de Wine, instalada
+    # desde wWinMain (2026-08-11-opus-memory-passthrough-design.md §3.2,
+    # checklist-audit §3.3). Solo bajo Winelib: opus_shell_memory ni
+    # siquiera se declara como target bajo MSVC, así que en esa rama el
+    # archivo no tendría contra qué enlazar (su contenido está además
+    # guardado con #if defined(__GNUC__) && !defined(_MSC_VER)).
+    list(APPEND WORD1_SOURCES port/original/opus_mem_passthrough.cpp)
+endif()
 # Under OPUS_WINELIB_BUILD, port/word1.rc is instead compiled by wrc into a
 # .res and linked in directly (Fase 4 of docs/port-linux/00-reconocimiento.md);
 # RC is not an enabled CMake language there (see the project() call above),
@@ -1332,10 +1341,15 @@ if(OPUS_WINELIB_BUILD)
     # Only the headers WORD1's port entry needs.  Do NOT put Opus/ on the
     # include path: Wine's windows.h includes "dde.h", and Opus/dde.h would
     # shadow Wine's (case-insensitive NTFS never hit this).
+    # core/include: OpusShellMemory.h, que necesita
+    # port/original/opus_mem_passthrough.cpp. Los call sites migrados de
+    # Opus/ lo encuentran vía OPUS_ORIGINAL_INCLUDE_DIRS, que es de
+    # opus_original_engine/opus_x64_runtime, no de WORD1.
     target_include_directories(WORD1 PRIVATE
         ${OPUS_CASE_SHIM_INCLUDE_DIRS}
         "${CMAKE_CURRENT_BINARY_DIR}/generated/original"
         "${CMAKE_CURRENT_SOURCE_DIR}/port/original"
+        "${CMAKE_CURRENT_SOURCE_DIR}/core/include"
     )
 
     find_program(OPUS_WRC_EXECUTABLE wrc REQUIRED
@@ -1430,6 +1444,19 @@ target_compile_definitions(opus_original_startup_probe PRIVATE
 target_link_libraries(opus_original_startup_probe PRIVATE opus_original_engine opus_x64_runtime user32 dbghelp)
 if(OPUS_WINELIB_BUILD)
     target_link_libraries(opus_original_startup_probe PRIVATE opus_shell_memory)
+    # Este target comparte la TU de entrada con WORD1, así que hereda la
+    # llamada a OpusInstallMemPassthrough(): necesita también la TU que la
+    # define y core/include para compilarla. Los include dirs van aquí, no
+    # antes, porque bajo MSVC este target no los necesita (el archivo del
+    # passthrough no entra en esa rama).
+    target_sources(opus_original_startup_probe PRIVATE
+        port/original/opus_mem_passthrough.cpp)
+    target_include_directories(opus_original_startup_probe PRIVATE
+        ${OPUS_CASE_SHIM_INCLUDE_DIRS}
+        "${CMAKE_CURRENT_BINARY_DIR}/generated/original"
+        "${CMAKE_CURRENT_SOURCE_DIR}/port/original"
+        "${CMAKE_CURRENT_SOURCE_DIR}/core/include"
+    )
 endif()
 set_target_properties(opus_original_startup_probe PROPERTIES
     FOLDER "Original Opus x64/port probes"
