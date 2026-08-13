@@ -3,6 +3,9 @@
 
 #include "word.h"
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "OpusShellMemory.h"    /* Qt-2 B3: OpusMem* */
+#endif
 #include "dde.h"
 #include "doc.h"
 #include "field.h"
@@ -231,7 +234,11 @@ CHAR *szArg;
 		*pch = 0;
 		}
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock ((OpusHandle)hData);
+#else
 	GlobalUnlock (hData);
+#endif
 	CloseClipboard();
 
 	/*  output form:  "App Topic Item\0"  Handle whitespace and empty args */
@@ -821,7 +828,11 @@ int wLow, wHigh;
 					}
 				}
 			dms = *lpdms;
+#if defined(__GNUC__) && !defined(_MSC_VER)
+			OpusMemUnlock ((OpusHandle)wLow);
+#else
 			GlobalUnlock (wLow);
+#endif
 
 			DdeRpt2(CommSzRgNum (SzShared("WM_DDE_DATA: dms (grpf,cf): "),
 					&dms, CwFromCch(cbDMS)));
@@ -904,7 +915,11 @@ LDataNack:
 
 			if (wLow != NULL &&
 					(fMustFree || (dms.fRelease && (!dms.fAck || fSuccess))))
+#if defined(__GNUC__) && !defined(_MSC_VER)
+				OpusMemFree ((OpusHandle)wLow);
+#else
 				GlobalFree (wLow);
+#endif
 
 			return fTrue;
 			}
@@ -1562,7 +1577,11 @@ int iddli;
 	/*dms.fNoData = fFalse;*/
 	dms.cf = ddli.cf;
 	*lpdms = dms;
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock ((OpusHandle)hData);
+#else
 	GlobalUnlock (hData);
+#endif
 
 	ReaddAtom (ddli.atomItem);
 
@@ -1572,7 +1591,11 @@ int iddli;
 		DeleteAtom (ddli.atomItem);
 LFail:
 		if (hData)
+#if defined(__GNUC__) && !defined(_MSC_VER)
+			OpusMemFree ((OpusHandle)hData);
+#else
 			GlobalFree (hData);
+#endif
 		ddli.hData = NULL;
 		ddli.dls = dlsFail;
 		ddli.cf = cfNil;
