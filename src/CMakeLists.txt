@@ -1233,7 +1233,7 @@ target_compile_definitions(opus_original_plc_test PRIVATE
     WIN WIN23 CRLF NONATIVE OPUS_X64 NOMINMAX
 )
 target_include_directories(opus_original_plc_test PRIVATE ${OPUS_ORIGINAL_INCLUDE_DIRS})
-target_link_libraries(opus_original_plc_test PRIVATE opus_original_c_dialect opus_x64_runtime user32)
+target_link_libraries(opus_original_plc_test PRIVATE opus_original_c_dialect opus_x64_runtime user32 gdi32 shell32)
 if(MSVC)
     target_compile_options(opus_original_plc_test PRIVATE /J /W3 /wd4005)
 endif()
@@ -1497,13 +1497,14 @@ endforeach()
 add_executable(opus_x64_runtime_test
     port/original/opus_x64_runtime_test.cpp
     port/original/opus_x64_layout_test_fixture.c
+    port/original/opus_x64_runtime_test_stubs.cpp
 )
 target_compile_features(opus_x64_runtime_test PRIVATE cxx_std_20)
 target_compile_definitions(opus_x64_runtime_test PRIVATE
     WIN WIN23 CRLF NONATIVE OPUS_X64 NOMINMAX
 )
 target_include_directories(opus_x64_runtime_test PRIVATE ${OPUS_ORIGINAL_INCLUDE_DIRS})
-target_link_libraries(opus_x64_runtime_test PRIVATE opus_original_c_dialect opus_x64_runtime user32 gdi32)
+target_link_libraries(opus_x64_runtime_test PRIVATE opus_original_c_dialect opus_x64_runtime user32 gdi32 shell32 comdlg32)
 set_target_properties(opus_x64_runtime_test PROPERTIES
     FOLDER "Original Opus x64/tests"
     RUNTIME_OUTPUT_DIRECTORY "${MSWORD_BUILD_ROOT}/tests"
