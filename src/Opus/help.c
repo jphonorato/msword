@@ -34,6 +34,9 @@
 
 #include "word.h"
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "OpusShellMemory.h"    /* Qt-2 B3: OpusMem* */
+#endif
 #include "version.h"
 #include "heap.h"
 #include "doc.h"
@@ -229,6 +232,43 @@ QuitHelp()
 
 
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* H  O U R  O P U S  M E M  A L L O C */
+/* Qt-2 B3: sustituto de OurGlobalAlloc (res.c) para los bloques ya migrados
+   a OpusShellMemory.  res.c no está migrado en este lote, así que sus dos
+   comportamientos propios se replican aquí -- llamar a OpusMemAlloc pelado
+   los perdería: el rechazo de bloques mayores de 64K (res.c:1843) y
+   SetErrorMat(matMem) cuando la asignación falla (res.c:1871, dentro de
+   GlobalAlloc2), incluido el reintento con el área de swap reducida.
+   Prototipo ANSI, no K&R, porque es código nuevo bajo el guard de GCC y así
+   el tamaño no pasa por la promoción de argumentos sin prototipo.
+*/
+static HANDLE HOurOpusMemAlloc(unsigned long dwBytes, unsigned flags)
+{
+	HANDLE h;
+
+	/* note: one has to use special segment arithmetic to use objects greater
+	   than 64K.  since we don't do that, prevent us from ever getting such an
+	   object!
+	*/
+	if (dwBytes > 0x00010000L)
+		{
+		SetErrorMat(matMem);
+		return NULL;
+		}
+
+	if ((h = (HANDLE)OpusMemAlloc(dwBytes, flags)) == NULL)
+		{
+		ShrinkSwapArea();
+		if ((h = (HANDLE)OpusMemAlloc(dwBytes, flags)) == NULL)
+			SetErrorMat(matMem);
+		GrowSwapArea();
+		}
+	return h;
+}
+#endif
+
+
 /*******************
 **
 ** Name:       HFill
@@ -262,15 +302,28 @@ unsigned long	ulData;
 		cb += CchLpszLen((LPSTR)ulData) + 1;
 
 	/* Get data block */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if (!(hHlp = HOurOpusMemAlloc((unsigned long)cb,
+			OpusMemFlagsFromWin16(GMEM_MOVEABLE | GMEM_SHARE | GMEM_NOT_BANKED))))
+#else
 	if (!(hHlp = OurGlobalAlloc(GMEM_MOVEABLE | GMEM_SHARE | GMEM_NOT_BANKED,
 			(DWORD)cb)))
+#endif
 		{
 		return hNil;
 		}
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if (!(qhlp = (QHLP)OpusMemLock((OpusHandle)hHlp)))
+#else
 	if (!(qhlp = (QHLP)GlobalLock(hHlp)))
+#endif
 		{
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree((OpusHandle)hHlp);
+#else
 		GlobalFree(hHlp);
+#endif
 		return hNil;
 		}
 
@@ -291,7 +344,11 @@ unsigned long	ulData;
 		qhlp->offabData = sizeof(HLP) + ((CchLpszLen(lpszHelp) >> 1) << 1) + 2;
 		CchCopyLpsz((LPSTR)(qhlp + 1) + qhlp->offabData,  (LPSTR)ulData);
 		}
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)hHlp);
+#else
 	GlobalUnlock(hHlp);
+#endif
 	return hHlp;
 }
 
@@ -348,17 +405,29 @@ unsigned long	ulData;
 		wmWinHelp = RegisterWindowMessage((LPSTR) szWINHELP);
 
 	if (hHlp != NULL)
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree((OpusHandle)hHlp);
+#else
 		GlobalFree(hHlp);
+#endif
 
 	/* Move Help file name to a handle  */
 	if (!(hHlp = HFill((LPSTR) szHelpData, usCommand, ulData)))
 		goto LDone;
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if (!(qhlp = (QHLP)OpusMemLock((OpusHandle)hHlp))) /* Setup handle for a FIND */
+#else
 	if (!(qhlp = (QHLP)GlobalLock(hHlp))) /* Setup handle for a FIND */
+#endif
 		goto LDone;
 
 	qhlp->usCommand = cmdFind;
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)hHlp);
+#else
 	GlobalUnlock(hHlp);
+#endif
 
 	if ((hwndHelp = LookForHelp(hHlp)) == NULL)
 		{
@@ -398,11 +467,19 @@ unsigned long	ulData;
 	Assert(hwndHelp != NULL && IsWindow(hwndHelp));
 	/* Request topic display from help  */
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if (!(qhlp = (QHLP)OpusMemLock((OpusHandle)hHlp))) /* Setup handle for command         */
+#else
 	if (!(qhlp = (QHLP)GlobalLock(hHlp))) /* Setup handle for command         */
+#endif
 		goto LDone;
 
 	qhlp->usCommand = usCommand;
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)hHlp);
+#else
 	GlobalUnlock(hHlp);
+#endif
 
 	SendMessage(hwndHelp, wmWinHelp, vhwndApp, (LONG)hHlp);
 	wRet = fTrue;
@@ -424,7 +501,11 @@ LDone:
 	if ((usCommand == cmdQuit)            /* Get rid of handle because help   */
 			&& (hHlp != NULL))                /*   is going away and this may be  */
 		{                                   /*   the last FHelp call            */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree((OpusHandle)hHlp);
+#else
 		GlobalFree(hHlp);
+#endif
 		hHlp = NULL;
 		}
 	return wRet;
