@@ -57,6 +57,9 @@
 #endif
 #include "word.h"
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "OpusShellMemory.h"    /* Qt-2 B3: OpusMem* */
+#endif
 #include "doslib.h"
 #include "ch.h"
 #include "wininfo.h"
@@ -414,19 +417,31 @@ DiscardThesaurus ()
 	if (vpetlib->ghdWord.ichMax > 0)
 		{
 		Assert( vpetlib->ghdWord.ghsz != NULL );
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree((OpusHandle)vpetlib->ghdWord.ghsz);
+#else
 		GlobalFree( vpetlib->ghdWord.ghsz );
+#endif
 		vpetlib->ghdWord.ichMax = 0;
 		}
 	if (vpetlib->ghdWorkspace.ichMax > 0)
 		{
 		Assert( vpetlib->ghdWorkspace.ghsz != NULL );
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree((OpusHandle)vpetlib->ghdWorkspace.ghsz);
+#else
 		GlobalFree( vpetlib->ghdWorkspace.ghsz );
+#endif
 		vpetlib->ghdWorkspace.ichMax = 0;
 		}
 	if (vpetlib->ghdRgpos.ichMax > 0)
 		{
 		Assert( vpetlib->ghdRgpos.ghsz != NULL );
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree((OpusHandle)vpetlib->ghdRgpos.ghsz);
+#else
 		GlobalFree( vpetlib->ghdRgpos.ghsz );
+#endif
 		vpetlib->ghdRgpos.ichMax = 0;
 		}
 	if (vpetlib->hLib != (HANDLE)NULL)
@@ -1122,8 +1137,35 @@ int cch;
 
 	if (pghd->ichMax == 0)
 		{
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		/* Qt-2 B3: this handle leaves the contract -- it is handed to the
+		   thesaurus DLL through WCallOtherStack (FMyInitET/WMyETLookup,
+		   below), so it must be a real HGLOBAL and not a block of the
+		   contract's private heap.  The Win16 flags of the original call
+		   (GMEM_MOVEABLE) cannot express that, hence OPUS_MEM_ESCAPES.
+		   res.c is not migrated in this batch, so the two behaviours of
+		   OurGlobalAlloc that this site depends on are reproduced here
+		   instead of being inherited. */
+		if ((long)(uns)cch > 0x00010000L)
+			{
+			/* OurGlobalAlloc refuses blocks over 64K outright: this code
+			   does no segment arithmetic. */
+			SetErrorMat( matMem );
+			pghd->ghsz = NULL;
+			goto LError;
+			}
+		if ((pghd->ghsz = (HANDLE)OpusMemAlloc((unsigned long)(uns)cch,
+				OPUS_MEM_ESCAPES)) == NULL)
+			{
+			/* OurGlobalAlloc sets matMem itself when the allocation
+			   fails; LError sets it a second time, as it does today. */
+			SetErrorMat( matMem );
+			goto LError;
+			}
+#else
 		if ((pghd->ghsz = OurGlobalAlloc( GMEM_MOVEABLE, (long)(uns)cch )) == NULL)
 			goto LError;
+#endif
 		goto LNewSiz;
 		}
 	else  if (pghd->ichMax < cch)
@@ -1144,7 +1186,11 @@ LNewSiz:
 		goto LError;
 
 	SetBytes(lpch, 0, pghd->ichMac = cch);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)pghd->ghsz);
+#else
 	GlobalUnlock( pghd->ghsz );
+#endif
 	return fTrue;
 }
 
@@ -1170,7 +1216,11 @@ int cch;
 	while (cch--)
 		*rg++ = *lp++;
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)pghd->ghsz);
+#else
 	GlobalUnlock(pghd->ghsz);
+#endif
 	return fTrue;
 }
 
@@ -1234,7 +1284,11 @@ char *sz;
 		}
 
 	bltbx( lpch, (char far *)sz, pghd->ichMac );
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)pghd->ghsz);
+#else
 	GlobalUnlock( pghd->ghsz );
+#endif
 	return fTrue;
 }
 
@@ -1249,8 +1303,27 @@ struct GHD *pghd;
 
 	if (pghd->ichMax == 0)
 		{
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		/* Qt-2 B3: same crossing as FClearGhd above -- the handle is
+		   handed to the thesaurus DLL through WCallOtherStack, so it
+		   takes OPUS_MEM_ESCAPES, and OurGlobalAlloc's >64K refusal and
+		   matMem error are reproduced here (res.c not migrated). */
+		if ((DWORD)cch > 0x00010000L)
+			{
+			SetErrorMat( matMem );
+			pghd->ghsz = NULL;
+			goto LError;
+			}
+		if ((pghd->ghsz = (HANDLE)OpusMemAlloc((unsigned long)cch,
+				OPUS_MEM_ESCAPES)) == NULL)
+			{
+			SetErrorMat( matMem );
+			goto LError;
+			}
+#else
 		if ((pghd->ghsz = OurGlobalAlloc( GMEM_MOVEABLE, (DWORD)cch )) == NULL)
 			goto LError;
+#endif
 		goto LNewSiz;
 		}
 	else  if (pghd->ichMax < cch)
@@ -1270,7 +1343,11 @@ LNewSiz:
 	if ((lpch = GlobalLockClip( pghd->ghsz )) != NULL)
 		{
 		bltbx( (char far *)sz, lpch, pghd->ichMac = cch );
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemUnlock((OpusHandle)pghd->ghsz);
+#else
 		GlobalUnlock( pghd->ghsz );
+#endif
 		return fTrue;
 		}
 	else
