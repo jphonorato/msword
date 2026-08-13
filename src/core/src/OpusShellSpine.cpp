@@ -12,11 +12,27 @@
 #include <QMessageBox>
 #include <QString>
 
+#include <cstdio>
+
 extern "C" void OpusShellReportError(int eid, const char *message) {
     /* MB_SYSTEMMODAL (error.c:1618) -> Qt::ApplicationModal: bloquea toda
        la aplicación hasta que se descarta, mismo efecto práctico que el
        modal de sistema Win16 tenía sobre un proceso de una sola
-       ventana. */
+       ventana.
+
+       WORD1 real corre hoy con el loop de mensajes Win32 (GetMessage/
+       DispatchMessage), no con QApplication -- la inversión de control
+       (paso 7 de la secuencia Qt-2) sigue sin hacerse. Si este contrato se
+       invoca antes de que exista una QApplication (p.ej. un error durante
+       el arranque temprano), construir un QMessageBox aborta el proceso
+       ("QWidget: Must construct a QApplication before a QWidget"). Sin
+       QApplication no hay forma de mostrar UI Qt: se degrada a stderr. */
+    if (qApp == nullptr) {
+        std::fprintf(stderr, "Word (%d) %s\n", eid, message != nullptr ? message : "");
+        std::fflush(stderr);
+        return;
+    }
+
     QMessageBox box(QMessageBox::Critical, QApplication::translate("OpusShellSpine", "Word"),
                      QString("(%1) %2")
                          .arg(eid)
@@ -28,6 +44,11 @@ extern "C" void OpusShellReportError(int eid, const char *message) {
 }
 
 extern "C" void OpusShellAlert(void) {
-    /* MessageBeep(MB_OK) en editspec.c/undo.c -- sin texto, sin diálogo. */
+    /* MessageBeep(MB_OK) en editspec.c/undo.c -- sin texto, sin diálogo.
+       Mismo guard que OpusShellReportError: sin QApplication, no-op en vez
+       de crashear. */
+    if (qApp == nullptr) {
+        return;
+    }
     QApplication::beep();
 }
