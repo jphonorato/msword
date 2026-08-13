@@ -995,3 +995,73 @@ dirección de crash que ya da `addr2line` (§5), sin necesitar la fuente de
 (`WINEDEBUG=+heap,warn+heap,err+heap` es redundante ya que `+heap`
 activa todas las clases; alcanza con `WINEDEBUG=+heap`) para no perder
 ningún nivel de mensaje si el crash real sí dispara uno.
+
+## 13. Rama "stale" de `vsci.hdcScratch` — cerrada en este entorno, sin usar `GetObjectType` (2026-08-13)
+
+Continuación de §10/§12.3, mismo entorno (Debian 13/wine-10.0/gdb 16.3),
+binario reconstruido tras los 7 commits de migración `OpusMem*` de esta
+sesión (`bf7a5e1`..`aab06e5`) — **el crash de §1 sigue sin reproducir
+acá**, verificado de nuevo antes de este análisis (`wine WORD1.exe.so`
+bajo `Xvfb :99`, 10s, sin salida, mismo comportamiento que §11.2). Este
+punto no toca el bloqueador principal; cierra el ítem secundario que
+§12.3 dejó abierto.
+
+**Intento fallido, documentado para no repetirlo:** llamar
+`GetObjectType(hdc)` desde `gdb` (`print GetObjectType(vsci.hdcScratch)`)
+falla con `No symbol "GetObjectType" en el contexto actual` en los dos
+breakpoints de §12.1 (`loadfont.c:711` y `:349`). Causa, confirmada con
+`info sharedlibrary` completo (sin filtro) en el mismo proceso: en esta
+build Winelib, `gdi32` no aparece como `.so` nativo separado — a
+diferencia de `win32u.so`/`winex11.so`/`winspool.so`
+(`/usr/lib/x86_64-linux-gnu/wine/x86_64-unix/`), que sí están en la
+lista. Confirmado también por `nm -D bin/WORD1.exe.so | grep -w
+GetObjectType` (sin resultado) y `GetTextMetrics` (sin resultado) — sólo
+`FSelectFont` (símbolo propio de `Opus/`) aparece exportado. Lectura: en
+esta configuración `gdi32` se resuelve puramente vía PE (importado a
+través de la maquinaria de carga PE de Wine, sin contraparte ELF que
+`gdb` pueda ver), así que `gdb` no tiene con qué resolver el nombre por
+symbol lookup nativo — llamar la función real requeriría reconstruir el
+thunk de import a mano, no vale el costo frente a la alternativa de
+abajo.
+
+**Vía que sí funcionó: `WINEDEBUG=+gdi` sobre una corrida completa,
+grep por el valor de handle.** Mismo comando de arranque que el resto de
+esta sección (`cwd=bin/`, `DISPLAY=:99`):
+
+```
+$ DISPLAY=:99 timeout 8 env WINEDEBUG=+gdi wine WORD1.exe.so >gdi.trace 2>&1
+$ wc -l gdi.trace
+45265 gdi.trace
+```
+
+`vsci.hdcScratch` se crea una sola vez, temprano en el arranque:
+
+```
+0024:trace:gdi:alloc_gdi_handle allocated NTGDI_OBJ_MEMDC 0x3410055 73/65536
+```
+
+Mismo valor de handle (`0x3410055`) que en la corrida de `gdb` de §12.3
+— determinístico en este build/entorno, no una coincidencia de esta
+corrida. Se reutiliza 43 veces vía `SelectObject` a lo largo de las
+45265 líneas del trace (última aparición en la línea 39537, de 45265),
+y **cero** apariciones junto a `NtGdiDeleteObjectApp`/`free_gdi_handle`
+en las 3982 líneas que sí contienen esos dos tokens en todo el trace —
+verificado con `grep -c "free_gdi_handle\|DeleteDC" gdi.trace` (3982
+líneas, ninguna con `3410055`) y `grep -n 3410055 gdi.trace | grep -iv
+"SelectObject\|alloc_gdi_handle"` (sin salida). El trace termina con el
+proceso todavía activo, dibujando contenido real sobre otro DC (`Polygon`
+`Rectangle` `SelectObject` sobre `000000000D0100CD`, un HDC de ventana
+distinto) hasta el corte por `timeout` — sin ninguna excepción, `fault`,
+`crash` ni mensaje de corrupción en las 45265 líneas (`grep -in
+"exception|crash|segv|fault|corrupt" gdi.trace`, sin resultado).
+
+**Conclusión: rama "stale" descartada para esta corrida concreta, no en
+general.** `vsci.hdcScratch` está vivo (nunca liberado) durante toda la
+ventana observada de 8s, incluyendo el uso real en `FSelectFont`/
+`C_LoadFcid` de §12.1/§12.3 — no es un handle colgante en este arranque.
+§10 queda ahora: **rama nulo cerrada (§12.3), rama stale cerrada para
+este entorno (aquí)** — la hipótesis del HDC en `vsci.hdcScratch` deja
+de ser candidata a explicar un crash que, de todos modos, este entorno
+nunca reproduce. No se puede generalizar a Fedora (donde sí reproduce
+§1) sin repetir esta misma captura allá — queda como parte del hito 2
+pendiente, no como algo que este resultado ya cubre.
