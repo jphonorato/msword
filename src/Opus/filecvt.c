@@ -5,6 +5,7 @@
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
 #if defined(__GNUC__) && !defined(_MSC_VER)
 #include "OpusShellConfig.h"    /* Qt-2 B5: OpusShellProfile* */
+#include "OpusShellMemory.h"    /* Qt-2 B3: OpusMem* */
 #endif
 #include "heap.h"
 #include "disp.h"
@@ -487,20 +488,44 @@ char *pszFnLib;
 	vpexcr->lpfnGetIniEntry = (vwWinVersion < 0x0210) ? NULL :
 			GetProcAddress(hLib, (LPSTR)SzShared("GETINIENTRY"));
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if (vpexcr->ghszFn == NULL &&
+			!(vpexcr->ghszFn = (HANDLE)OpusMemAlloc(1L,
+				OpusMemFlagsFromWin16(gmemLibShare))))
+#else
 	if (vpexcr->ghszFn == NULL && 
 			!(vpexcr->ghszFn = GlobalAlloc(gmemLibShare, 1L)))
+#endif
 		goto NoMem;
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if (vpexcr->ghszSubset == NULL &&
+			!(vpexcr->ghszSubset = (HANDLE)OpusMemAlloc(1L,
+				OpusMemFlagsFromWin16(gmemLibShare))))
+#else
 	if (vpexcr->ghszSubset == NULL &&
 			!(vpexcr->ghszSubset = GlobalAlloc(gmemLibShare, 1L)))
+#endif
 		goto NoMem;
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if (vpexcr->ghBuff == NULL &&
+			!(vpexcr->ghBuff = (HANDLE)OpusMemAlloc(1L,
+				OpusMemFlagsFromWin16(gmemLibShare))))
+#else
 	if (vpexcr->ghBuff == NULL &&
 			!(vpexcr->ghBuff = GlobalAlloc(gmemLibShare, 1L)))
+#endif
 		goto NoMem;
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if (vpexcr->ghszVersion == NULL &&
+			!(vpexcr->ghszVersion = (HANDLE)OpusMemAlloc(1L,
+				OpusMemFlagsFromWin16(gmemLibShare))))
+#else
 	if (vpexcr->ghszVersion == NULL && 
 			!(vpexcr->ghszVersion = GlobalAlloc(gmemLibShare, 1L)))
+#endif
 		goto NoMem;
 
 	#if defined(__GNUC__) && !defined(_MSC_VER)
@@ -553,16 +578,32 @@ DiscardConvtrLib()
 		FreeLibrary(vpexcr->hLib);
 
 	if (vpexcr->ghszFn != NULL)
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree((OpusHandle)vpexcr->ghszFn);
+#else
 		GlobalFree(vpexcr->ghszFn);
+#endif
 
 	if (vpexcr->ghszSubset != NULL)
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree((OpusHandle)vpexcr->ghszSubset);
+#else
 		GlobalFree(vpexcr->ghszSubset);
+#endif
 
 	if (vpexcr->ghBuff != NULL)
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree((OpusHandle)vpexcr->ghBuff);
+#else
 		GlobalFree(vpexcr->ghBuff);
+#endif
 
 	if (vpexcr->ghszVersion != NULL)
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree((OpusHandle)vpexcr->ghszVersion);
+#else
 		GlobalFree(vpexcr->ghszVersion);
+#endif
 
 	Assert(vpexcr->fInUse);
 
@@ -966,11 +1007,19 @@ CHAR *rgch;  /* pass in an st, immediately converted to sz */
 
 	lpch = GlobalLockClip(ghIniName);
 	*lpch = 0;
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)ghIniName);
+#else
 	GlobalUnlock(ghIniName);
+#endif
 
 	lpch = GlobalLockClip(ghIniExt);
 	*lpch = 0;
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)ghIniExt);
+#else
 	GlobalUnlock(ghIniExt);
+#endif
 
 	CallGetIniEntry(ghIniName, ghIniExt);
 
@@ -1011,14 +1060,27 @@ CHAR *rgch;  /* pass in an st, immediately converted to sz */
 		fSomeAdded = fTrue;
 		}
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)ghIniName);
+	OpusMemUnlock((OpusHandle)ghIniExt);
+#else
 	GlobalUnlock(ghIniName);
 	GlobalUnlock(ghIniExt);
+#endif
 
 LRet:
 	if (ghIniName != NULL)
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree((OpusHandle)ghIniName);
+#else
 		GlobalFree(ghIniName);
+#endif
 	if (ghIniExt != NULL)
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree((OpusHandle)ghIniExt);
+#else
 		GlobalFree(ghIniExt);
+#endif
 	return fSomeAdded;
 }
 
@@ -1204,7 +1266,11 @@ int nPercentComplete;
 		cchRun = (cch > cchRTFBuffMax) ? cchRTFBuffMax : cch;
 
 		bltbx(lpTextRtf + bRun, (char far *)&rgch, cchRun);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemUnlock((OpusHandle)vpexcr->ghBuff);
+#else
 		GlobalUnlock(vpexcr->ghBuff);
+#endif
 
 		RtfIn(vpexcr->hribl, rgch, cchRun);
 
@@ -1424,7 +1490,11 @@ int nUnused;
 
 	(*hfcb)->fcPos = fcCur;
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)vpexcr->ghBuff);
+#else
 	GlobalUnlock(vpexcr->ghBuff);
+#endif
 
 	if (vmerr.fMemFail)
 		return fceNoMemory;
@@ -1448,11 +1518,19 @@ CHAR *sz;
 {
 	CHAR FAR *lpsz;
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	AssertDo( lpsz = OpusMemLock((OpusHandle)ghsz) );
+#else
 	AssertDo( lpsz = GlobalLock(ghsz) );
+#endif
 	while ((*sz++ = *lpsz++) != 0)
 		;
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)ghsz);
+#else
 	GlobalUnlock(ghsz);
+#endif
 }
 
 
@@ -1469,11 +1547,19 @@ HANDLE ghsz;
 	if (!OurGlobalReAlloc(ghsz, (DWORD)cbsz, GMEM_MOVEABLE))
 		return fFalse;
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	AssertDo( lpsz = OpusMemLock((OpusHandle)ghsz) );
+#else
 	AssertDo( lpsz = GlobalLock(ghsz) );
+#endif
 
 	bltbx((LPSTR)sz, lpsz, cbsz);
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)ghsz);
+#else
 	GlobalUnlock(ghsz);
+#endif
 	return fTrue;
 }
 
@@ -1488,12 +1574,20 @@ HANDLE ghsz;
 	if (!OurGlobalReAlloc(ghsz, (DWORD)(st[0] + 1), GMEM_MOVEABLE))
 		return fFalse;
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	AssertDo( lpsz = OpusMemLock((OpusHandle)ghsz) );
+#else
 	AssertDo( lpsz = GlobalLock(ghsz) );
+#endif
 
 	bltbx((char FAR *)&st[1], lpsz, st[0]);
 	*(lpsz + st[0]) = '\0';
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)ghsz);
+#else
 	GlobalUnlock(ghsz);
+#endif
 	return fTrue;
 }
 
