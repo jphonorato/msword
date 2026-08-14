@@ -1912,3 +1912,154 @@ excepción — cualquier paso siguiente que quiera seguir la pista del
 heap corrupto necesita mirar fuera de esta cadena de funciones.
 
 **Build restaurado** después de revertir esta instrumentación.
+
+### 15. Backtrace real de la llamada que crashea — no es el `WM_TIMER` de 350 ms: es una llamada síncrona desde `FCreateMw`; corrige §14
+
+Retoma el punto pendiente de §14 ("instrumentar qué otras ventanas/paneles
+se crean o qué mensajes se procesan en el intervalo de 350 ms"). Antes de
+instrumentar ese intervalo se intentó primero la vía más directa —
+breakpoint en la propia `sync_mirrors` con `gdb` para capturar el
+backtrace real en el momento de la llamada que crashea — y esa vía reveló
+que la premisa de §13/§14 (que hay dos llamadas separadas por ~350 ms
+gobernadas por `SetTimer`) es incorrecta.
+
+**Bloqueador nuevo, no visto en sesiones anteriores: los breakpoints por
+archivo:línea dejaron de resolver en esta sesión.** `break
+opus_win95_chrome.cpp:916` (`sync_mirrors`) y `break
+opus_win95_chrome.cpp:2829` (`OpusCreateWin95Chrome`, `extern "C"`, no en
+namespace anónimo — descarta la hipótesis de que fuera un problema de
+visibilidad de símbolo) quedan `<PENDING>` para siempre en 5 corridas
+distintas bajo `gdb -x script --args wine WORD1.exe.so` (`set breakpoint
+pending on`), incluso con las dos combinadas en el mismo script. `info
+sharedlibrary` en el momento exacto del `SIGABRT` reporta **"No shared
+libraries loaded at this time"** — ni siquiera `libc.so.6` aparece
+registrado, con el proceso corriendo código real. Reproducido también con
+un comando trivial no relacionado (`break main` sobre `wine cmd /c "echo
+hi"`): mismo resultado, `<PENDING>` eterno, cero shared libraries. Es una
+regresión genérica de integración `gdb`↔`wine` en esta sesión concreta —
+no específica de `WORD1.exe.so` ni de namespaces anónimos —, que contradice
+directamente lo que §12.1/§12.2 documentaron funcionando en un entorno
+descrito como el mismo (EndeavourOS, wine-staging 11.15, `gdb` 17.2). No
+se investigó la causa de la regresión (podría ser una actualización de
+paquete entre sesiones). Adicionalmente, `gdb -p <PID>` sobre un proceso
+ya lanzado falla con `ptrace: Operación no permitida` —
+`/proc/sys/kernel/yama/ptrace_scope` vale `1` en este entorno, bloqueo de
+Yama independiente del anterior; no se tocó (requeriría privilegios y
+autorización explícita, fuera de alcance).
+
+**Técnica alternativa usada — sin gdb, sin tocar `src/Opus/`:**
+instrumentación temporal en `opus_win95_chrome.cpp` (namespace anónimo, en
+`src/port/`, sin restricción) con `backtrace()` de `<execinfo.h>` (glibc,
+disponible porque este archivo compila como C++ nativo bajo `winegcc`, no
+tiene nada específico de MSVC) en tres puntos: antes de la llamada a
+`sync_mirrors` dentro de `WM_CREATE` (línea 2590), antes de la llamada
+dentro de `WM_TIMER` (línea 2602), y — la que resultó decisiva — al
+principio de `OpusSyncWin95Toolbar()` (línea 2802), que hace
+`SendMessageW(vhwndWin95Toolbar, WM_TIMER, kSyncTimer, 0)` de forma
+**síncrona y directa**, sin pasar por ninguna cola de mensajes ni por
+`SetTimer`. Cada captura imprime también `GetTickCount64()` y la dirección
+de la propia función de diagnóstico (`&ChromeTraceDiag`) como referencia
+para poder restar el ASLR de cada corrida y resolver las direcciones
+crudas contra el binario estático con `addr2line -e WORD1.exe.so -f -C`
+(la misma técnica de §3, aplicada ahora de forma proactiva en vez de sobre
+un core ya corrupto). Instrumentación revertida después
+(`git checkout -- src/port/original/opus_win95_chrome.cpp`, diff limpio
+confirmado) y build restaurado.
+
+**Resultado, 3/3 corridas, mismo patrón exacto:**
+
+```
+[CHROME TRACE] WM_CREATE before sync_mirrors                           tick=T
+[CHROME TRACE] OpusSyncWin95Toolbar direct call (init2.c) before ...   tick=T+~260..282ms
+[CHROME TRACE] WM_TIMER before sync_mirrors                            tick=T+~260..282ms   <-- MISMO tick, al milisegundo
+free(): invalid pointer   (o double free or corruption (!prev))
+```
+
+El marcador puesto dentro de `OpusSyncWin95Toolbar` y el marcador puesto
+dentro del `case WM_TIMER` de `toolbar_window_proc` imprimen **el mismo
+`GetTickCount64()` exacto** las 3 veces — no hay forma de que sean dos
+eventos distintos separados por trabajo real; es la misma llamada vista
+desde dos puntos de instrumentación. Además el intervalo real medido
+(~260-282 ms) es **menor que los 350 ms** del `SetTimer` — un `WM_TIMER`
+genuino de cola nunca dispara antes del intervalo pedido, lo que ya era
+indicio de que no era ese el mecanismo. El `SetTimer(window, kSyncTimer,
+350, ...)` sigue vivo y armado, pero **el proceso muere antes de que
+tenga oportunidad de disparar ni una sola vez** — el "tick#1" que §14
+identificó y atribuyó al timer real nunca fue el timer real.
+
+**La captura dentro de `OpusSyncWin95Toolbar` desenrolla 13 frames**
+completos (a diferencia de las capturas en `WM_CREATE`/`WM_TIMER`, que se
+cortan en 3 — el mismo límite de unwind por CFI roto en la frontera
+ABI Unix/PE de Wine que ya bloqueaba a `gdb` en §3; aquí no aplica porque
+`OpusSyncWin95Toolbar` se alcanza por una llamada a función C directa, sin
+cruzar esa frontera hasta el frame final). Resuelta con `addr2line` contra
+el offset real de cada corrida (base = dirección en vivo de
+`ChromeTraceDiag` menos su dirección estática, `nm -C WORD1.exe.so`):
+
+```
+__wine_spec_exe_wentry
+wmain
+wWinMain                    opus_original_startup_probe.cpp:512
+OpusOriginalWinMain         wproc.c:516
+FInitWinInfo                wproc.c:775
+FInitPart2                  init2.c:659        (ElNewFile(stType, fFalse) — documento nuevo sin título)
+ElNewFile                   open.c:1353
+FCreateMw                   open.c:595         (creando la ventana del documento — TODAVÍA NO shown)
+EndStartup1                 open.c:591         (llamada directa, no vía el wrapper EndStartup() de init2.c:703)
+DisplayRibbonInit           init2.c:817
+OpusSyncWin95Toolbar        opus_win95_chrome.cpp:2803
+ChromeTraceDiag             (sonda de esta sesión)
+```
+
+**Localización exacta del sitio de llamada, confirmada leyendo
+`open.c:584-600`:** dentro de `FCreateMw`, bajo el comentario `/* BEGIN
+VISUAL DISPLAY OF WINDOW */`, hay dos llamadas separadas —
+`EndStartup1()` en la línea 591 (si `vhwndStartup != NULL`) y
+`EndStartup2()` en la línea 639 — con la creación/exhibición real de la
+ventana del documento **entre medio** (`ShowWindow(hwndMw, ...)` en la
+línea 600 es *posterior* a `EndStartup1()`). Es decir: `sync_mirrors`
+crashea mientras `FCreateMw` todavía está construyendo la primera ventana
+de documento del arranque — **antes de que esa ventana llegue a mostrarse
+en pantalla** —, disparado por el efecto colateral de
+`EndStartup1()`→`DisplayRibbonInit()`→`OpusSyncWin95Toolbar()` que existe
+específicamente para ocultar la ribbon clásica y sincronizar la toolbar
+Win95 en cuanto termina el splash de arranque.
+
+**Corrección concreta sobre §13/§14:** no hay una "segunda llamada a
+`sync_mirrors` vía `WM_TIMER` 350 ms después" — hay una **única llamada
+adicional síncrona**, disparada por `SendMessageW` (no por el temporizador
+real), que llega recursivamente por una ruta de llamadas de función C
+normal (`FInitPart2`→`ElNewFile`→`FCreateMw`→`EndStartup1`→
+`DisplayRibbonInit`→`OpusSyncWin95Toolbar`), completamente dentro de
+`FInitPart2` y sin pasar nunca por `GetMessage`/`DispatchMessage` de tope.
+La lectura de §13 ("la ventana de interés es el intervalo de ~350 ms en
+que el bombeo de mensajes de Wine sigue corriendo") queda refutada: no
+hay bombeo de mensajes de por medio en absoluto entre las dos llamadas a
+`sync_mirrors` que sí ocurren (la de `WM_CREATE`, vacía, y esta), es una
+única rama de ejecución síncrona del propio hilo principal.
+
+**Consecuencia — foco preciso para la próxima sesión:** el candidato ya
+no es "código no identificado corriendo en paralelo" — es la construcción
+de la primera ventana de documento en sí. `FCreateMw` (`open.c`, entre la
+Scribble `'D'`/`'E'` de la línea 566 y el punto de la línea 591) construye
+estado (documento, `ww` activo, `hmwd`, controles) que **todavía no está
+terminado** cuando `EndStartup1` dispara `sync_mirrors`/`sync_combo` sobre
+los combos de la toolbar — y `locate_source_combos` sí encuentra combos
+reales en este punto (a diferencia de la primera llamada, vacía, dentro
+de `WM_CREATE` — §13), lo que sugiere que los controles "fuente" que la
+toolbar espejea ya existen para entonces pero el documento/ventana que los
+respalda puede no estarlo. Siguiente paso obvio, no intentado esta sesión:
+instrumentar qué controles concretos son `state->source_style` /
+`source_font` / `source_size` en el momento del crash (ya se sabe que
+`locate_source_combos` los encuentra — §12; falta identificar *cuáles*
+`HWND` son y si pertenecen a la ventana de documento a medio construir) y/o
+revisar qué mutación de heap ocurre en el tramo de `FCreateMw` entre la
+línea 566 y la 591 que podría dejar una estructura compartida en estado
+inconsistente para el `free()` posterior dentro de `sync_combo`.
+
+**No perseguido esta sesión:** diagnosticar la regresión de `gdb`
+documentada arriba (bloquea seguir usando breakpoints interactivos hasta
+resolverse); confirmar si la llamada `EndStartup1()`/`DisplayRibbonInit()`
+de `open.c:591` es *siempre* la que crashea o si en alguna corrida el
+`SetTimer` real llega a disparar primero (no observado en 3/3, pero
+tampoco es imposible dado que el margen es de solo ~70-90 ms).
