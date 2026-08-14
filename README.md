@@ -66,17 +66,27 @@ Full technical history: [`docs/port-linux/00-reconocimiento.md`](docs/port-linux
 
 ## Requirements
 
-Development happens across more than one machine (Debian and Fedora seen so
-far), so nothing here assumes a single distro. System-specific paths, like
-where `Qt6Config.cmake` lives, resolve dynamically at configure time (see
-`src/CMakeLists.txt`'s `qmake6 -query QT_INSTALL_LIBS` lookup), not hardcoded.
+**Supported platform: Debian 13 (trixie) only.** This isn't a portability
+project — the goal is getting the port working on Linux, not chasing every
+distro or GCC release. Debian 13 ships GCC 14.2.0, which is the actual
+reference toolchain: both compatibility guards the port needs
+(`-std=gnu89 -funsigned-char -fms-extensions -fpermissive` for GCC 14's
+default-error implicit-int/implicit-function-declaration crackdown, and
+`#if __GNUC__ < 15` in a couple of `Opus/` headers for a real GCC bug —
+flexible array members in unions, fixed upstream in GCC 15/PR53548 — that
+Debian 13's GCC 14 still needs worked around) exist *because of* this
+target, not despite it. Verified building clean (0 errors) on a live
+Debian 13 box; see `docs/port-linux/00-reconocimiento.md` §6.3 and
+`docs/port-qt/01-frontera-nucleo-shell.md`'s "Aplicado y verificado" note.
+It happens to also build on newer GCC (the guards are version-gated, not
+Debian-specific), but that's incidental, not a maintained target — no
+further multi-distro/multi-GCC-version validation work is planned.
 
-- x86-64 Linux, any distro with the packages below
-- `wine` / `wine-devel` (provides `winegcc`, `wineg++`, `wrc`, `winebuild`);
-  header layout varies by packaging, so the build searches known variants
+- x86-64 Debian 13 (trixie)
+- `wine` / `wine-devel` (provides `winegcc`, `wineg++`, `wrc`, `winebuild`)
 - Qt6 (`Core` component), found via `qmake6`/`qmake-qt6` if not on the
   default CMake search path
-- CMake ≥ 3.25, Ninja, GCC/G++
+- CMake ≥ 3.25, Ninja, GCC/G++ (GCC 14.2.0, Debian 13's default)
 - Wine prefix initialized once (`wineboot` / `~/.wine`)
 
 ## Build (Linux / Winelib)

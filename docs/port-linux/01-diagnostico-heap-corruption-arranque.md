@@ -2489,3 +2489,63 @@ de Wine en este build concreto (winelib, syscall-based `ntdll`) delegan
 en última instancia a `malloc`/`free` de glibc o gestionan un arena
 completamente separada (determinaría si el Hallazgo 4 es una vía de bug
 real o un callejón sin salida arquitectónico).
+
+### 20. Auditoría de `locate_source_combos` contra `CB_FINDSTRINGEXACT` real de Wine — también limpio
+
+Cierra el pendiente explícito que dejó §19: auditar `combo_contains`
+(usado por `locate_source_combos` hasta 2 veces por candidato, hasta 1395
+ítems por combo) contra la implementación real de `CB_FINDSTRINGEXACT`.
+Mismo par de fuentes que §19 (`combo.c`/`listbox.c` de `wine-mirror/wine`,
+rama `master`).
+
+**A diferencia de `CB_GETLBTEXT` (§19), `CB_FINDSTRINGEXACT` es una
+consulta de solo lectura — no hay contrato de tamaño de buffer que
+romper.** `combo_contains` envía la cadena de búsqueda (nuestro `const
+char* value`, de solo lectura) y recibe de vuelta un índice o `CB_ERR`;
+nunca recibe datos escritos hacia un buffer nuestro. Eso ya reduce
+estructuralmente la superficie de bug frente al caso de §19.
+
+**Recorrido real:** `combo.c` reenvía `CB_FINDSTRINGEXACT` a
+`LB_FINDSTRINGEXACT` sobre el `hWndLBox` interno (igual patrón que todo lo
+demás). En `listbox.c:2913`, el handler de `LB_FINDSTRINGEXACT` hace la
+conversión ANSI→Unicode de la cadena de búsqueda **enteramente dentro de
+sí mismo**, con tamaño calculado correctamente en cada paso — sin el
+truco de tamaño-de-destino-sin-límite que sí aparece en `CB_GETLBTEXT`:
+
+```c
+LPSTR textA = (LPSTR)lParam;
+INT countW = MultiByteToWideChar(CP_ACP, 0, textA, -1, NULL, 0);
+if((textW = HeapAlloc(GetProcessHeap(), 0, countW * sizeof(WCHAR))))
+    MultiByteToWideChar(CP_ACP, 0, textA, -1, textW, countW);
+ret = LISTBOX_FindString( descr, wParam, textW, TRUE );
+if(!unicode && HAS_STRINGS(descr))
+    HeapFree(GetProcessHeap(), 0, textW);
+```
+
+Consulta de tamaño (`NULL, 0`) → `HeapAlloc` del tamaño exacto devuelto →
+conversión real hacia ese mismo tamaño → `HeapFree` al final del mismo
+bloque, sin persistir estado entre llamadas. `LISTBOX_FindString`
+(`listbox.c:1022`, rama `exact`) hace un barrido lineal
+`LISTBOX_lstrcmpiW`/`CompareStringW` ítem por ítem — sin mutar el combo,
+sin tocar el array de ítems, sin crecerlo. Las hasta 1395×2 llamadas por
+candidato en `locate_source_combos` son, cada una, una ida y vuelta
+autocontenida que no deja ningún estado ni asignación viva más allá de su
+propio retorno.
+
+**Conclusión: también limpio.** Con `sync_combo` (§19) y ahora
+`locate_source_combos`/`combo_contains` auditados línea por línea contra
+el código real de Wine y sin encontrar un patrón de bug explicable en
+ninguno de los dos, la ruta completa de espejado de la toolbar (todo lo
+que `sync_mirrors` ejecuta) queda descartada como origen local del bug.
+El candidato que queda en pie, sin auditar todavía a este nivel de
+detalle, es el que señaló §15 desde el principio: qué construye/deja a
+medio construir `FCreateMw` (`open.c`, entre las líneas 566 y 591) antes
+de que `EndStartup1`→`DisplayRibbonInit`→`OpusSyncWin95Toolbar` dispare
+esta cadena — o, alternativamente, que la corrupción real ya esté escrita
+antes de llegar aquí por completo y este código sea sólo el primer lugar
+que la "descubre" al tocar el heap.
+
+**No perseguido esta sesión:** auditar el tramo de `FCreateMw` en
+`open.c:566-591` línea por línea (está en `src/Opus/`, restringido —
+requiere autorización explícita antes de tocarlo, y esta auditoría fue de
+solo lectura contra fuente externa de Wine, no contra `src/Opus/`).
