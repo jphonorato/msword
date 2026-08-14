@@ -1365,3 +1365,113 @@ fuente. Quedan dos lecturas posibles, ninguna instrumentada aún:
 
 **Build restaurado:** `opus_original_engine` y `WORD1` reconstruidos de
 nuevo después de revertir esta instrumentación también.
+
+### 8. Comparación contra el entorno que no reproduce (`/vps`, Debian 13) — reabre y vuelve a cerrar `valgrind`, por un motivo distinto y más amplio que `wine-preloader`
+
+Con la cadena de stack de §3 agotada (§4, §6, §7, las cuatro sin
+resultado), se probó el ángulo complementario: en vez de seguir buscando
+en Arch (donde el crash reproduce), comparar contra el entorno que
+**no** reproduce (Debian 13/GCC 14.2/wine-10.0, el VPS de
+`~/.ssh/config` alias `vps`) para acotar la variable de entorno, tal
+como quedaba pendiente en `02-pendientes-fedora.md` ("No se sabe
+todavía cuál de estas variables... es la que hace la diferencia").
+
+**Reconstrucción y reconfirmación del baseline.** Repo del VPS ya estaba
+al día con `ae8b0cb` (los commits de esta sesión, `d260424`/`ddd28dc`,
+son solo docs — sin diff de código, el build es equivalente).
+`opus_original_engine`/`WORD1` reconstruidos limpios en el VPS.
+
+**Nota de tooling nueva, específica del VPS:** `gdb -q --batch -ex run
+--args wine WORD1.exe.so` falla ahí con `"/usr/bin/wine": not in
+executable format` — en este paquete Debian, `/usr/bin/wine` resuelve
+(vía `update-alternatives`) a `/usr/bin/wine-stable`, un **script de
+shell POSIX** que decide en tiempo de ejecución si usar `wine32` o
+`wine64` (`wine32` falta, cae a `wine64`). `gdb --args` necesita poder
+cargar el ejecutable como objeto BFD para el comando `run` implícito, y
+un script no es un objeto ELF — de ahí el error. **Fix:** invocar
+directamente `/usr/lib/wine/wine64` con `WINELOADER=/usr/lib/wine/wine64`
+exportado (que es lo que el script termina haciendo igual). No aplica en
+Arch, donde `/usr/bin/wine` es el binario real.
+
+**Baseline reconfirmado, 5/5 corridas** (`gdb -q --batch -ex run -ex "bt
+full" --args /usr/lib/wine/wine64 WORD1.exe.so`, mismo `Xvfb :99` ya
+corriendo de una sesión anterior en el VPS): las cinco llegan al mismo
+punto de arranque (`fixme:dwmapi:DwmSetWindowAttribute ... stub`) y
+después **no crashean** — timeout a los 60s (`exit 124`), sin más
+salida. Coincide exactamente con lo ya documentado en §11.2, ahora
+reconfirmado sobre el `HEAD` actual (7 commits de migración de memoria
+después del build de §11.2).
+
+**Aclaración importante sobre qué significa "no reproduce" aquí:** el
+proceso no queda trabado ni bloqueado en ese punto — llega a un estado
+de reposo genuino (bucle de mensajes de Windows esperando input de
+usuario, que bajo `Xvfb` sin interacción nunca llega). Es el
+comportamiento normal de una app GUI idle, no un fallo de arranque
+distinto. Confirma, de forma independiente, la lectura de §11.2 (no
+solo la repite): el código de arranque —incluyendo el bloque
+`sync_combo`/`locate_source_combos` que este documento lleva tres
+secciones instrumentando— se ejecuta completo y sin abortar en este
+entorno.
+
+**Hallazgo colateral: no hay `wine-preloader` en este paquete Debian.**
+`02-pendientes-fedora.md` §7 atribuye el bloqueo de ASan/valgrind
+específicamente a la reserva de espacio de direcciones de
+`wine-preloader` en Fedora. Buscar ese binario en el VPS
+(`/usr/lib/wine/`) no encuentra nada — y tampoco existe en Arch/hp-15
+(verificado también, mismo resultado). Esto abre la posibilidad de que
+el bloqueo de valgrind no sea universal, solo específico del empaquetado
+de Fedora — vale la pena reabrir la pregunta.
+
+**Valgrind en el VPS — corre limpio, 240s, cero errores.** Sin
+`wine-preloader` de por medio, `valgrind --error-exitcode=99` arranca
+sin problema, llega al mismo punto de arranque, y corre 240s en reposo
+(mismo estado idle de arriba) sin loguear ni un solo error de memoria.
+Inicialmente prometedor — pero ver el punto siguiente antes de leerlo
+como "el código está limpio ahí".
+
+**Control directo en Arch (donde el crash sí ocurre) — valgrind no lo ve.**
+Para no sobre-interpretar el resultado limpio del VPS (¿es limpio porque
+no hay bug, o porque valgrind no está mirando lo que hay que mirar?), se
+corrió el mismo `valgrind --error-exitcode=99` directo contra el binario
+en Arch, donde el crash **sí** reproduce. Resultado: el crash **ocurre
+igual bajo valgrind** — el mismo `free(): invalid pointer` de glibc se
+imprime en la salida estándar, seguido del mismo intento roto de
+backtrace de `dbghelp` que ya se documentó en hp-15 §3 (`elf_search_auxv
+can't find symbol`, `dwarf2_get_cie wrong CIE pointer`) — pero **el log
+de valgrind no registra ningún error**, ni antes ni durante. Verificado
+con `-v` que la intercepción de `malloc`/`free` sí está activa (`REDIR:
+... libc.so.6:malloc redirected...`, `REDIR: ... libc.so.6:free
+redirected...`, ambos logueados *antes* de que se cargue `ntdll.so`, así
+que cubren todo el código que se ejecuta después, incluyendo
+`WORD1.exe.so`). **No se investigó la causa exacta** de por qué
+memcheck no ve esta corrupción con la intercepción confirmadamente
+activa — hipótesis no verificadas: podría ser un `free()` que no pasa
+por el símbolo redirigido de `libc.so.6` por algún camino interno de
+Wine/Winelib, o el bug podría depender del layout/timing exacto del
+heap de glibc de un modo que la instrumentación de valgrind (mucho más
+lenta, con su propio allocator) simplemente no dispara.
+
+**Consecuencia: se retracta la lectura optimista del punto anterior.**
+El resultado limpio de 240s en el VPS **no es evidencia** de que el
+bloque `sync_combo`/`locate_source_combos` esté libre de bugs ahí —
+es evidencia de que valgrind no es una herramienta útil para esta
+corrupción específica, en ningún entorno probado hasta ahora, por un
+motivo más amplio que el bloqueo por `wine-preloader` ya documentado
+para Fedora. `valgrind` se re-cierra como vía, con esta razón nueva y
+más general — actualizado en `02-pendientes-fedora.md` §7.
+
+**Lo único que queda como resultado sólido de esta sección:** la
+reconfirmación independiente de que Debian/GCC 14.2/wine-10.0 no
+reproduce (§11.2 seguía vigente sobre el `HEAD` actual) y que llega
+limpiamente al mismo punto de arranque que Fedora/Arch antes de quedar
+en reposo normal. La pregunta de fondo —¿versión de Wine, de GCC, o
+alguna otra diferencia de entorno es la variable causante?— sigue
+abierta. No se intentó aislarla instalando un Wine más nuevo o un GCC
+≥15 en el VPS: ambos requieren cambios a nivel de sistema (repo de
+WineHQ + habilitar multiarch i386, o backports/sid para GCC) en una
+máquina compartida con otros servicios — se deja pendiente de decisión
+explícita antes de tocar paquetes del sistema ahí, no intentado en esta
+sesión.
+
+**Procesos limpiados:** ninguno quedó residual ni en el VPS (`timeout`
+mató todo, verificado con `pgrep`) ni en local (verificado igual).

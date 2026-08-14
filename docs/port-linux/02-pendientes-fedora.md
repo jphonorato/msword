@@ -204,8 +204,19 @@ que se implementó.
   probar; se necesitaría un enfoque distinto (no identificado) para
   reabrir esta vía.
 - **`valgrind --trace-children`.** Choca con la misma reserva de
-  `wine-preloader` (§4) — no específico de este build, no vale reintentar
-  con las mismas flags.
+  `wine-preloader` (§4) — pero esto era específico del empaquetado de
+  Fedora, no universal (ver siguiente punto).
+- **`valgrind` sin `wine-preloader`, sesión hp-15 cont. (`01-...md` §8).**
+  Ni el VPS (Debian 13) ni Arch/hp-15 tienen `wine-preloader` — ahí
+  `valgrind` sí arranca. Probado en ambos: 240s limpio en el VPS (no
+  reproduce), y **directo contra el crash real en Arch** — el crash
+  ocurre igual bajo valgrind (mismo `free(): invalid pointer` de glibc),
+  pero el log de valgrind no registra ningún error, con la intercepción
+  de `malloc`/`free` confirmadamente activa (`-v` mostró los `REDIR`
+  antes de cargar `ntdll.so`). **Descartado por un motivo más amplio que
+  `wine-preloader`**, causa exacta no investigada — no vale reintentar
+  sin entender primero por qué memcheck no ve esta corrupción con la
+  intercepción activa.
 - **`glibc.malloc.check` (`LD_PRELOAD=libc_malloc_debug.so`).** Corre sin
   chocar con nada (§12.4), pero con valor diagnóstico limitado: casi toda
   la memoria de Word 1.1a pasa por el heap propio de Wine
