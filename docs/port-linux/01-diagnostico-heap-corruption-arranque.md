@@ -2063,3 +2063,142 @@ resolverse); confirmar si la llamada `EndStartup1()`/`DisplayRibbonInit()`
 de `open.c:591` es *siempre* la que crashea o si en alguna corrida el
 `SetTimer` real llega a disparar primero (no observado en 3/3, pero
 tampoco es imposible dado que el margen es de solo ~70-90 ms).
+
+### 16. Identidad concreta de los HWND source_style/source_font/source_size — el crash es siempre en `sync_combo(font)`, y `source_style` nunca llega a intentarse
+
+Retoma el "siguiente paso obvio" que cerraba §15: instrumentar qué HWNDs
+concretos resuelven `state.source_style`/`source_font`/`source_size` en el
+momento del crash, y si pertenecen a la ventana de documento que `FCreateMw`
+todavía está construyendo.
+
+**Técnica:** misma familia que §15 — instrumentación temporal en
+`opus_win95_chrome.cpp` (namespace anónimo, `src/port/`, revertida al
+terminar, build limpio confirmado antes y después). Esta vez con
+`fprintf(stderr, ...)` + `fflush` (no `backtrace()`) en tres puntos:
+`ChromeDumpHwndOwnership(label, hwnd)` — nueva función helper que vuelca
+`HWND`, `IsWindow`, `IsWindowVisible`, `GetClassNameW`, `GetWindowTextW`,
+`GetWindowRect` y sube la cadena de `GetParent` hasta la raíz (máx. 8
+niveles) — llamada desde dentro de `locate_source_combos` (para cada
+candidato encontrado y para el resultado final de cada uno de los tres
+roles) y desde dentro de `sync_mirrors` (justo antes de cada una de las tres
+llamadas a `sync_combo`); y una segunda ronda con instrumentación adicional
+directamente dentro de `sync_combo` — vuelca el `mirror`, imprime
+`count`/`copied_count`, y añade una línea por cada iteración del bucle
+`CB_ADDSTRING` con el índice y el string ANSI real a punto de copiarse.
+
+**Gotcha nuevo, no documentado antes en este archivo:** `wchar_t` bajo
+winelib se compila a 2 bytes (`-fshort-wchar`, para calzar con `WCHAR` de
+Win32), pero el CRT de este `.cpp` es el glibc nativo del sistema, cuyo
+`printf`/`fprintf` con `%ls` asume `wchar_t` de 4 bytes. Volcar un buffer
+`WCHAR` directamente con `%ls` produce basura (caracteres de cuadro
+ilegibles) — no es corrupción de datos, es un desalineamiento de ancho de
+tipo en el propio volcado. **Solución:** convertir con `WideCharToMultiByte`
+a ANSI antes de imprimir con `%s` (mismo patrón que la función
+`ansi_from_wide` que ya existe en este archivo, solo que aplicado en un
+helper local porque `ChromeDumpHwndOwnership` se sitúa antes en el archivo
+que `ansi_from_wide`). Cualquier instrumentación futura en código winelib
+que imprima texto ancho debe pasar por esta conversión.
+
+**Resultado, 4/4 corridas (`locate_source_combos`) + 3/3 corridas detalladas
+(`sync_combo`), patrón idéntico:**
+
+En la primera llamada a `sync_mirrors` (dentro de `WM_CREATE` del propio
+toolbar) `locate_source_combos` encuentra **0 candidatos** — consistente con
+§13 — y los tres roles quedan `null`; los tres `sync_combo` no hacen nada
+(guard `source == nullptr`).
+
+En la segunda llamada (la síncrona identificada en §15, vía
+`FCreateMw`→`EndStartup1`→`DisplayRibbonInit`→`OpusSyncWin95Toolbar`),
+`locate_source_combos` encuentra siempre exactamente **3 candidatos** con
+clase `ComboBox`, con esta identidad estable entre corridas (solo cambian
+los valores exactos de `HWND`, no la estructura):
+
+| Candidato | rect | visible | cadena de padres | clasificado como |
+|---|---|---|---|---|
+| A | (52,50,204,71) | sí | `OpusSdmDialog` → `OpusApp("Microsoft Word")` | `source_font` (contiene "Courier New" y "Arial") |
+| B | (254,50,310,71) | sí | `OpusSdmDialog` → `OpusApp` | `source_size` (contiene "24" y "72") |
+| C | (6196,113,6348,134) | **no** | `OpusSdmDialog` → `OpusMwd` → `OpusDesk` → `OpusApp` | **ninguno** — `source_style` queda `null` |
+
+**A y B son controles legítimos y ya poblados** de la ribbon clásica
+(`OpusSdmDialog`, un diálogo hijo directo de `OpusApp`) — nada que ver con
+la ventana de documento a medio construir. La hipótesis de cierre de §15
+("los `source_*` podrían pertenecer a la ventana de documento todavía sin
+terminar") **no se confirma para A/B**.
+
+**C sí encaja con esa hipótesis** — está fuera de pantalla
+(`rect.left = 6196`, un valor de posicionamiento típico de "todavía no
+colocada"), invisible, y cuelga de una cadena de clases distinta y más
+profunda (`OpusMwd`/`OpusDesk`) que no aparece en A/B — casi con certeza es
+un control propio de la ventana de documento (`hwndMw`/`ww`) que `FCreateMw`
+está construyendo en ese instante. Pero **C nunca se clasifica como
+`source_style`** en ninguna de las 4 corridas — el `else if` de
+`locate_source_combos` exige `combo_contains(combo, "Normal")` o
+`CB_GETCOUNT > 0`, y C no cumple ninguna de las dos en este punto exacto
+(consistente con ser un combo recién creado, sin ítems todavía). Por tanto
+`state.source_style` queda `null` las 4 veces, y el primer `sync_combo`
+(estilo) es un no-op seguro. **C es un testigo de que la ventana de
+documento está a medio construir, pero no es la causa del crash.**
+
+**El crash es siempre dentro de `sync_combo(mirror=state.font_combo,
+source=state.source_font)`** — nunca en estilo (no-op, arriba) ni llega a
+alcanzar tamaño (el flujo muere en fuente antes). El `mirror`
+(`state.font_combo`) se confirma válido, visible, hijo de
+`OpusWin95Toolbar`/`OpusApp`, y ya con texto `"Arial"` (fijado en su propio
+`WM_CREATE`) — no es un handle obsoleto ni reciclado. El `source`
+(candidato A) reporta **`count=1395`**, coincidiendo exactamente con el
+hallazgo independiente de una sesión anterior (`fc-list` en este mismo
+entorno, commit `7185ce1`) — confirma que A es la fuente real de fuentes
+del sistema vía `fc-list`, y que ese hallazgo y este apuntan al mismo
+control.
+
+**El índice del bucle `CB_ADDSTRING` donde crashea, con datos reales
+impresos por iteración:** las 3 corridas detalladas mueren en la vecindad
+de **idx=14/1395 ("DejaVu Sans Light")** o **idx=15/1395 ("DejaVu Sans
+Mono")** — nunca antes, nunca después, en 3/3. El mensaje de glibc varía
+entre corridas (`free(): invalid pointer`, `free(): invalid next size
+(normal)`, `double free or corruption (!prev)`) — los tres son detectores
+distintos del mismo tipo de daño (metadata de heap corrupta), no evidencia
+de tres bugs distintos.
+
+**Lectura de esta franja estrecha (14-15 de 1395), no perseguida más allá de
+anotarla:** un índice que varía por ±1 entre corridas pero se mantiene en
+una banda tan angosta —en vez de disperso a lo largo de las 1395
+iteraciones, o fijo siempre en 0— es la firma típica de una corrupción de
+heap **detectada tarde**: el `free()`/`malloc()` que realmente escribe fuera
+de límites puede haber ocurrido bastante antes (incluso fuera de
+`sync_combo`, quizás en la propia `locate_source_combos` recorriendo 1395
+`combo_contains`/`CB_FINDSTRINGEXACT`, o en código anterior en la cadena
+`FCreateMw`→...→`OpusSyncWin95Toolbar`), dejando un chunk con metadata
+inconsistente; el bucle de `CB_ADDSTRING`/`combo_item`/`wide_from_ansi` de
+`sync_combo` simplemente hace suficiente churn de allocate/free como para
+que, tras el mismo número aproximado de operaciones cada vez, el
+allocator reutilice o intente consolidar ese chunk ya dañado y el
+detector de glibc dispare. Esto **no descarta** que el bug esté en
+`sync_combo` mismo, pero sí abre una hipótesis concreta que la próxima
+sesión no ha probado: usar un detector que atrape la escritura real en el
+momento en que ocurre (`valgrind` — ya disponible en este entorno, versión
+3.25.1 según sesiones previas — o `MALLOC_CHECK_=3`/`mallopt` con chequeo
+más agresivo) en vez de esperar a que glibc lo detecte tarde por
+casualidad de índice.
+
+**Consecuencia — foco para la próxima sesión:** (1) correr bajo `valgrind`
+(no intentado en ninguna sesión de esta serie hasta ahora pese a estar
+disponible) para localizar la escritura real fuera de límites, en vez de
+seguir leyendo el punto de detección tardía de glibc; (2) si valgrind no es
+viable por la superposición Winelib/Wine (posible, dado el historial de
+fricciones de herramientas en este proyecto — ver el bloqueo de `gdb` en
+§15), instrumentar con la misma técnica de esta sección el tramo
+`locate_source_combos` en sí (1395 `combo_contains` llaman a
+`SendMessageA(..., CB_FINDSTRINGEXACT, ...)` sobre el mismo combo de 1395
+ítems, dos veces por candidato — volumen de trabajo comparable al bucle que
+sí se instrumentó) para descartar que la corrupción ya haya ocurrido ahí,
+antes de que `sync_combo` la "descubra"; (3) confirmar la identidad de C
+(candidato descartado, `OpusMwd`/`OpusDesk`) contra el código de `FCreateMw`
+en `open.c` — se sospecha que es el combo de estilos de la ventana de
+documento nueva, pero no se confirmó contra el código fuente esta sesión.
+
+**No perseguido esta sesión:** correr bajo `valgrind` (mencionado arriba
+como plan, no ejecutado); confirmar C contra `open.c`; determinar si la
+franja 14-15 se mantiene bajo un juego de fuentes del sistema distinto
+(dependería de qué haya entre `fc-list` y estas posiciones, así que no es
+necesariamente estable entre máquinas).
