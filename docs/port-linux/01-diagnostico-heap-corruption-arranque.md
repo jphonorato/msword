@@ -3059,3 +3059,72 @@ de comportamiento real; confirmar si la contrapartida de diseño
 señalada en §25 (falso positivo por ventana residual de una corrida
 anterior) llegó a manifestarse en algún punto de esta corrida — no
 observado, pero tampoco se buscó activamente.
+
+### 27. El `std::wstring` de `--typing` — no era la línea ~1445 sospechada en §26, era el loop acumulador de §1864; corregido y verificado
+
+Retoma el pendiente #1 de §26. El candidato que §26 señaló (`const
+std::wstring sentence = L"physical keyboard input line one";`, línea
+~1445) resultó ser una asignación simple desde un literal — no está
+en la ruta de `typing_mode` en absoluto (pertenece a otro modo). El
+sitio real, tras leer el cuerpo completo de `if (typing_mode)`:
+
+```cpp
+std::wstring text;
+for (int line = 0; line != 40; ++line) {
+    text += L"original line ";
+    if (line < 10) { text += L'0'; }
+    text += std::to_wstring(line);
+    text += L'\r';
+}
+```
+
+Un `std::wstring` que crece con `operator+=` en 160 pasos (40
+iteraciones × 4 mutaciones cada una), cada uno posiblemente
+disparando una reasignación interna cuyo tamaño se calcula con la
+misma maquinaria de `char_traits<wchar_t>` de glibc (4 bytes) que
+§23-24 ya encontraron rota contra el `wchar_t` real de 2 bytes de
+esta TU — `std::to_wstring` también pasa por esa maquinaria. Con 160
+oportunidades de corrupción en vez de una sola construcción, encaja
+con que este haya sido, de los sitios sin auditar, el más propenso a
+manifestarse primero.
+
+**Fix aplicado — mismo patrón que §24, sin `std::wstring` en
+absoluto:** reemplazado por un `wchar_t text[40 * 20 + 1]` fijo,
+llenado con `wsprintfW(line_text, L"original line %02d\r", line)`
+(Win32/`user32`, ya en el link) por cada línea y copiado a mano al
+buffer principal con un puntero cursor. El `%02d` de `wsprintfW`
+reproduce exactamente el padding manual que hacía el código
+original (cero a la izquierda solo si `line < 10`). El bucle
+siguiente, que ya recorría `text` tolerando `L'\0'`
+(`if (character != L'\0')`), no necesitó cambios — un `wchar_t[]`
+fijo con cola en cero encaja directamente con esa guarda existente.
+
+**Verificado 4/4 corridas de `--typing` (una sola, dos concurrentes,
+una sola de nuevo): ninguna crashea.** Antes: `malloc(): invalid
+size (unsorted)` + `virtual_setup_exception stack overflow`
+consistente. Ahora: código de salida 13
+(`"active document pane has no focus"`) o 15 (`"could not post a
+character to the document"`) según la corrida — ambos fallos de
+aplicación reales y específicos, de la misma clase que los otros 7
+de §26, no crashes. La variación entre 13 y 15 no se investigó (bien
+podría ser una condición de carrera genuina del propio test contra
+el foco de la ventana, no relacionada con este fix).
+
+**Con esto, los 9 tests de `word1_startup_blocked` llegan de forma
+consistente a lógica de interacción real** — ninguno crashea más por
+el patrón de wide-char de §23-24/§27. Quedan 6 sitios más de
+`std::wstring`/`std::wcerr` sin auditar en el archivo (líneas
+~1617/1627, `log_window_callback`, y los usos de `send_physical_text`
+con literales cortos vía conversión implícita), ninguno confirmado
+como problemático — podrían no llegar a ejercitarse en la práctica
+(literales cortos son menos propensos a necesitar reasignación) o
+podrían fallar igual si algún modo nuevo los ejercita con más carga.
+
+**Build restaurado, diff limpio** — sin instrumentación temporal
+esta vez, el fix se escribió y verificó directo dado que el sitio
+ya estaba identificado con certeza razonable por lectura de código.
+
+**No perseguido esta sesión:** auditar los 6 sitios restantes de
+`std::wstring`/`std::wcerr`; investigar la variación 13 vs. 15 entre
+corridas de `--typing`; retomar cualquiera de los 7 fallos de
+comportamiento real que §26 dejó como lista de trabajo pendiente.

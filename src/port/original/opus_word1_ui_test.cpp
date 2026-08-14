@@ -1861,14 +1861,25 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
             count_dark_client_pixels(gui.hwndFocus);
         // Cross the original 32-byte quick-insert boundary and fill enough
         // display lines to exercise idle normalization and the SCC-above PLC.
-        std::wstring text;
+        //
+        // Deliberately not std::wstring: its length-computing constructors,
+        // operator+=, and std::to_wstring all go through the same glibc
+        // char_traits<wchar_t>/wide-conversion machinery already found
+        // broken for this TU's real 2-byte Win32 WCHAR (see the argv-parsing
+        // fix above and docs/port-linux/01-diagnostico-heap-corruption-arranque.md
+        // §23-24, §27) -- forty rounds of growing a std::wstring by repeated
+        // += was the actual crash site (malloc(): invalid size + stack
+        // overflow, confirmed 2026-08-14). wsprintfW/lstrlenW are
+        // Win32-native and width-correct.
+        wchar_t text[40 * 20 + 1] = {};
+        wchar_t* text_cursor = text;
         for (int line = 0; line != 40; ++line) {
-            text += L"original line ";
-            if (line < 10) {
-                text += L'0';
+            wchar_t line_text[32] = {};
+            wsprintfW(line_text, L"original line %02d\r", line);
+            const int line_length = lstrlenW(line_text);
+            for (int i = 0; i != line_length; ++i) {
+                *text_cursor++ = line_text[i];
             }
-            text += std::to_wstring(line);
-            text += L'\r';
         }
         for (const wchar_t character : text) {
             if (character != L'\0') {
