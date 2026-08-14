@@ -1229,7 +1229,8 @@ general.
    (línea ~798-857)~~ — **instrumentada y refutada, ver §6.**
 2. ~~**También sin probar:** el propio `ComboEnumeration`/
    `collect_original_combos` (línea 814-828)~~ — **instrumentado y
-   refutado, ver §7.**
+   refutado, ver §7 (buffer local) y §11 (destrucción del vector +
+   viaje por `LPARAM`, agotado a fondo).**
 3. Repetir el mismo escaneo de stack (`info proc mappings` + `x/400gx $rsp`
    + `addr2line`) en el VPS/Debian una vez que se entienda por qué ahí no
    reproduce — podría no ser "no reproduce el bug", sino "reproduce pero no
@@ -1583,3 +1584,65 @@ alcanzaría — pero es un bug distinto, con un repro distinto, no el que
 este documento viene rastreando desde §1.
 
 **Build restaurado** después de revertir ambas tandas de instrumentación.
+
+### 11. `~ComboEnumeration` revisitado — destrucción del `std::vector<HWND>` confirmada limpia; también refutado el viaje por `LPARAM`
+
+Punto 2 de §5 (`ComboEnumeration`/`collect_original_combos`), retomado
+más a fondo que en §7: ahí solo se había instrumentado el buffer de
+`GetClassNameW` dentro de `collect_original_combos` (refutado). Esta
+vez el objetivo es la destrucción del propio `std::vector<HWND> combos`
+— el frame `ComboEnumeration::~ComboEnumeration` aparece literal en la
+cadena de stack de §3 — y, por separado, el viaje del puntero
+`&enumeration` a través de `LPARAM` en `EnumChildWindows` (precedente de
+bug de clase LP64 nunca antes probado para este puntero específico,
+`bitapp.h:29`).
+
+**Instrumentación temporal** (`opus_win95_chrome.cpp`, revertida
+después, diff confirmado limpio):
+
+1. Log de `&enumeration` (como puntero y como `LPARAM`) justo antes de
+   `EnumChildWindows`, y log de `parameter` recibido en
+   `collect_original_combos` — para comparar ambos valores.
+2. Reemplazo de la destrucción implícita del vector (al salir de
+   `locate_source_combos`) por `std::vector<HWND>().swap(enumeration.combos)`
+   explícito e instrumentado — el idiom swap-with-empty fuerza el
+   `delete[]` real en un punto que controlamos, con log inmediatamente
+   antes y después.
+
+**Resultado, 5/5 corridas:**
+
+- **`locate_source_combos` se llama dos veces por corrida** (nunca antes
+  documentado): la primera con `enumeration.combos` vacío (0 combos
+  encontrados — la enumeración de hijos de ventana corre antes de que el
+  toolbar esté completamente poblado), la segunda con 3 (`style`/`font`/
+  `size`, coherente con lo ya visto en §4/§6). Ambas veces, el `parameter`
+  recibido en `collect_original_combos` **coincide exactamente** con el
+  `&enumeration` original logueado antes de la llamada — sin truncar ni
+  corromperse, en las 38 invocaciones por corrida combinadas de las dos
+  rondas. **Hipótesis del viaje por `LPARAM` refutada.**
+- **La destrucción forzada del vector completa sin abortar las dos veces,
+  en las 5/5 corridas**, sin importar la firma de crash de esa corrida
+  (`free(): invalid pointer` / `free(): invalid next size`) — el log
+  `after combos dtor, ok` imprime siempre. **`~ComboEnumeration` no es
+  donde ocurre el abort.**
+- **Ninguna línea DIAG aparece después del mensaje de crash** en ninguna
+  corrida — confirma que el abort ocurre *después* de que ambas llamadas
+  a `locate_source_combos` (con sus destrucciones) ya terminaron
+  limpiamente, en código más adelante de la cadena de stack de §3
+  (`sync_mirrors`/`toolbar_window_proc`) que **ninguna de las sesiones
+  hp-15 ha instrumentado todavía**.
+
+**Conclusión:** con esto se cierra por completo el punto 2 de §5, esta
+vez a fondo (no solo el buffer local de §7, también la destrucción del
+recurso compartido y el mecanismo de paso de puntero). La cadena
+completa de §3 dentro de `sync_combo`/`locate_source_combos`
+(`mirror_text`, `combo_item`, `wide_from_ansi`, `GetClassNameW`,
+`LPARAM`, `~ComboEnumeration`) queda agotada sin encontrar la causa. El
+dato nuevo más útil de esta sesión es el **acotamiento temporal**: el
+abort ocurre estrictamente después de la segunda llamada a
+`locate_source_combos`, no dentro de ella — la siguiente candidata
+natural es instrumentar `sync_mirrors`/`toolbar_window_proc` en sí (el
+código que llama a `locate_source_combos` y que sigue ejecutándose
+después), no volver a los mismos cinco puntos ya refutados.
+
+**Build restaurado** después de revertir esta instrumentación también.
