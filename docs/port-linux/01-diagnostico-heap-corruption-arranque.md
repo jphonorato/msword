@@ -1065,3 +1065,153 @@ de ser candidata a explicar un crash que, de todos modos, este entorno
 nunca reproduce. No se puede generalizar a Fedora (donde sí reproduce
 §1) sin repetir esta misma captura allá — queda como parte del hito 2
 pendiente, no como algo que este resultado ya cubre.
+
+---
+
+## Sesión hp-15 (EndeavourOS/Arch) — 2026-08-14: reproduce, y primer candidato con nombre y línea
+
+**Entorno:** EndeavourOS (Arch, rolling), GCC 16.2.1, wine-staging 11.15, `gdb`
+17.2, `valgrind` 3.25.1. Build desde `HEAD` (`5fed452`), reconfigurado y
+reconstruido en esta sesión (`opus_original_engine` 0 errores, `WORD1.exe`/
+`WORD1.exe.so` enlazados). `Xvfb :99` dedicado (no el display real de la
+sesión de escritorio) — instalado (`xorg-server-xvfb`) para no interferir con
+el entorno gráfico en uso.
+
+### 1. Reproduce — cuarta y quinta firma de corrupción
+
+Cuatro corridas con `gdb -q --batch -ex run -ex "bt full" --args wine
+WORD1.exe.so`, mismo punto de arranque hasta el fallo
+(`DwmSetWindowAttribute` stub, igual que Fedora/Debian):
+
+| Corrida | Mensaje glibc |
+|---|---|
+| 1 | `free(): invalid pointer` |
+| 2 | `free(): invalid next size (normal)` (== firma #2 de Fedora, §1) |
+| 3 | `free(): invalid next size (normal)` |
+| 4 (con debuginfod) | `double free or corruption (!prev)` |
+
+Dos firmas nuevas (`invalid pointer`, `double free or corruption (!prev)`)
+que no aparecían en Fedora ni Debian — refuerza la lectura de §1: es
+corrupción de heap real y timing-dependiente, no un bug determinista de
+lógica. **hp-15 reproduce de forma consistente (4/4)**, a diferencia del VPS
+(Debian/GCC 14.2/wine 10.0, confirmado que no reproduce, `02-pendientes-fedora.md`)
+— GCC ≥15 parece ser la variable relevante, no la distro.
+
+### 2. Hito 2 ejecutado por primera vez: `WINEDEBUG=+heap`
+
+Nunca corrido antes en ningún entorno (§2 de `02-pendientes-fedora.md` lo
+dejaba como recomendación pendiente). Resultado: **888.073 líneas**,
+crash real en la línea 24273 — el resto son hilos que siguieron corriendo
+después del `abort()` de este hilo (no es que el proceso siguiera vivo; es
+mezcla de buffering entre el canal de trace de Wine y el `fprintf` directo
+de glibc a stderr — el orden de líneas post-crash no es cronológicamente
+confiable entre sí, pero sí lo es dentro de un mismo hilo).
+
+**Hallazgo:** inmediatamente antes de la línea del crash **no hay ningún
+`RtlFreeHeap` logueado** — la corrupción se detecta en un `free()` que no
+pasa por el wrapper de heap de Wine que instrumenta `+heap`. Esto es
+consistente con lo que sigue (§3): el `free()` que aborta es el destructor
+de un `std::wstring` de C++ (glibc `malloc`/`free` directo vía
+`operator delete`), no un `HeapFree`/`GlobalFree` de la API Win32 que
+`WINEDEBUG=+heap` sí habría capturado.
+
+### 3. Frame #0 simbolizado — y algo más allá de frame #0
+
+`info proc mappings` + `x/3i $pc` en el punto del abort: `$pc` cae dentro de
+`/usr/lib/libc.so.6` (rango ejecutable `0x...c24000`-`0x...d9f000`) — es
+código interno de glibc (la ruta de `malloc_printerr`/`abort`/`raise`), como
+se esperaba. `bt` no desenrolla más allá de frame #0 — probado también con
+`debuginfod.archlinux.org` habilitado (`set debuginfod enabled on`, símbolos
+sí se descargaron a `~/.cache/debuginfod_client/`, 6 build-ids) y sigue sin
+desenrollar. **No es falta de símbolos — es imposibilidad de unwind por CFI/
+frame-pointers rotos en el código optimizado de glibc en este punto**, la
+misma familia de problema que ya bloqueaba `winedbg`/`dbghelp` en Fedora (§3
+original), confirmada ahora también con gdb vanilla + debuginfod en Arch.
+
+**Rodeo que sí funcionó — escaneo manual de stack:** con el mapa de memoria
+ya capturado (`info proc mappings`) y un volcado crudo del stack
+(`x/400gx $rsp`), clasifiqué cada valor de 8 bytes contra los rangos
+ejecutables conocidos (libc, `ntdll.dll`, `user32.dll`, `win32u.dll`,
+`WORD1.exe.so`) con un script Python. Encontró una cadena de direcciones
+dentro de `WORD1.exe.so` — no es un unwind real (es memoria de stack cruda,
+puede incluir basura de llamadas ya retornadas), pero cruzada con
+`addr2line -e WORD1.exe.so -f -C` da nombres y líneas de código reales y
+consistentes entre sí:
+
+```
+new_allocator<wchar_t>::deallocate           new_allocator.h:184
+basic_string<wchar_t>::_M_dispose            basic_string.h:299
+basic_string<wchar_t>::~basic_string         basic_string.h:920
+sync_combo(HWND, HWND, int&)                 opus_win95_chrome.cpp:890  <-- el for de la línea 890
+ComboEnumeration::~ComboEnumeration          opus_win95_chrome.cpp:814
+locate_source_combos(HWND, ToolbarState&)    opus_win95_chrome.cpp:849
+sync_mirrors(HWND, ToolbarState&)            opus_win95_chrome.cpp:924
+toolbar_window_proc(HWND, UINT, WPARAM, LPARAM)  opus_win95_chrome.cpp:2557, 2604
+Dispatch<2ul>(...)                           opus_asm_wproc.cpp:79
+```
+
+Los tres primeros frames (deallocate → `_M_dispose` → `~basic_string`) son
+exactamente la ruta interna de "un `std::wstring` se destruye y su buffer se
+libera" — y el frame que lo posee es `sync_combo`, línea 890, que es el
+`for` de este bloque (`src/port/original/opus_win95_chrome.cpp:884-897`):
+
+```cpp
+if (count >= 0 && count != copied_count) {
+    std::wstring mirror_text;
+    const int mirror_length = GetWindowTextLengthW(mirror);
+    mirror_text.resize(static_cast<std::size_t>(mirror_length) + 1);
+    GetWindowTextW(mirror, &mirror_text[0], mirror_length + 1);   // línea 888
+    SendMessageW(mirror, CB_RESETCONTENT, 0, 0);
+    for (int index = 0; index < count; ++index) {                // línea 890
+        const std::wstring item = wide_from_ansi(combo_item(source, index));
+        SendMessageW(mirror, CB_ADDSTRING, 0,
+                     reinterpret_cast<LPARAM>(item.c_str()));
+    }                                                              // línea 894 — ~item() por iteración
+    SetWindowTextW(mirror, mirror_text.c_str());
+    ...
+```
+
+**Hipótesis concreta, no verificada con instrumentación adicional:**
+`mirror_text` (línea 885-888) se dimensiona con `GetWindowTextLengthW` y se
+escribe con `GetWindowTextW` sobre el mismo buffer. MSDN documenta
+explícitamente que `GetWindowTextLength{A,W}` puede devolver una longitud
+que no coincide con lo que la variante opuesta (`W` vs `A`) termina
+escribiendo, específicamente en mezclas ANSI/Unicode — exactamente el caso
+aquí, ya que el resto de `sync_combo`/`combo_item` usa `SendMessageA` sobre
+el mismo control. Si la reimplementación de Wine de este par de APIs
+escribe más `wchar_t` de los que `GetWindowTextLengthW` reportó, es un
+heap-buffer-overflow de tamaño acotado (unos pocos wchar_t) sobre el buffer
+de `mirror_text` — exactamente la clase de corrupción que produce
+`free(): invalid next size` / `double free` en el `free()` de una llamada
+posterior (no necesariamente la de `mirror_text` mismo — puede manifestarse
+en el chunk vecino, como en cualquier heap-overflow), consistente con que la
+firma varíe entre corridas (§1: depende de qué chunk linda con el buffer
+dañado).
+
+**No confirmado. No aplicado.** No se instrumentó `sync_combo` para verificar
+tamaño real escrito vs. reportado (siguiente paso obvio, no intentado en
+esta sesión) ni se descartó la otra candidata más débil del mismo bloque
+(`combo_item`/`wide_from_ansi`, revisadas y con aritmética de tamaño
+correcta a simple lectura — MultiByteToWideChar con `cchMultiByte=-1` ya
+incluye el terminador nulo en el conteo devuelto, sin off-by-one visible).
+
+### 4. Dónde retomar
+
+1. Instrumentar `sync_combo` (línea 886-888): comparar `mirror_length`
+   (de `GetWindowTextLengthW`) contra el valor real devuelto por
+   `GetWindowTextW` (su valor de retorno es la cuenta de caracteres
+   copiados) — si difieren, confirma la hipótesis directamente sin
+   necesitar más spelunking de heap.
+2. Si se confirma: el fix es acotado (usar el valor de retorno de
+   `GetWindowTextW`, o sobre-reservar con margen, o cambiar a
+   `std::vector<wchar_t>` con `resize` post-escritura) — dentro de
+   `src/port/original/`, no en `Opus/` ni `OpusEtAl/` (no requiere la
+   autorización de árbol restringido de `CLAUDE.md`).
+3. Repetir el mismo escaneo de stack (`info proc mappings` + `x/400gx $rsp`
+   + `addr2line`) en el VPS/Debian una vez que se entienda por qué ahí no
+   reproduce — podría no ser "no reproduce el bug", sino "reproduce pero no
+   se manifiesta como abort visible" bajo GCC 14 (layout de heap distinto).
+   No verificado.
+4. La técnica de escaneo manual de stack (sin depender de `bt`/unwind roto)
+   queda como método reutilizable para cualquier crash futuro sin DWARF/CFI
+   confiable en este proyecto — no es específica de este bug.
