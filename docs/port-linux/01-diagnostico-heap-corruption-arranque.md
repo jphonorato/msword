@@ -1757,3 +1757,47 @@ enumeración GDI de Wine (`EnumFontFamilies` o equivalente), que puede
 generar una entrada por cada combinación fuente×charset/script y por
 tanto un total mayor o distinto al de `fc-list`. **Orden de magnitud
 plausible, procedencia exacta sin confirmar.**
+
+**Seguimiento — punto 2 de la lista de §12, respondido: refutado.**
+Experimento de control: `count` interceptado justo después de
+`SendMessageA(source, CB_GETCOUNT, 0, 0)` y forzado a `20` cuando supera
+ese valor (`opus_win95_chrome.cpp`, instrumentación temporal revertida
+después, diff confirmado limpio), dejando el resto de `sync_combo`
+intacto — el loop de población corre de verdad, solo que 20 veces en
+vez de 1395.
+
+**5/5 corridas, el cap se aplicó** (log `capping count from 1395 to 20`
+presente en las cinco) **y el crash ocurrió exactamente igual las cinco
+veces**, mismas firmas de siempre (`free(): invalid next size`,
+`free(): invalid pointer`, `malloc(): unaligned tcache chunk detected`).
+**El volumen del loop no es la variable relevante** — con 20 iteraciones
+en vez de 1395 el resultado es idéntico. Esto **descarta directamente**
+la lectura de §12 de "corrupción acumulada dentro de la implementación
+de Wine del ComboBox por volumen de llamadas repetidas a
+`CB_ADDSTRING`" — si fuera una cuestión de volumen/desgaste acumulado,
+capar a 20 debería haber cambiado algo (aunque sea la firma o la
+frecuencia), y no cambió nada en absoluto.
+
+**Lectura corregida:** la corrupción no depende de *cuántas* veces se
+llama a `CB_ADDSTRING` en este loop — es consistente con que ya esté
+presente **antes** de llegar aquí (el `free()` que aborta se dispara en
+la primera oportunidad que tiene de encontrar la corrupción, sea esa
+oportunidad la iteración 1 o la 1395 da igual), no con que este loop
+específico la *cause* por acumulación. Esto reabre con más fuerza la
+lectura alternativa que §5 (punto 3) y §12 ya dejaban abierta sin
+perseguir: el origen real está en otro lado, y todo lo que esta
+investigación viene instrumentando dentro de `sync_combo`/
+`locate_source_combos`/`collect_original_combos` (ocho candidatos
+refutados en total) puede ser enteramente inocente — el `free()` que
+vemos abortar ahí es solo el primer punto de contacto con un heap ya
+dañado por algo que corre **antes** en el arranque, no dentro de esta
+cadena de funciones en absoluto.
+
+**Consecuencia práctica:** parar de instrumentar código dentro de la
+cadena `sync_combo`/`locate_source_combos` — con este resultado, seguir
+ahí ya no tiene sustento. La vía que queda con más apoyo es acotar hacia
+atrás: qué corre *antes* de la primera llamada a `sync_mirrors` en el
+arranque (creación de ventanas/controles del toolbar, `WM_CREATE` de
+`toolbar_window_proc`, o más atrás aún) — no perseguido todavía.
+
+**Build restaurado** después de revertir esta instrumentación.
