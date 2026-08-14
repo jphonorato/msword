@@ -2817,3 +2817,77 @@ Debian 13.
 `argv`) — toda la instrumentación temporal (marcadores `[DIAG]`/
 `[DRIVER]`, el parámetro `depth` de `find_descendant_by_class`) revertida,
 diff confirmado limpio salvo por esos tres cambios.
+
+### 24. `std::wstring(arguments[1])` confirmado como la causa del `malloc()` — corregido y verificado; destapa un cuarto bug, de otra familia (`CreateProcessW` devuelve `PROCESS_INFORMATION` en cero)
+
+Retoma el pendiente de §23: confirmar con volcado directo que
+`std::wstring(arguments[1])` es el sitio real de la corrupción, no solo
+inferirlo por descarte.
+
+**Confirmado con evidencia directa:** instrumentación temporal aislando
+la construcción (`const std::wstring diag_probe(arguments[1]);` justo
+antes del `command_line` real, revertida al cerrar) muestra
+`diag_probe.size()=22` contra `lstrlenW(arguments[1])=32` — el real es
+32 (`"/home/pablo/msword/bin/WORD1.exe"`). El contenido indexado
+(`diag_probe[i]` para `i` en `[0,22)`) es el prefijo correcto y real de
+la cadena (`"/home/pablo/msword/bin"`, no basura) — confirma que
+`operator[]` (acceso directo, sin pasar por `char_traits`) funciona
+bien en esta TU, pero el **constructor** de `std::wstring` calculó mal
+la longitud al construirse (mismo mecanismo de fondo que §23: la
+resolución de `char_traits<wchar_t>::length()` cae en glibc, 4 bytes,
+no en el `wchar_t` de 2 bytes real de esta TU).
+
+**Fix aplicado y verificado — root cause:** reemplazada
+`std::wstring command_line = L"\"" + std::wstring(arguments[1]) +
+L"\"";` por un buffer `wchar_t command_line[MAX_PATH + 4]` construido a
+mano con `lstrcpyW`/`lstrcatW` (Win32/`kernel32`, ya en el link). **3/3
+corridas de `--clipboard`, ninguna vuelve a mostrar `malloc(): invalid
+size (unsorted)` ni el `stack overflow` de Wine** — llegan limpio hasta
+`wait_for_window` y fallan ahí con un mensaje normal
+(`"WORD1 main window did not appear"`, código de salida 3), no con un
+crash. Confirma que este `std::wstring` era, en efecto, el sitio real
+de la corrupción de heap que aparecía después del fix de §23 — no una
+simple co-ocurrencia.
+
+**Cuarto bug, de una familia completamente distinta, destapado al
+arreglar este:** con el crash resuelto, `--clipboard` (y por extensión
+los otros 6 modos con flag) siguen sin pasar — consistentemente,
+incluso subiendo el timeout de `wait_for_window` de 8000ms a 30000ms
+(descarta que sea un problema de timing; ya sabíamos por §21 que la
+ventana aparece bien dentro de esa ventana de tiempo). Confirmado con
+`xwininfo -root -tree` **durante** la corrida: la ventana
+`"Microsoft Word - Document1"` existe, en el mismo display, con el
+título exacto que se busca — igual que en §21. El problema no es que
+la ventana no exista: es que `find_process_window`/`find_window_callback`
+nunca la encuentran, porque filtran por `process_id` y ese `process_id`
+llega en **cero**. Rastreado hasta el origen: `CreateProcessW`
+**retorna éxito** (no se imprime `"CreateProcessW failed"`) pero deja
+`PROCESS_INFORMATION` completamente en cero —
+`dwProcessId=0 dwThreadId=0 hProcess=0`, confirmado con un print
+directo justo después de la llamada (instrumentación temporal,
+revertida). No es el mismo mecanismo que §16/§23/§24: `PROCESS_INFORMATION`
+no tiene ningún miembro `wchar_t`, es solo `HANDLE`/`DWORD` — el ancho
+de `wchar_t` no puede explicar esto. Candidatos no explorados: alguna
+particularidad de `CreateProcessW` bajo Wine específicamente cuando el
+proceso que llama es un ejecutable de subsistema **consola**
+(`-mconsole -municode`, como se documentó para este target en
+`src/CMakeLists.txt`) creando un hijo de subsistema **GUI**
+(`WORD1.exe`, `-mwindows`); o una limitación real de esta versión de
+Wine (`wine` 10.0 vanilla del contenedor) para creación anidada de
+procesos que no se manifiesta lanzando `wine WORD1.exe.so` de forma
+directa desde una shell de Linux (como en §21/§22, que sí funcionan).
+
+**Instrumentación revertida, build restaurado a solo los dos fixes
+reales de esta sección + los tres de §23** (`command_line` con buffer
+manual; `_wcsicmp`→`lstrcmpiW`; `wide_contains`+`find_window_callback`;
+`lstrcmpW` en el parseo de `argv`) — diff confirmado limpio.
+
+**No perseguido esta sesión:** aislar si el subsistema consola-vs-GUI
+del creador es la variable relevante (probar, por ejemplo, compilando
+una versión mínima de `opus_word1_ui_test` sin `-mconsole` para ver si
+`dwProcessId` deja de ser cero — cambio de build no trivial, no
+intentado); comparar contra el comportamiento de `CreateProcessW` en
+Wine-staging (host, Arch) para ver si es específico de `wine` 10.0
+vanilla; revisar el código fuente de Wine (`dlls/kernelbase/process.c`
+o equivalente) para el manejo de `lpProcessInformation` en la ruta que
+efectivamente toma este caso.

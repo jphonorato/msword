@@ -654,11 +654,27 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
         return 1;
     }
 
-    std::wstring command_line = L"\"" + std::wstring(arguments[1]) + L"\"";
+    // Deliberately not std::wstring: its length-computing constructors and
+    // operator+ go through the same glibc char_traits<wchar_t> machinery as
+    // the wcscmp/wcslen bug fixed above (4-byte wchar_t reads against this
+    // TU's real 2-byte Win32 WCHAR data) -- confirmed empirically 2026-08-14
+    // (std::wstring(arguments[1]).size() came back 22 against a real
+    // lstrlenW() of 32). lstrlenW/lstrcpyW/lstrcatW are Win32-native and
+    // width-correct. See docs/port-linux/01-diagnostico-heap-corruption-arranque.md
+    // §23-24.
+    const int application_name_length = lstrlenW(arguments[1]);
+    if (application_name_length >= MAX_PATH) {
+        std::cerr << "WORD1 path too long for the command line buffer\n";
+        return 2;
+    }
+    wchar_t command_line[MAX_PATH + 4] = {};
+    command_line[0] = L'"';
+    lstrcpyW(command_line + 1, arguments[1]);
+    lstrcatW(command_line, L"\"");
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     PROCESS_INFORMATION process{};
-    if (!CreateProcessW(arguments[1], command_line.data(), nullptr, nullptr,
+    if (!CreateProcessW(arguments[1], command_line, nullptr, nullptr,
                         FALSE, 0, nullptr, nullptr, &startup, &process)) {
         std::cerr << "CreateProcessW failed: " << GetLastError() << '\n';
         return 2;
