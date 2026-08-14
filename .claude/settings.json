@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmake --preset linux-winelib-debug)",
+      "Bash(ninja -k 0 -C ../out/linux-winelib-debug opus_original_engine)",
+      "Bash(ninja -k 0 -C out/linux-winelib-debug WORD1)",
+      "Bash(nm -D bin/WORD1.exe.so)",
+      "Bash(nm bin/WORD1.exe.so)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(wine --version)",
+      "Bash(gcc --version)",
+      "Bash(timeout 12 env DISPLAY=:99 bash -c 'Xvfb :99 -screen 0 1024x768x24 & *)",
+      "Bash(timeout 10 env DISPLAY=:99 wine bin/WORD1.exe.so)",
+      "Bash(DISPLAY=:99 timeout 30 gdb -q --batch -ex 'set breakpoint pending on' -ex 'break loadfont.c:711' -ex 'break loadfont.c:349' -ex run -ex 'print *phdc' -ex 'print vsci.hdcScratch' -ex 'print GetObjectType\\(vsci.hdcScratch\\)' -ex continue -ex 'print hdc' -ex 'print GetObjectType\\(hdc\\)' -ex 'bt 8' -ex continue --args /usr/lib/wine/wine64 WORD1.exe.so)",
+      "Bash(DISPLAY=:99 timeout 30 gdb -q --batch -ex 'set breakpoint pending on' -ex 'break loadfont.c:711' -ex 'break loadfont.c:349' -ex run -ex 'print vsci.hdcScratch' --args /usr/lib/wine/wine64 WORD1.exe.so)",
+      "Bash(DISPLAY=:99 timeout 40 gdb -q --batch -ex 'set breakpoint pending on' -ex 'break loadfont.c:711' -ex 'break loadfont.c:349' -ex run -ex 'print vsci.hdcScratch' -ex 'print GetObjectType\\(vsci.hdcScratch\\)' -ex 'print GetObjectType\\(*phdc\\)' -ex continue -ex 'print hdc' -ex 'print GetObjectType\\(hdc\\)' -ex 'bt 6' -ex continue --args /usr/lib/wine/wine64 WORD1.exe.so)",
+      "Bash(DISPLAY=:99 timeout 40 gdb -q --batch -ex 'set breakpoint pending on' -ex 'break loadfont.c:711' -ex run -ex 'info functions ^GetObjectType$' -ex 'info sharedlibrary gdi32' --args /usr/lib/wine/wine64 WORD1.exe.so)",
+      "Bash(DISPLAY=:99 timeout 40 gdb -q --batch -ex 'set breakpoint pending on' -ex 'break loadfont.c:711' -ex run -ex 'info sharedlibrary' --args /usr/lib/wine/wine64 WORD1.exe.so)",
+      "Bash(nm -D /home/pablo/msword/bin/WORD1.exe.so)",
+      "Bash(DISPLAY=:99 timeout 8 env WINEDEBUG=+gdi wine WORD1.exe.so)"
+    ]
+  }
+}
