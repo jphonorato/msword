@@ -1646,3 +1646,96 @@ código que llama a `locate_source_combos` y que sigue ejecutándose
 después), no volver a los mismos cinco puntos ya refutados.
 
 **Build restaurado** después de revertir esta instrumentación también.
+
+### 12. `sync_combo`/`sync_mirrors` retomado — hallazgo mayor: el crash ocurre *dentro* del loop `CB_ADDSTRING`, en un índice distinto cada corrida, sobre datos válidos
+
+Sigue la pista concreta que dejó §11 (el abort ocurre después de que
+`locate_source_combos` termina limpio dos veces). El punto 1 de §5
+(`combo_item()`/`wide_from_ansi()`) se había dado por agotado en §6,
+pero ahí solo se probó el par dentro del `for` de población (línea
+~890-892). Esta sesión encontró un **tercer** par longitud/texto dentro
+de `sync_combo`, nunca antes tocado: `GetWindowTextLengthA(source)`/
+`GetWindowTextA(source, ...)` en la rama `else` de
+`!combo_or_child_has_focus(mirror)` (línea ~903-905) — instrumentado
+igual que los anteriores (canario de 16 celdas). **Cero líneas DIAG en
+5/5 corridas** — esa rama nunca se alcanza antes del crash.
+
+**Instrumentación de seguimiento** (traza de ramas en `sync_combo`, sin
+canario) reveló por qué, y de paso el hallazgo real de esta sesión:
+
+- `sync_combo` se llama **repetidas veces** antes del crash: primero
+  varias veces con `source == nullptr` (los tres combos, antes de que
+  `locate_source_combos` los resuelva — coherente con §11), luego una
+  vez más con `source` ya resuelto (`0x100c0`/`0x200e4`/`0x300cc` en las
+  tres corridas). En ese punto, **`SendMessageA(source, CB_GETCOUNT, 0,
+  0)` devuelve `count=1395`**, idéntico en 3/3 corridas — un número muy
+  por encima de lo esperado para un combo de fuente/estilo/tamaño de un
+  procesador de texto de 1989.
+- Con `count=1395` el `for` de población (línea 890-894, ya recorrido
+  en §6 pero solo hasta `index=4`) se instrumentó de nuevo con traza por
+  iteración. **Los primeros ~16-20 valores de longitud de `combo_item`
+  son idénticos a los ya vistos en §4/§6** (12, 12, 5, 19, 24, 20, 4, 9,
+  7, 11, 8, 20, 11, 21, 17, 16, ...) — son nombres de fuente/estilo
+  reales, no basura ni memoria sin inicializar. **El crash ocurre
+  *dentro* de este loop, en un índice distinto cada corrida: 5, 14, y
+  15** en tres corridas consecutivas con el mismo build — mientras se
+  procesan datos válidos, no cerca del límite de 1395 ni en zona de
+  índices fuera de rango.
+
+**Lectura — cambia el diagnóstico de fondo:** cada escritura que este
+proyecto controla directamente y puede instrumentar (`mirror_text`,
+`combo_item`, `wide_from_ansi`, `GetClassNameW`, el tercer par de
+`sync_combo`, el viaje por `LPARAM`, la destrucción de
+`ComboEnumeration`) ha salido limpia, repetidas veces, en sesiones
+distintas. Y sin embargo el crash persiste, **en un punto variable
+dentro de un loop que hace la misma llamada Win32 (`CB_ADDSTRING`)
+repetidamente sobre datos que en sí mismos son válidos.** Esa
+combinación — mismo dato, mismo código, punto de fallo que se mueve
+entre corridas, mientras cada verificación local de bordes sale limpia
+— es la firma característica de **corrupción de heap acumulada dentro
+de la implementación de Wine del control ComboBox** (la ruta interna
+que `CB_ADDSTRING`/`CB_RESETCONTENT` ejercitan en `user32`/`comctl32`
+bajo wine-staging 11.15), no un bug en el código de `Opus`/`port` que
+esta investigación pueda seguir instrumentando con canarios locales.
+**No confirmado con una herramienta que mire directamente el heap de
+Wine** (los intentos con `+heap` y `valgrind` de §2/§8 no vieron nada,
+pero por razones ya documentadas como no concluyentes para esta clase
+de bug) — es una inferencia por eliminación, no una prueba directa.
+
+**Pregunta abierta, no perseguida esta sesión:** ¿de dónde sale
+`count=1395`? Podría ser un reflejo real (aunque inusualmente alto) del
+número de fuentes que Wine enumera en este sistema vía fontconfig, o
+podría ser en sí mismo un síntoma de que el combo `source` original ya
+estaba con su lista interna dañada por un ciclo anterior de
+`CB_RESETCONTENT`/`CB_ADDSTRING` sobre el *mismo* handle en otro punto
+del arranque — no se comparó contra el conteo real de fuentes instaladas
+en este sistema, ni se revisó si `source` (el combo original de Word,
+no el mirror) recibe su propia carga de `CB_ADDSTRING` en otro lugar
+del código antes de este punto.
+
+**Consecuencia práctica para la siguiente sesión:** seguir
+instrumentando código de `Opus`/`port` con canarios locales ya no es la
+vía más prometedora — los ocho candidatos de esa clase (§4, §6, §7, §11,
+y el tercer par de esta sección) salieron limpios. Las vías que quedan,
+en orden de lo más al menos directo:
+
+1. Acotar si `count=1395` es plausible (contar fuentes reales del
+   sistema, `fc-list | wc -l` o equivalente) — barato, no intentado.
+2. Repetir el mismo experimento con un `source` distinto o forzando
+   `count` a un valor pequeño (parche temporal de diagnóstico, revertir
+   después) para ver si el crash desaparece — confirmaría o refutaría
+   que el volumen del loop es la variable relevante, no el contenido.
+3. Instrumentar directamente alrededor de la llamada a `CB_ADDSTRING`
+   con una verificación de heap acotada (no todo el proceso, solo el
+   entorno inmediato de esa llamada) — algo que ni `+heap` ni `valgrind`
+   lograron dar en esta investigación al mirar el proceso completo.
+4. Considerar la hipótesis de un bug real de Wine (`wine-staging
+   11.15`/GCC 16 en la ruta de `COMBOBOX_InsertString` o similar) y
+   probar con otra versión de Wine en este mismo entorno Arch — no
+   intentado, requeriría instalar un Wine distinto (cambio de sistema, a
+   confirmar con el usuario antes de tocarlo, como ya se dejó pendiente
+   para el VPS en §8).
+
+**Build restaurado** después de revertir toda la instrumentación de esta
+sección (tres tandas: canario del tercer par, traza de ramas, traza de
+loop).
