@@ -2891,3 +2891,95 @@ Wine-staging (host, Arch) para ver si es específico de `wine` 10.0
 vanilla; revisar el código fuente de Wine (`dlls/kernelbase/process.c`
 o equivalente) para el manejo de `lpProcessInformation` en la ruta que
 efectivamente toma este caso.
+
+### 25. `dwProcessId=0` aislado al binario, no al arnés — reproducido con un programa mínimo; conclusión: comportamiento de Wine, no bug de este proyecto
+
+Retoma §24 con la pregunta que quedó abierta: ¿es `opus_word1_ui_test`
+(compilado `wmain`/`-mconsole -municode`) el que provoca el `PROCESS_INFORMATION`
+en cero, o es específico de lanzar `WORD1.exe`? Se probaron dos
+variantes rápidas primero, ninguna cambió el síntoma:
+
+- **`GetLastError()` sin condicionar al resultado:** reveló `14007`
+  (`ERROR_SXS_KEY_NOT_FOUND`, contexto de activación/manifiesto "side
+  by side") en el primer intento — parecía una pista real, pero...
+- **`lpApplicationName = nullptr`** (pasar todo por `lpCommandLine`, el
+  patrón más común de uso de `CreateProcessW`): el `14007` desaparece
+  (`GetLastError()=0`, éxito limpio), pero `dwProcessId`/`hProcess`
+  **siguen en cero**. El `14007` era ruido — un efecto secundario de
+  pasar `lpApplicationName` explícito, no la causa real. Revertido
+  (sin motivo para mantenerlo, no arregla nada y cambia la semántica de
+  búsqueda del ejecutable).
+
+**Aislamiento decisivo — programa mínimo, fuera de este archivo por
+completo:** dos `.c` de ~20 líneas, compilados con `winegcc` directo
+(sin `-mconsole`/`-municode`, `main()` normal, sin nada de este
+proyecto salvo el binario objetivo), para separar "arnés" de
+"objetivo":
+
+```c
+STARTUPINFOW si = {0}; si.cb = sizeof(si);
+PROCESS_INFORMATION pi = {0};
+BOOL ok = CreateProcessW(NULL, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
+```
+
+- **Objetivo `notepad.exe`** (builtin de Wine, `C:\windows\system32\notepad.exe`):
+  `ok=1 err=0 pid=292 tid=296 hProcess=0x40 hThread=0x44` — **funciona
+  perfecto**, PID y handles reales.
+- **Mismo programa, objetivo `WORD1.exe`** (el `.exe`/`.exe.so` de este
+  proyecto, sin tocar nada del arnés): `ok=1 err=0 pid=0 tid=4263507920
+  hProcess=(nil) hThread=(nil)` — **mismo síntoma que en
+  `opus_word1_ui_test`**, con un programa que no comparte una sola
+  línea de código con él.
+
+**Conclusión:** el bug no está en `opus_word1_ui_test.cpp` ni en cómo
+está compilado (`wmain`, `-mconsole -municode` quedan descartados como
+variable — el programa mínimo no los usa y falla igual). Es específico
+de **crear un proceso para el `.exe`/`.exe.so` de este proyecto desde
+dentro de otro proceso Wine ya corriendo**, contra `notepad.exe`
+(builtin de Wine) que funciona sin problema en la misma llamada, mismo
+entorno, mismo momento. La diferencia más plausible entre ambos
+objetivos: `notepad.exe` es un ejecutable *builtin* de Wine (con su
+propio camino de carga interno, probablemente sin pasar por
+fork+exec de un `.so` externo), mientras que `WORD1.exe.so` es un ELF
+nativo externo construido por este proyecto — la ruta de
+`CreateProcessW` para ese segundo caso (spawnear un `.exe.so` de
+terceros como subproceso) parece no relayar `dwProcessId`/`hProcess`
+de vuelta al llamador correctamente en `wine` 10.0~repack-6 de este
+contenedor, aunque el hijo real sí se crea y sí llega a mostrar su
+ventana (confirmado en §24 con `xwininfo` durante la corrida).
+
+**Esto ya no es un bug de aplicación corregible sin rodeos** — a
+diferencia de §23/§24 (glibc de 4 bytes vs `WCHAR` de 2, con un fix de
+una línea cada uno), acá no hay ningún flag ni patrón de uso de
+`CreateProcessW` que se haya probado y evite el problema; parece un
+límite/comportamiento real de esta versión de Wine para este tipo
+específico de creación de proceso anidado. **Camino pragmático, no
+intentado esta sesión:** dejar de depender de `dwProcessId`/`hProcess`
+devueltos por `CreateProcessW` para localizar la ventana de `WORD1` —
+`find_window_callback` ya filtra por título (`"Microsoft Word -
+Document1"`, razonablemente específico) vía `wide_contains`; quitar o
+relajar el filtro por `process_id` haría que el emparejamiento sea por
+título solo, lo cual ya sabemos que encuentra la ventana correcta (§21,
+§24). Contrapartida real, no cosmética: sin el filtro por PID, una
+ventana residual de una corrida anterior (crasheada o no limpiada)
+con el mismo título podría dar un falso positivo — señalado para
+decidir explícitamente, no aplicado unilateralmente.
+
+**Limpieza:** los dos `.c`/`.exe`/`.exe.so` del programa mínimo
+(`minimal_cp_test*`) se escribieron temporalmente en la raíz del repo
+para compilarlos con `winegcc` desde ahí (necesitan estar dentro del
+árbol para que las rutas relativas del `WINEPREFIX` resuelvan
+igual que el resto de esta investigación) y se borraron al cerrar —
+nunca llegaron a `git add`. Instrumentación de `opus_word1_ui_test.cpp`
+(valores canario, prints de `GetLastError()`/tamaños de struct, el
+experimento de `lpApplicationName=nullptr`) revertida; build
+restaurado a los dos fixes reales de §23-24, diff confirmado limpio.
+
+**No perseguido esta sesión:** implementar el workaround de
+emparejar solo por título (decisión de diseño, no técnica, pendiente
+de acordar); confirmar si el mismo programa mínimo falla igual en el
+VPS o en wine-staging del host (aislaría si es específico de `wine`
+10.0~repack-6 vanilla o más general); revisar
+`dlls/kernelbase/process.c` de Wine (o el mirror de GitHub, mismo
+patrón que §19/§20) para la ruta exacta que toma al crear un proceso
+para un ELF externo en vez de un módulo builtin.
