@@ -1227,10 +1227,9 @@ general.
 
 1. ~~**Candidata siguiente, no probada:** `combo_item()`/`wide_from_ansi()`
    (línea ~798-857)~~ — **instrumentada y refutada, ver §6.**
-2. **También sin probar:** el propio `ComboEnumeration`/
-   `collect_original_combos` (línea 814-828) — aparece en la cadena de
-   stack de §3 como destructor, pero no se revisó su contenido en detalle
-   (`std::vector<HWND> combos`, callback de `EnumChildWindows`).
+2. ~~**También sin probar:** el propio `ComboEnumeration`/
+   `collect_original_combos` (línea 814-828)~~ — **instrumentado y
+   refutado, ver §7.**
 3. Repetir el mismo escaneo de stack (`info proc mappings` + `x/400gx $rsp`
    + `addr2line`) en el VPS/Debian una vez que se entienda por qué ahí no
    reproduce — podría no ser "no reproduce el bug", sino "reproduce pero no
@@ -1295,11 +1294,74 @@ descartados como la fuente. La cadena de stack de §3 sigue siendo la
 evidencia más sólida disponible (el crash real es un `free()` de
 `std::wstring` en esa vecindad de código), pero el mecanismo concreto
 sigue sin aislarse. Punto 2 de §5 (`ComboEnumeration`/
-`collect_original_combos`, línea 814-828 — el `std::vector<HWND> combos`
-y el callback de `EnumChildWindows`) queda como la única candidata de esa
-cadena de stack todavía sin instrumentar.
+`collect_original_combos`, línea 814-828) sigue como pendiente — ver §7,
+también refutado.
 
 **Build restaurado:** `opus_original_engine` y `WORD1` reconstruidos
 después de revertir la instrumentación — el binario en `bin/` vuelve a
 corresponder exactamente al código de `HEAD`, no queda instrumentación
 residual.
+
+### 7. `ComboEnumeration`/`collect_original_combos` — instrumentado y **refutado** (mismo día, hp-15)
+
+Punto 2 de §5, el último candidato pendiente de la cadena de stack de §3.
+De las dos piezas de este bloque (`opus_win95_chrome.cpp:814-828`), solo
+una tiene la forma "API de Win32 llena un buffer de tamaño explícito" que
+el método de canario puede probar directamente: el `wchar_t
+class_name[64]` de `collect_original_combos`, llenado por
+`GetClassNameW(candidate, class_name, 64)`. La otra —
+`std::vector<HWND> combos` creciendo vía `push_back` en cada callback de
+`EnumChildWindows` — es gestión de memoria de C++ estándar, no una
+escritura de la API sobre un buffer nuestro con tamaño pasado
+explícitamente; no hay un límite ajeno que instrumentar del mismo modo
+(su propia gestión interna de capacidad no es de las que este proyecto
+haya visto fallar). Se instrumentó solo `class_name`.
+
+Instrumentación temporal (revertida después, no commiteada — diff
+confirmado limpio contra `HEAD`): buffer `wchar_t[64 + 16]`, 16 celdas
+canario `0xCDCD` más allá del límite de 64 pasado como `nMaxCount`,
+comparando el valor de retorno de `GetClassNameW` (`written`) y
+verificando las celdas canario tras la llamada. (Nota aparte: al quitar
+la cero-inicialización original del buffer para poder llenarlo con el
+patrón canario, hubo que añadir un `class_name[0] = L'\0'` explícito para
+el caso `written == 0` — `GetClassNameW` no garantiza terminar el buffer
+si falla, y el código original dependía de la cero-inicialización para
+ese caso. No afecta la detección de overflow, que ya se evalúa antes de
+esa rama.)
+
+**5/5 corridas**, mismo método (`gdb -q --batch -ex run -ex "bt full"`,
+`Xvfb :99`): salida de DIAG **idéntica byte a byte entre las 5 corridas**
+(mismo `md5sum`, igual que §6) — 20 líneas DIAG por corrida (cada llamada
+a `EnumChildWindows` recorre más ventanas candidatas que las que
+`combo_item` procesaba, de ahí el doble de invocaciones que en §6).
+Valores de `written` observados: `4, 6, 7, 8, 10, 13` — siempre muy por
+debajo del límite de 64. **`guard_cells_clobbered=0/16` en el 100% de las
+20×5=100 invocaciones.** El crash persiste en las 5/5 corridas, misma
+firma exacta (`free(): invalid next size (normal)`, `SIGABRT`).
+**Hipótesis refutada:** `GetClassNameW` respeta su `nMaxCount` en esta
+reimplementación de Wine, igual que ya se confirmó para los otros tres
+pares API de §4 y §6.
+
+**Lectura acumulada final (§4 + §6 + §7):** con este punto se agota la
+cadena de stack completa de §3 (`sync_combo` → `locate_source_combos` →
+`collect_original_combos`) en lo que respecta a escrituras de tamaño
+explícito sobre buffers propios — las cuatro API de Win32 involucradas
+(`GetWindowTextW`, `CB_GETLBTEXT`, `MultiByteToWideChar`,
+`GetClassNameW`) se comportan correctamente. Ninguna de las cuatro es la
+fuente. Quedan dos lecturas posibles, ninguna instrumentada aún:
+
+1. La corrupción real no está en este bloque de código en absoluto — la
+   cadena de stack de §3 es memoria de stack cruda (no un unwind real, ver
+   §3), así que podría estar mostrando llamadas ya retornadas, no el
+   punto de origen. Sería necesario repetir el escaneo manual de stack en
+   una corrida fresca y verificar si la misma cadena aparece de forma
+   consistente, o si varía entre corridas (no verificado todavía).
+2. La corrupción está en la gestión propia de `std::vector<HWND> combos`
+   (crecimiento/realloc) o en algo fuera de este archivo que corrompe un
+   chunk vecino que luego se libera aquí — ninguna de las dos vías tiene
+   un método de canario directo aplicable; requeriría una herramienta
+   distinta (el checklist de `02-pendientes-fedora.md` §3, symbolizar
+   frame #0, sigue siendo la vía más prometedora sin explorar).
+
+**Build restaurado:** `opus_original_engine` y `WORD1` reconstruidos de
+nuevo después de revertir esta instrumentación también.
