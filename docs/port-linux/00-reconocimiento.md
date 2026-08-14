@@ -445,6 +445,34 @@ enlaces en minúscula para las 17 fuentes `.C`.
 Los 53 fallos restantes producen **202 errores en total**, concentrados como se
 describe en §1.6. Noventa de esos 202 provienen de una única cabecera (`Opus/keys.h`).
 
+### 6.3 Tercer entorno: EndeavourOS (Arch, rolling) — 2026-08-12
+
+Nota: la sección 6 principal corresponde a Fedora 44 / GCC 16.1.1 (la máquina
+donde se desarrolló el grueso del trabajo). El VPS Debian / GCC 14.2.0 está
+documentado en `docs/port-qt/01-frontera-nucleo-shell.md` (sección «Bloqueador
+de build: disp.h:248 en GCC 14»). Este subapartado añade el tercer entorno.
+
+| Herramienta | Versión / ruta |
+|---|---|
+| SO | EndeavourOS (Arch Linux, rolling release) |
+| GCC | 16.2.1 20260810 (`/usr/bin/gcc`) |
+| CMake | 4.4.2 |
+| Ninja | 1.13.2 |
+| Git | 2.55.0 |
+| Qt6 | 6.11.1 (`qmake6 -query QT_INSTALL_LIBS` → `/usr/lib`) |
+| Wine-staging | 11.15 |
+| wrc | 11.15 (`/usr/bin/wrc`) |
+| winebuild | 11.15 (`/usr/bin/winebuild`) |
+
+**Verificación del bug FAM (rsb.h / disp.h) — ejecutado en vivo:**
+`ninja -k 0 -C out/linux-winelib-debug opus_original_engine` →
+**0 errores, 0 FAILED**, `libopus_original_engine.a` producida (207 TUs).
+El guard `(__GNUC__ < 15)` en `rsb.h:38,77` y `disp.h:248` evalúa a falso
+para GCC 16.2.1: se compila la rama `#else` (formas originales
+`rgbms[]`/`rgzpp[]`/`rgdr[]` sin el workaround `[1]`). Cero diagnósticos de
+*flexible array member* en ningún log. Resultado idéntico al de Fedora 44 /
+GCC 16.1.1 — **el bug FAM no se reproduce en este entorno** (GCC ≥ 15).
+
 ---
 
 ## 7. Sensibilidad a mayúsculas
@@ -2444,3 +2472,99 @@ Solo 32 bits del puntero (16+16). En LP64 el heap vive fuera de ese rango.
 - Sin commit.
 - **Listo para Fase 6** en cuanto el arranque del proceso WORD1 se estabilice
   (o se pruebe el camino Declare con un harness más acotado).
+
+
+---
+
+## Gaps sin corregir del build Winelib
+
+Targets que fallan en compilación bajo el preset `linux-winelib-debug` y están
+pendientes de corrección explícita. Ninguno bloquea el motor
+(`opus_original_engine`) ni el ejecutable principal (`WORD1`).
+
+### Gap 1 — cuatro targets `_test` sin flags gnu89 (documentado en §Fase 2)
+
+`opus_original_sttb_test`, `opus_original_plc_test`,
+`opus_original_strtbl_test` y el fixture C de `opus_x64_runtime_test`
+(`opus_x64_layout_test_fixture.c`) carecen de un bloque
+`elseif(OPUS_WINELIB_BUILD)` con `-std=gnu89 -funsigned-char -fms-extensions
+-fpermissive`. Compilarlos produce ~345 errores `-Wimplicit-int` en
+`Opus/wordtech/word.h` — declaraciones K&R sin tipo de retorno (`NATIVE
+FreeDrs();`). El mismo archivo compilado con esas banderas da cero errores
+(verificado A/B; ver «Ruido ya descartado» dentro de «Fase 2 — EN PROGRESO»).
+
+**No bloquea** `opus_original_engine` ni `WORD1`.
+
+### Gap 2 — `opus_word1_ui_test`: APIs CRT de MSVC sin resolver bajo Winelib
+
+**Target** definido en `src/CMakeLists.txt:1477-1497` (verificado con `grep`):
+
+```
+add_executable(opus_word1_ui_test
+    port/original/opus_word1_ui_test.cpp      # único fuente
+)
+add_dependencies(opus_word1_ui_test WORD1)
+target_compile_features(opus_word1_ui_test PRIVATE cxx_std_20)
+target_compile_definitions(opus_word1_ui_test PRIVATE NOMINMAX UNICODE _UNICODE)
+target_link_libraries(opus_word1_ui_test PRIVATE user32 gdi32)
+if(MSVC)
+    target_compile_options(opus_word1_ui_test PRIVATE /W4 /utf-8)
+endif()
+```
+
+No hay ningún bloque `if(OPUS_WINELIB_BUILD)` ni `elseif(NOT MSVC)` en este
+target. La fuente fue introducida por el commit upstream `ac5472e2` «Added
+missing file» (Justin Marshall, 2026-08-08) — no es una regresión del trabajo
+propio del port.
+
+**Log real de `ninja -k 0 -C out/linux-winelib-debug opus_word1_ui_test`
+ejecutado en EndeavourOS / GCC 16.2.1 / Wine-staging 11.15:**
+
+```
+FAILED: CMakeFiles/opus_word1_ui_test.dir/port/original/opus_word1_ui_test.cpp.o
+port/original/opus_word1_ui_test.cpp:91:13:  error: '_wcsicmp' was not declared in this scope; did you mean 'wcsncmp'?
+port/original/opus_word1_ui_test.cpp:111:13: error: '_wcsicmp' was not declared in this scope; did you mean 'wcsncmp'?
+port/original/opus_word1_ui_test.cpp:160:12: error: '_wcsicmp' was not declared in this scope; did you mean 'wcsncmp'?
+port/original/opus_word1_ui_test.cpp:170:33: error: no hay una función coincidente para la llamada a 'min(LONG&, long int)'
+port/original/opus_word1_ui_test.cpp:379:36: error: no hay una función coincidente para la llamada a 'min(LONG, long int)'
+port/original/opus_word1_ui_test.cpp:380:36: error: no hay una función coincidente para la llamada a 'min(LONG, long int)'
+ninja: build stopped: cannot make progress due to previous errors.
+```
+
+6 errores de compilación. El paso de enlace no llega a ejecutarse porque la
+única unidad de traducción del target falla y `ninja` para sin poder continuar.
+
+**Causa raíz:** `opus_word1_ui_test.cpp` es C++20 con dependencia de WORD1.
+Usa dos APIs del CRT de MSVC que no resuelven en modo glibc de Winelib:
+
+- **`_wcsicmp`** (líneas 91, 111, 160): comparación de cadenas anchas
+  insensible a mayúsculas del CRT de MSVC. La alternativa POSIX es
+  `wcscasecmp`; no está declarada en los encabezados de Wine en modo glibc.
+- **`min(LONG, long int)`** (líneas 170, 379, 380): `NOMINMAX` suprime las
+  macros `min`/`max` de `<windows.h>`, dejando `std::min<>` de `<algorithm>`,
+  que requiere tipos idénticos en la deducción de plantilla. `LONG` se mapea a
+  `int` (32 bits) en los encabezados de Wine; `long int` mide 64 bits en Linux
+  LP64. Bajo MSVC (LLP64), `long` ≡ `int` ≡ 32 bits y la deducción resuelve
+  sin error.
+
+**Distinción explícita respecto al Gap 1 (cuatro targets `_test`):**
+
+Este **no** es el mismo problema. Los cuatro targets del Gap 1 son C
+(`Opus/*.c`) que fallan por compilar sin las banderas
+`-std=gnu89 -funsigned-char -fms-extensions -fpermissive`.
+`opus_word1_ui_test` es C++20 (`target_compile_features(... PRIVATE cxx_std_20)`)
+— esas banderas no aplican ni resolverían el problema. El Gap 2 tiene dos
+causas independientes: ausencia de `_wcsicmp` (símbolo del CRT de MSVC no
+expuesto en modo glibc) y conflicto de tipos `LONG` / `long int` en `min<>`,
+causado por la combinación de `NOMINMAX` y la divergencia LP64/LLP64 de `long`.
+Son problemas distintos en un target distinto, con fuentes de causa distintas.
+
+**Alcance:** no bloquea `opus_original_engine` ni `WORD1`. La dependencia de
+`CMakeLists.txt:1480` va en sentido inverso: `opus_word1_ui_test` depende de
+`WORD1`, no al revés. Sin corrección, las ocho variantes de test que lanzan
+`WORD1` a través de este ejecutable (`opus_word1_ui_test`,
+`opus_word1_clipboard_shortcut_test`, `opus_word1_typing_test`,
+`opus_word1_interaction_test`, `opus_word1_selection_test`,
+`opus_word1_font_typing_test`, `opus_word1_about_test`,
+`opus_word1_save_as_test`) no compilan bajo Winelib. El motor y el ejecutable
+principal no se ven afectados.
