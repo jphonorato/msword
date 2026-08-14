@@ -2645,3 +2645,74 @@ vía `xdotool` o similar, no instalado) para confirmar interacción más allá
 de la construcción de ventana; identificar la causa del recuadro negro en
 la captura; investigar por qué `setsid` no sobrevivió al cierre de la
 sesión de `machinectl shell` en los dos primeros intentos de lanzamiento.
+
+### 22. `word1_startup_blocked` corrido de verdad en Debian 13 (contenedor) — 0/9 pasan, pero por motivos nuevos y distintos al heap corruption
+
+Retoma §21: con el startup confirmado sano en Debian 13, vale la pena ver
+si los 9 tests de la label `word1_startup_blocked` (registrados como
+no-gating bajo la premisa "`WORD1` siempre crashea") en realidad ahora
+pasarían. Reconstruido todo desde cero dentro del contenedor (`rm -rf
+out/linux-winelib-debug` + reconfigure + build de `opus_original_engine`,
+`WORD1`, `opus_word1_ui_test`) para eliminar cualquier resto de cache del
+host de ayer.
+
+**Nota de tooling:** lanzar procesos de larga duración en background
+dentro de una sesión de `machinectl shell` (`nohup ... &`, con o sin
+`setsid`) no sobrevivió de forma consistente al cierre de esa sesión en
+este trabajo — un build de 337 TUs se interrumpió con `"ninja: build
+stopped: interrupted by user."` pese a `nohup`. `systemd-run
+--machine=debian13 --uid=pablo ...` (lanza una unidad transient dentro
+del propio systemd del contenedor, independiente de cualquier PTY/sesión)
+resultó confiable en 5/5 usos. Usar ese mecanismo, no `machinectl shell
+... &`, para trabajo en background futuro en este contenedor.
+
+**Resultado: `ctest -L word1_startup_blocked --timeout 90`, 0/9 pasan —
+pero ningún test muestra la firma de heap corruption de las secciones
+1-20.** Tres patrones distintos:
+
+- **`word1_port_smoke_test`**: Timeout a los 90.10s (el timeout del
+  propio `ctest`). `WORD1.exe.so --self-test` corre, no crashea, llega al
+  mismo reposo `NtUserGetMessage`/`anon_pipe_read` de §21, y se queda
+  ahí — el test no tiene una condición de éxito que se cumpla con
+  "arrancó y quedó sano", solo agota el reloj.
+- **`opus_word1_ui_test`** (sin flag, el driver base): reportado "Timeout
+  20.01 sec" por `ctest` (coincide casi exacto con el `TIMEOUT 20` de
+  `set_tests_properties`, no con los 8000ms del `wait_for_window()`
+  interno del propio test — ver
+  `port/original/opus_word1_ui_test.cpp:633-637`), con `"WORD1 main
+  window did not appear"` en la salida. El título que busca
+  (`"Microsoft Word - Document1"`) es exactamente el mismo que §21
+  confirmó visible por `xwininfo` — la ventana sí existe. La discrepancia
+  entre el timeout interno de 8s y que `ctest` reporte ~20s no está
+  explicada; no se instrumentó más a fondo esta sesión.
+- **Los 7 tests restantes** (`--clipboard`, `--typing`, `--interaction`,
+  `--selection`, `--font-typing`, `--about`, `--save-as`): fallan en
+  0.04-0.09s con `"unknown test mode"` — el parseo de argumentos de
+  `wmain` en `opus_word1_ui_test.cpp:576-621` rechaza exactamente las
+  flags que `src/CMakeLists.txt:1580-1607` le pasa (`argument_count == 3`
+  con `arguments[2]` comparado por `wcscmp` contra cada flag). Verificado
+  leyendo el `CTestTestfile.cmake` generado que la flag correcta sí se
+  pasa (ej. `"--clipboard"`). Causa exacta no aislada — no se instrumentó
+  `argc`/`argv` reales dentro de `wmain` para ver qué llega realmente del
+  lado de Wine/`winegcc` al ejecutar el `.exe` vía `ctest`. Bug de parseo
+  de CLI del arnés de test, no relacionado con el heap corruption ni con
+  Wine/`GetMessage`.
+
+**Consecuencia:** el label `word1_startup_blocked` sigue siendo 0/9 hoy,
+pero por razones completamente distintas y nuevas — ninguna es la
+corrupción de heap de las secciones 1-20. La smoke y la ui_test base
+necesitan una condición de éxito que reconozca "reposo sano" como
+resultado válido, no solo esperar a que el proceso termine solo. Los 7
+tests con flag necesitan que se resuelva el bug de parseo de CLI antes de
+llegar siquiera a lanzar `WORD1`. No se tocó código de test esta sesión
+(`src/port/original/opus_word1_ui_test.cpp` y `src/CMakeLists.txt` no
+están en el árbol restringido, así que un fix ahí no necesitaría
+autorización si se retoma).
+
+**No perseguido esta sesión:** instrumentar `argc`/`argv` real dentro de
+`wmain` de `opus_word1_ui_test.cpp` para ver la causa exacta de "unknown
+test mode"; medir el tiempo real entre `CreateProcessW` y que la ventana
+"Microsoft Word - Document1" quede visible, para saber si 8s es
+insuficiente o si `wait_for_window` tiene otro problema; rediseñar la
+condición de éxito de `word1_port_smoke_test`/`opus_word1_ui_test` para
+que un reposo sano cuente como pass.
