@@ -2372,3 +2372,120 @@ Wine, u otra cosa? — antes de invertir más tiempo.
 `Xvfb ... -extension MIT-SHM` o equivalente); probar contra un servidor X
 real; AddressSanitizer como alternativa (sigue sin evaluar, mencionado en
 §17).
+
+### 19. Auditoría de `sync_combo` contra el `COMBOBOX`/`LISTBOX` *builtin* real de Wine — limpia; el candidato más activo sigue siendo el propio código del port
+
+Con `valgrind` cerrado (§18), retoma la recomendación de esa misma sección:
+auditar `sync_combo`/`combo_item` línea por línea contra la implementación
+real de Wine, en vez de seguir peleando con herramientas dinámicas. Fuente
+obtenida de `wine-mirror/wine` (mirror de GitHub del árbol oficial,
+`gitlab.winehq.org` está detrás de un anti-bot que bloquea *fetches*
+automatizados) — `dlls/user32/combo.c` y `dlls/user32/listbox.c`, rama
+`master`. No es la versión exacta de wine-staging 11.15 línea por línea,
+pero esta parte del código (control *builtin* clásico, sin cambios de
+diseño en años) es estable entre versiones para los fines de esta
+auditoría — no se buscó el tag exacto.
+
+**Hallazgo 1 — el par `CB_GETLBTEXTLEN`/`CB_GETLBTEXT` (ANSI) es
+internamente consistente; no hay desajuste de tamaño.** `combo.c` delega
+ambos directamente a `LB_GETTEXTLEN`/`LB_GETTEXT` sobre el `hWndLBox`
+interno (el combo es un envoltorio delgado sobre un `LISTBOX` oculto).
+En `listbox.c`, `LISTBOX_GetText` (`listbox.c:863`):
+- Modo *sólo longitud* (`buffer == NULL`, para `CB_GETLBTEXTLEN`):
+  `WideCharToMultiByte(CP_ACP, 0, str, len, NULL, 0, ...)` con `len =
+  lstrlenW(str)` — **excluye** el terminador nulo.
+- Modo *escritura real* (`CB_GETLBTEXT`): `WideCharToMultiByte(CP_ACP, 0,
+  str, -1, buffer, 0x7FFFFFFF, ...)` — convierte la cadena **completa
+  incluyendo el nulo** (`-1` = cadena terminada en nulo) hacia un tamaño de
+  destino que Wine trata como "confía en que el llamador lo dimensionó
+  bien" (**no** hay *bounds-check* contra un tamaño real del buffer — así
+  es el contrato real de Win32 para `LB_GETTEXT`, no es un descuido de
+  Wine). El nulo terminador ocupa exactamente 1 byte en cualquier code
+  page — la matemática `bytes_escritos = bytes_reportados_por_LEN + 1` es
+  una invariante, no una coincidencia.
+
+`combo_item` (`opus_win95_chrome.cpp`) dimensiona su `std::vector<char>` a
+`length + 1` usando exactamente el valor de `CB_GETLBTEXTLEN` — coincide
+exacto con lo que `CB_GETLBTEXT` va a escribir. **Sin desbordamiento aquí.**
+
+**Hallazgo 2 — `CB_ADDSTRING` copia la cadena a su propio storage; no hay
+transferencia de ownership hacia nuestro buffer.** `LISTBOX_InsertString`
+(`listbox.c:1692`): `HeapAlloc(GetProcessHeap(), 0, (lstrlenW(str)+1) *
+sizeof(WCHAR))` seguido de `lstrcpyW(new_str, str)` — Wine **copia** el
+contenido de `str` (nuestro `item.c_str()`, un `std::wstring` temporal de
+`sync_combo`) hacia una asignación propia (`new_str`), y solo `new_str` se
+guarda en `descr->u.items[index].str`. No retiene puntero alguno hacia
+nuestro `std::wstring`; nuestro `item` puede destruirse (y se destruye, al
+final de cada iteración del `for`) sin dejar un puntero colgante en el
+lado de Wine. **Sin *use-after-free* por este camino.**
+
+**Hallazgo 3 — descartado con evidencia concreta: el crecimiento del array
+interno de ítems (`resize_storage`) no está en juego.** `listbox.c:151`:
+el array `descr->u.items` crece de a bloques de `LB_ARRAY_GRANULARITY = 16`
+vía `realloc()` plano (coincide con que sea `realloc`/`free` de glibc, no
+`HeapAlloc`/`HeapFree` de Wine — ver Hallazgo 4). `LISTBOX_InsertItem`
+(`listbox.c:1626`) llama `resize_storage(descr, nb_items + 1)` en *cada*
+inserción, pero esa función solo reasigna si `items_size` necesita crecer
+— la primera inserción (`nb_items` 0→1) ya reserva de golpe **16 huecos**
+(`(1 + 15) & ~15 = 16`), así que los ítems 0 a 15 (dieciséis inserciones)
+cursan **sin ningún `realloc()` adicional**. El segundo `realloc()` recién
+ocurriría insertando el ítem 17 (índice 16) — y **ninguna de las corridas
+de esta serie llegó nunca a ese punto**: el crash cae siempre en índice 14
+o 15 (§16), es decir con `nb_items` entre 15 y 16, **antes** de que el
+segundo `realloc()` del array tenga oportunidad de ejecutarse. Esto
+descarta positivamente el crecimiento del array de ítems del combo espejo
+como mecanismo del crash — no es que no se haya mirado, es que la
+evidencia (índice máximo observado) excluye que ese código llegue a
+correr de nuevo antes de que el proceso muera.
+
+**Hallazgo 4 — nota arquitectónica, no resuelta: dos familias de
+asignador conviviendo en la ruta caliente.** El array de ítems
+(`resize_storage`) usa `realloc()`/`free()` planos de glibc — coincide
+directamente con la firma de los mensajes de crash observados
+(`free(): invalid pointer`, exactamente vocabulario de glibc). Las
+cadenas individuales de cada ítem (`new_str` de `LISTBOX_InsertString`,
+liberadas en `LISTBOX_DeleteItem` vía `HeapFree(GetProcessHeap(),...)`)
+usan el heap propio de Wine (`ntdll`/`RtlAllocateHeap`), que es
+arquitectónicamente un asignador *distinto* del `malloc` de glibc —
+mezclar punteros entre ambas familias (`free()` sobre algo de
+`HeapAlloc`, o `HeapFree()` sobre algo de `malloc`) produciría exactamente
+esta clase de corrupción. **No se encontró tal mezcla** en el código
+alcanzado por el uso real de `sync_combo`/`combo_item` (Hallazgos 1-2) ni
+en el código propio del port (`wide_from_ansi`, `ansi_from_wide`,
+`combo_item` — revisados, cada uno dimensiona su buffer con la misma
+llamada de consulta de longitud antes de escribir, sin desajuste). Se
+deja constancia de la arquitectura de dos asignadores como dato relevante
+para cualquier hipótesis futura, no como hallazgo positivo de bug.
+
+**Chequeo adicional, barato, sin fricción de herramientas:** `MALLOC_CHECK_=3`
+(activa verificación de consistencia de glibc en cada `malloc`/`free`/
+`realloc`, sin tocar `ptrace` ni el despachador de syscalls de Wine — por
+tanto sin el bloqueo de §18) sobre 3 corridas nativas: **mismo mensaje,
+mismo punto de crash, sin cambio.** No es concluyente por sí solo (un
+*chunk* corrompido mucho antes y no vuelto a tocar hasta este punto daría
+el mismo resultado con o sin `MALLOC_CHECK_`, porque la verificación solo
+ocurre cuando el *chunk* específico se toca), pero es consistente con —no
+contradice— que la escritura real y su detección estén cerca en el tiempo
+de ejecución, en vez de muy separadas.
+
+**Conclusión de la auditoría: el código *builtin* de Wine alcanzado por
+`sync_combo` está limpio para los patrones de bug más probables**
+(desajuste de longitud ANSI/Unicode, *use-after-free* por transferencia de
+ownership indebida, reentrada del crecimiento del array). No se encontró
+una línea de Wine que explique la corrupción. Esto **redirige el foco**
+hacia: (a) el propio código del port en el tramo aún no auditado a este
+nivel de detalle — `locate_source_combos`'s 1395×2 llamadas a
+`combo_contains`/`CB_FINDSTRINGEXACT` sobre el combo de 1395 fuentes,
+mencionado como pendiente en §16 y todavía no revisado línea por línea
+contra el `LISTBOX_FindString`/`LISTBOX_FindStringPos` real de Wine; o
+(b) que la causa esté genuinamente fuera de esta ruta de código por
+completo (alguna mutación de heap durante la construcción de
+`FCreateMw`, ya señalada como sospechosa en §15).
+
+**No perseguido esta sesión:** auditar `LISTBOX_FindString`/
+`CB_FINDSTRINGEXACT` contra `locate_source_combos` con el mismo nivel de
+detalle que aquí; confirmar experimentalmente si `HeapAlloc`/`HeapFree`
+de Wine en este build concreto (winelib, syscall-based `ntdll`) delegan
+en última instancia a `malloc`/`free` de glibc o gestionan un arena
+completamente separada (determinaría si el Hallazgo 4 es una vía de bug
+real o un callejón sin salida arquitectónico).
