@@ -1801,3 +1801,72 @@ arranque (creación de ventanas/controles del toolbar, `WM_CREATE` de
 `toolbar_window_proc`, o más atrás aún) — no perseguido todavía.
 
 **Build restaurado** después de revertir esta instrumentación.
+
+### 13. Qué corre antes de `sync_mirrors` — bisección de `WM_CREATE`: **el propio `WM_CREATE`, incluida su primera llamada a `sync_mirrors`, sale limpio**
+
+Retoma directamente el punto pendiente de §12 ("acotar hacia atrás qué
+corre antes de la primera llamada a `sync_mirrors`"). `sync_mirrors` se
+llama desde dos sitios en `toolbar_window_proc`: una vez dentro de
+`WM_CREATE` (línea 2590, incondicional, al crear el toolbar), y otra vez
+dentro de `WM_TIMER` (línea 2602, cada 350 ms vía `SetTimer(window,
+kSyncTimer, 350, nullptr)`, puesto al final del propio `WM_CREATE`).
+Hasta esta sesión no estaba claro cuál de las dos llamadas es la que
+llega a la iteración con `count=1395` de §12 — ambas rutas pasan por el
+mismo `sync_mirrors`.
+
+**Instrumentación temporal** (`opus_win95_chrome.cpp`, revertida
+después, diff confirmado limpio): un checkpoint `fprintf` después de
+cada paso significativo del cuerpo de `WM_CREATE` — asignación de
+`ToolbarState`, `LoadImageW` del sprite, `CreateFontIndirectW`, cada uno
+de los cuatro `create_combo`/`create_zoom_combo`, los `SetWindowTextW`
+iniciales, los `WM_SETFONT`, `position_combos`, y por último la llamada
+a `sync_mirrors` en sí (antes y después).
+
+**Resultado, 5/5 corridas: la secuencia completa de checkpoints
+imprime siempre, incluido `sync_mirrors returned ok` como última línea
+antes del crash.** Es decir: **todo el cuerpo de `WM_CREATE` —
+asignación de estado, carga de sprite, creación de fuente, creación de
+los cuatro combos, textos iniciales, aplicación de fuente,
+posicionamiento, y la primera llamada completa a `sync_mirrors` —
+termina sin ningún problema en las cinco corridas.** El crash ocurre
+**después** de que `WM_CREATE` retorna `0`.
+
+**Reconciliación con §12 — no es una contradicción, es una
+localización más precisa:** en la primera llamada a `sync_mirrors`
+(dentro de `WM_CREATE`), `locate_source_combos` todavía no encuentra
+ningún combo real (§11: "primera llamada... vacía") — las tres llamadas
+a `sync_combo` dentro de esa primera pasada hacen `early-return` de
+inmediato (`source == nullptr`) y no llegan ni cerca del loop de
+`CB_ADDSTRING`. La iteración con `count=1395` que crashea en §12
+**tiene que ser la de la segunda llamada a `sync_mirrors`, disparada por
+`WM_TIMER` 350 ms después** — es la única otra ruta que existe hacia
+`sync_combo`, y es coherente con que `locate_source_combos` sí encuentre
+los tres combos reales en su segunda invocación (también documentado en
+§11).
+
+**Consecuencia:** la ventana de interés ya no es "todo lo que corre
+antes de `sync_mirrors`" en abstracto — es específicamente **lo que
+ocurre entre que `WM_CREATE` retorna (toolbar recién creado, ventana
+visible) y que el temporizador de 350 ms dispara la segunda llamada a
+`sync_mirrors`**. En ese intervalo el bucle de mensajes de Wine sigue
+bombeando: pueden estar creándose otras ventanas (el pane del documento,
+otros controles), procesándose `WM_PAINT`/`WM_SIZE`, o corriendo
+cualquier otro código de arranque de `WORD1` en paralelo — nada de eso
+se ha instrumentado todavía. Combinado con el resultado de §12 (el
+volumen del loop de `sync_combo` no es la variable relevante), la
+lectura más consistente con toda la evidencia acumulada sigue siendo:
+la corrupción no se origina dentro de la cadena `toolbar_window_proc`→
+`sync_mirrors`→`sync_combo`→`locate_source_combos`→
+`collect_original_combos` en absoluto (nueve candidatos refutados ahí
+entre todas las sesiones) — se origina en otro código que corre en
+paralelo durante ese intervalo de 350 ms, y el primer `free()` de
+`sync_combo` es solo el primer punto de contacto con el daño.
+
+**No perseguido esta sesión:** instrumentar el propio `WM_TIMER` (log
+antes/después de su llamada a `sync_mirrors`, para confirmar
+directamente que es esa la que crashea y no una tercera invocación no
+contemplada) y/o instrumentar qué otras ventanas/paneles se crean o qué
+mensajes se procesan en el intervalo de 350 ms entre `WM_CREATE` y el
+primer `WM_TIMER`.
+
+**Build restaurado** después de revertir esta instrumentación.
