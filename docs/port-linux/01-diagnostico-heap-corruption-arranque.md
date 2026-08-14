@@ -1475,3 +1475,54 @@ sesión.
 
 **Procesos limpiados:** ninguno quedó residual ni en el VPS (`timeout`
 mató todo, verificado con `pgrep`) ni en local (verificado igual).
+
+### 9. Symbolizar frame #0 — hecho, con precisión de línea; refuta la hipótesis "DLL de Wine" de `02-pendientes-fedora.md` §3
+
+Pendiente arrastrado desde Fedora (§5/§7 de este documento, y §3 de
+`02-pendientes-fedora.md`), donde la dirección de frame #0
+(`0x00006FFFFFC1B75F`) no caía dentro de `WORD1` y se hipotetizaba sin
+confirmar que fuera `user32`/`gdi32`/`ntdll`. hp-15 §3 ya había acotado
+la región a `libc.so.6` por inspección de `$pc` a ojo; esta sesión lo
+lleva a símbolo y línea exactos.
+
+**Método:** `gdb -q --batch -ex "set debuginfod enabled on" -ex run -ex
+"print/x \$pc" -ex "info proc mappings" --args wine WORD1.exe.so`,
+identificar la fila de `info proc mappings` que contiene `$pc` (base de
+`libc.so.6` = inicio del mapeo `r-xp` menos su offset de archivo),
+restar la base a `$pc` para obtener el offset dentro del archivo, y
+`addr2line -e <debuginfo cacheado por debuginfod> -f -C -p <offset>` —
+el `debuginfo` completo (no solo símbolos dinámicos) ya estaba en
+`~/.cache/debuginfod_client/` de la verificación de hp-15 §3, indexado
+por build-id (`503200d7fda94a5dc6058d7e0694e5d1dcb2e372`, confirmado con
+`readelf -n`). `nm -D` sobre el `.so` del sistema (sin debug info) da un
+resultado engañoso (`pthread_key_delete`, el símbolo dinámico exportado
+más cercano) — no usar esa vía sin el `debuginfo` real.
+
+**Resultado, 3/3 corridas, dos firmas distintas** (`free(): invalid
+pointer`, `free(): invalid next size (normal)`): **`$pc` idéntico en las
+tres** (`0x00007ffff7c9a17c`), resuelto a
+`__pthread_kill_implementation` en `nptl/pthread_kill.c:44`. Es la cola
+genérica de `abort() → raise() → pthread_kill()` — la misma para
+cualquier abort de glibc sin importar qué chequeo de heap lo disparó,
+consistente con que las cuatro firmas de §1/hp-15-§1 compartan este
+mismo frame #0.
+
+**Conclusión:** frame #0 **no es una DLL de Wine** — la hipótesis de
+`02-pendientes-fedora.md` §3 (basada en una dirección de un build viejo
+de Fedora que ya no aplica, `WORD1+0x1FD57C`) queda refutada. Es, como
+ya sugería hp-15 §3 de forma más gruesa, código interno de glibc — y al
+ser la maquinaria genérica de entrega de señal, **no aporta información
+sobre el origen de la corrupción por sí solo**: cualquier `free()`/`
+malloc()` corrupto termina exactamente aquí. El punto útil de la cadena
+sigue siendo más arriba (`malloc_printerr`/`_int_free`, y de ahí al
+llamador real en código de `WORD1`) — ahí es donde el escaneo manual de
+stack de hp-15 §3 (no un unwind real, pero cruzado con `addr2line` sobre
+`WORD1.exe.so`) ya había encontrado la cadena `sync_combo`/
+`locate_source_combos`, agotada en §4/§6/§7 de este documento sin
+resultado.
+
+**Ítem de `02-pendientes-fedora.md` §3 cerrado** con este resultado —
+no queda pendiente de reintentar en Fedora, la dirección/símbolo es
+consistente entre entornos (misma clase de dirección genérica de
+glibc), solo cambia numéricamente por ASLR/versión de glibc, no en
+naturaleza.

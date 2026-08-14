@@ -101,23 +101,19 @@ concreta fue el escaneo manual de stack (`01-...md` §3), no esto.
 
 ---
 
-## 3. Symbolizar frame #0 — sigue sin nombre
+## 3. Symbolizar frame #0 — HECHO (hp-15 cont., `01-...md` §9), no era una DLL de Wine
 
-`addr2line` (§5) solo resolvió frame #1 (`N_FormatLineDxa`, dentro de
-`WORD1`). Frame #0 — el punto exacto del `write` a `0x0` — es una
-dirección cruda que no cae dentro del rango de `WORD1`, así que es una
-DLL de Wine (`user32`/`gdi32`/`ntdll`, sin confirmar cuál). Nunca
-resuelto porque `winedbg`/`dbghelp` está roto en este binario (§3: no
-puede parsear el DWARF de GCC 16) y `addr2line` offline solo tiene el
-DWARF de `WORD1.exe.so`.
-
-**Vía sugerida, no intentada:** con el proceso corriendo (o en el core
-si `ulimit -c unlimited` deja uno), leer `/proc/PID/maps` para identificar
-qué `.so` de Wine cubre el rango de la dirección de frame #0 fresca (paso
-2 de la sección anterior), y correr `addr2line -e <esa.so>` (o `nm`, si
-no tiene DWARF) contra esa biblioteca específica, no contra `WORD1`.
-Necesita repetirse con la dirección fresca del build actual, la de §5 ya
-no sirve.
+La hipótesis de esta sección (DLL de Wine, `user32`/`gdi32`/`ntdll`) era
+sobre una dirección de un build de Fedora que ya no existe — quedó
+refutada. Con `info proc mappings` + la base de `libc.so.6` + `addr2line`
+contra el `debuginfo` real (cacheado por `debuginfod`, no el `.so` del
+sistema sin símbolos), frame #0 resuelve a
+`__pthread_kill_implementation` (`nptl/pthread_kill.c:44`) — la cola
+genérica de `abort()`→`raise()`→`pthread_kill()`, idéntica en 3/3
+corridas con dos firmas de crash distintas. Es información esperada
+(cualquier abort de heap de glibc termina ahí) y no aporta más sobre el
+origen — ver `01-...md` §9 para el detalle y por qué no hace falta
+reintentar esto en Fedora.
 
 ---
 
