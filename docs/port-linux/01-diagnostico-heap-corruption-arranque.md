@@ -1225,11 +1225,8 @@ general.
 
 ### 5. Dónde retomar
 
-1. **Candidata siguiente, no probada:** `combo_item()`/`wide_from_ansi()`
-   (línea ~798-857) — el otro tramo de la misma cadena de stack, revisado
-   solo por lectura en §3 (aritmética de `MultiByteToWideChar` parecía
-   correcta) pero nunca instrumentado como sí se hizo con `mirror_text`.
-   Mismo método de canario aplicaría directo.
+1. ~~**Candidata siguiente, no probada:** `combo_item()`/`wide_from_ansi()`
+   (línea ~798-857)~~ — **instrumentada y refutada, ver §6.**
 2. **También sin probar:** el propio `ComboEnumeration`/
    `collect_original_combos` (línea 814-828) — aparece en la cadena de
    stack de §3 como destructor, pero no se revisó su contenido en detalle
@@ -1245,3 +1242,64 @@ general.
    `02-pendientes-fedora.md`) quedan como métodos reutilizables para
    cualquier crash futuro sin DWARF/CFI confiable en este proyecto — no son
    específicos de este bug.
+
+### 6. `combo_item()`/`wide_from_ansi()` — instrumentados y **refutados** (mismo día, hp-15)
+
+Segunda candidata de §5 (punto 1), el otro tramo de la misma cadena de
+stack de §3 (`combo_item` alimenta `wide_from_ansi`, cuyo resultado es el
+`item` que `sync_combo` pasa a `CB_ADDSTRING` en el `for` de la línea 890).
+
+Instrumentación temporal aplicada a ambas funciones
+(`src/port/original/opus_win95_chrome.cpp`, revertida después, no
+commiteada — diff confirmado limpio contra `HEAD` tras revertir):
+
+- `combo_item()`: buffer de `length + 1` bytes sobre-reservado con 16
+  celdas canario `0xCD`, comparando el valor de retorno de
+  `CB_GETLBTEXT` (`copied`) contra `CB_GETLBTEXTLEN` (`length`).
+- `wide_from_ansi()`: buffer de `count` `wchar_t` sobre-reservado con 16
+  celdas canario `0xCDCD`, comparando el valor de retorno de la segunda
+  llamada a `MultiByteToWideChar` (`written`) contra la primera
+  (`count`).
+
+**5/5 corridas** (`gdb -q --batch -ex run -ex "bt full"`, `Xvfb :99`,
+build reconstruido desde `HEAD` con la instrumentación): salida de DIAG
+**idéntica byte a byte entre las 5 corridas** (mismo `md5sum`) — más
+determinista que la instrumentación de `mirror_text` en §4, que ya tuvo
+variación de firma en 1/5. Ejemplo (una corrida sincroniza un combo con 5
+entradas):
+
+```
+[combo_item DIAG] index=0 length=12 copied=12 guard_cells_clobbered=0/16
+[wide_from_ansi DIAG] count=13 written=13 guard_cells_clobbered=0/16
+[combo_item DIAG] index=1 length=12 copied=12 guard_cells_clobbered=0/16
+[wide_from_ansi DIAG] count=13 written=13 guard_cells_clobbered=0/16
+...
+```
+
+`copied == length` y `written == count` en las 10 líneas DIAG de las 5
+corridas, **ninguna celda canario tocada nunca** (`guard_cells_clobbered=0/16`
+en el 100% de las invocaciones). El crash **persiste en las 5/5 corridas**,
+misma firma exacta en las cinco (`free(): invalid next size (normal)`,
+`SIGABRT`) — más consistente incluso que el baseline de §1 (que variaba
+entre firmas). **Hipótesis refutada**: ni `combo_item()` ni
+`wide_from_ansi()` escriben fuera de lo que reportan sus longitudes; el
+par `CB_GETLBTEXTLEN`/`CB_GETLBTEXT` y el patrón de doble llamada a
+`MultiByteToWideChar` se comportan correctamente en esta reimplementación
+de Wine, igual que ya se había confirmado para `GetWindowTextLengthW`/
+`GetWindowTextW` en §4.
+
+**Lectura acumulada (§4 + este punto):** los tres bloques de
+lectura/escritura de tamaño explícito dentro de `sync_combo` y sus
+llamadas directas (`mirror_text`, `combo_item`, `wide_from_ansi`) quedan
+descartados como la fuente. La cadena de stack de §3 sigue siendo la
+evidencia más sólida disponible (el crash real es un `free()` de
+`std::wstring` en esa vecindad de código), pero el mecanismo concreto
+sigue sin aislarse. Punto 2 de §5 (`ComboEnumeration`/
+`collect_original_combos`, línea 814-828 — el `std::vector<HWND> combos`
+y el callback de `EnumChildWindows`) queda como la única candidata de esa
+cadena de stack todavía sin instrumentar.
+
+**Build restaurado:** `opus_original_engine` y `WORD1` reconstruidos
+después de revertir la instrumentación — el binario en `bin/` vuelve a
+corresponder exactamente al código de `HEAD`, no queda instrumentación
+residual.

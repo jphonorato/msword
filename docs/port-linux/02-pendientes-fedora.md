@@ -1,5 +1,16 @@
 # Pendientes que requieren Fedora — diagnóstico de heap corruption en el arranque de WORD1
 
+**ACTUALIZADO 2026-08-14 — la premisa del título quedó parcialmente
+superada.** La sesión hp-15 (`01-...md`, sección "Sesión hp-15") reprodujo
+el crash en **EndeavourOS/Arch** (GCC 16.2.1, wine-staging 11.15), no solo
+en Fedora — confirma que la variable relevante es GCC ≥15, no la distro
+específica. Los ítems 1 y 2 de este documento, que estaban listados como
+bloqueados a la espera de Fedora, ya se ejecutaron ahí y quedan marcados
+**hecho** abajo, con el resultado real en vez de la instrucción pendiente.
+Fedora en sí sigue sin probarse — el documento no queda invalidado, solo
+deja de ser la única vía. El resto de los ítems (3-7) sigue abierto tal
+cual, independiente de en qué entorno se ejecuten.
+
 Checklist de continuación de `01-diagnostico-heap-corruption-arranque.md`.
 Todo lo que sigue quedó bloqueado, sin cerrar, o sin poder generalizarse
 desde el sandbox usado en las sesiones más recientes (Debian 13 "trixie",
@@ -11,11 +22,14 @@ crash** (§11.2, §13). El crash sí reproduce, de forma consistente, en:
 - **wine-staging 11.0**
 - `gdb` 17.2
 - `valgrind` 3.27.1
+- **EndeavourOS (Arch), GCC 16.2.1, wine-staging 11.15** (hp-15, ver arriba)
 
 No se sabe todavía cuál de estas variables (versión de Wine, de GCC, o
 config de `wine.conf`/DPI/tema) es la que hace la diferencia frente a
 Debian — no investigado (§11.2). Igualar el entorno completo es la única
-vía confirmada para reproducir, no solo la versión de Wine.
+vía confirmada para reproducir, no solo la versión de Wine. Lo que sí se
+puede afirmar ahora (hp-15): **no hace falta Fedora específicamente**,
+GCC ≥15 alcanza.
 
 Referencias entre paréntesis (`§N`) son secciones de
 `01-diagnostico-heap-corruption-arranque.md`.
@@ -58,58 +72,32 @@ cmake --build --preset linux-winelib-debug --target WORD1
 
 ---
 
-## 1. Confirmar que el crash sigue reproduciendo (baseline)
+## 1. Confirmar que el crash sigue reproduciendo (baseline) — HECHO (hp-15)
 
-Antes de gastar tiempo en lo demás: repetir §1 tal cual, con el binario
-reconstruido desde `HEAD` actual (no el de §1-§9, que es de antes de la
-migración de memoria).
-
-```bash
-gdb -q --batch -ex "run" -ex "bt full" --args wine WORD1.exe.so
-```
-
-Esperado (si nada cambió de fondo): mismo patrón de dos firmas según la
-corrida (`malloc(): invalid size (unsorted)` vs. `free(): invalid next
-size (normal)`), mismo punto de arranque hasta el fallo
-(`DwmSetWindowAttribute` stub inmediatamente antes). Si **no** reproduce
-más, o reproduce distinto, es un hallazgo en sí mismo — la migración de
-memoria de esta sesión (`OpusMemPassthroughOps` instalado en `wWinMain`,
-6 archivos de `Opus/` migrados) es la sospechosa más directa de cualquier
-cambio de comportamiento en el arranque, aunque ninguno de los archivos
-tocados está en la ruta de `C_FormatLineDxa`/`LOADFONT.C` que señala §5.
+Ejecutado en EndeavourOS/Arch desde `HEAD` (`5fed452`), 4 corridas con
+`gdb -q --batch -ex run -ex "bt full" --args wine WORD1.exe.so`: reproduce
+4/4, con **dos firmas nuevas** además de las ya conocidas (`free(): invalid
+pointer`, `double free or corruption (!prev)`) — ver `01-...md`, "Sesión
+hp-15" §1. Confirma que la migración `Global*`→`OpusMem*` de las 7
+commits previas no cambió el comportamiento de fondo: sigue siendo
+corrupción de heap real, timing-dependiente. No hace falta repetir esto en
+Fedora salvo para comparar firmas específicas.
 
 ---
 
-## 2. Hito 2 del plan v2 — `WINEDEBUG=+heap`, la pieza central pendiente
+## 2. Hito 2 del plan v2 — `WINEDEBUG=+heap` — HECHO (hp-15), resultado negativo pero informativo
 
-Nunca ejecutado (§12.6 lo dejó como recomendación explícita, no
-implementada; en Debian no sirve porque el crash no reproduce). Es la vía
-que **sí** puede aislar el `write` real sin necesitar ASan (descartado,
-§8) ni valgrind (bloqueado, §4):
-
-```bash
-WINEDEBUG=+heap wine WORD1.exe.so 2>heap.trace
-```
-
-`+heap` es alias de `trace+heap` y da el registro completo de
-`RtlAllocateHeap`/`RtlFreeHeap`/`RtlReAllocateHeap`/`RtlSizeHeap` con
-tamaño y puntero devuelto en cada llamada — todas pasan por el heap
-propio de Wine (`ntdll`), no por `malloc` de glibc (confirmado en §12.4,
-aplica también en Fedora: Word 1.1a usa `GlobalAlloc`/`LocalAlloc`/
-`HeapAlloc` casi exclusivamente).
-
-**Pasos:**
-1. Correr con `WINEDEBUG=+heap` hasta el crash, capturar `heap.trace`
-   completo.
-2. Obtener la dirección de crash fresca con `addr2line` contra el
-   binario reconstruido en Fedora (la de §5, `0x00006FFFFFC1B75F` /
-   `WORD1+0x1FD57C` → `N_FormatLineDxa`, **es del binario viejo** — las
-   direcciones cambian entre builds, no asumir que siguen siendo las
-   mismas tras la migración de memoria).
-3. Cruzar el timestamp/orden de la escritura corruptora contra el log de
-   `Rtl*Heap` para acotar qué bloque (tamaño, puntero) se corrompió y en
-   qué operación previa se asignó — sin necesitar la fuente de
-   `heap.c` de Wine (no instalada, §12.6).
+Ejecutado por primera vez en cualquier entorno (hp-15, `01-...md` §2):
+**888.073 líneas**, crash real en la línea 24273. **Hallazgo:** no hay
+ningún `RtlFreeHeap` logueado inmediatamente antes del crash — el `free()`
+que aborta es el destructor de un `std::wstring` de C++ (`operator
+delete`/glibc directo), no pasa por el heap propio de Wine que `+heap`
+instrumenta. **Consecuencia para el resto del plan:** `+heap` queda sin
+valor diagnóstico adicional para esta familia de bug (cualquier corrupción
+originada en un `std::wstring`/`std::vector` de C++ es invisible a esta
+herramienta) — no reintentar sin una hipótesis nueva que involucre memoria
+Win32 (`GlobalAlloc`/`HeapAlloc`) directamente. La vía que sí dio una pista
+concreta fue el escaneo manual de stack (`01-...md` §3), no esto.
 
 ---
 
