@@ -1739,3 +1739,21 @@ en orden de lo más al menos directo:
 **Build restaurado** después de revertir toda la instrumentación de esta
 sección (tres tandas: canario del tercer par, traza de ramas, traza de
 loop).
+
+**Seguimiento — punto 1 de la lista de arriba, respondido:** en este
+mismo entorno (hp-15, EndeavourOS), `fc-list | wc -l` da **2553** caras
+de fuente instaladas, `fc-list : family | sort -u | wc -l` da **1965**
+nombres de familia únicos. `count=1395` cae **dentro** de ese rango
+(menor que ambos totales) — no es descabellado como reflejo de una
+enumeración real de fuentes, a diferencia de lo que sería un valor
+claramente imposible (negativo, `INT_MAX`, etc.). No cierra la pregunta
+del todo: `fc-match "Courier New"` resuelve por sustitución
+(`Liberation Mono`) pero `fc-list | grep -ic courier` da **0** — "Courier
+New" (el nombre que `combo_contains` busca para clasificar el combo como
+`source_font`, y que efectivamente aparece como dato real en el `for` de
+§12) no es un nombre de familia instalado literal en este sistema, así
+que el combo no está enumerando `fc-list` en crudo 1:1 — es la
+enumeración GDI de Wine (`EnumFontFamilies` o equivalente), que puede
+generar una entrada por cada combinación fuente×charset/script y por
+tanto un total mayor o distinto al de `fc-list`. **Orden de magnitud
+plausible, procedencia exacta sin confirmar.**
