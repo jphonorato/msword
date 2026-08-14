@@ -2983,3 +2983,79 @@ VPS o en wine-staging del host (aislaría si es específico de `wine`
 `dlls/kernelbase/process.c` de Wine (o el mirror de GitHub, mismo
 patrón que §19/§20) para la ruta exacta que toma al crear un proceso
 para un ELF externo en vez de un módulo builtin.
+
+### 26. Workaround de emparejamiento por título aplicado — desbloquea 8/9 tests hasta lógica real de interacción; el 9no (typing) revela otro sitio de `std::wstring`
+
+Aplica el workaround que §25 dejó anotado sin implementar: en
+`find_window_callback`, el filtro por `process_id` ahora se saltea
+cuando `search.process_id == 0` (el caso conocido y roto de §24-25) —
+se mantiene sin cambios, más preciso, cuando el PID sí llega válido.
+Cuatro líneas, con comentario explicando el porqué y apuntando a
+§24-25.
+
+**Verificado con la suite completa (`ctest -L word1_startup_blocked`,
+reconstruido `opus_word1_ui_test` desde el fix, mismo entorno que
+§22).** Sigue siendo 0/9 — pero el contraste con §22 es total: antes,
+7/9 fallaban instantáneo con `"unknown test mode"` y 2/9 con
+`"WORD1 main window did not appear"` (ni siquiera llegaban a intentar
+nada). Ahora:
+
+| Test | Antes (§22) | Ahora (§26) |
+|---|---|---|
+| `word1_port_smoke_test` | Timeout 90s (sin cambio, no relacionado — sigue sin condición de éxito para reposo sano) | Timeout 90s |
+| `opus_word1_ui_test` (base) | Timeout 20s, ventana no encontrada | Timeout 20s, `"File New dialog did not appear"` |
+| `--clipboard` | `"unknown test mode"` (0.09s) | Timeout 20s, `"Ctrl+A did not execute Select All"` |
+| `--typing` | `"unknown test mode"` (0.04s) | Timeout 20s, **`malloc(): invalid size (unsorted)` + stack overflow** |
+| `--interaction` | `"unknown test mode"` (0.04s) | Timeout 25s, `"could not prepare the native window move test"` |
+| `--selection` | `"unknown test mode"` (0.04s) | Timeout 20s, `"typing did not leave a canonical insertion selection"` |
+| `--font-typing` | `"unknown test mode"` (0.04s) | Timeout 20s, `"font typing test could not find the ribbon controls"` |
+| `--about` | `"unknown test mode"` (0.04s) | Timeout 20s, `"Help About dialog did not appear"` (+ diagnóstico: `mainWindow=1 responsive=1 stage=0`) |
+| `--save-as` | `"unknown test mode"` (0.04s) | Timeout 20s, `"File Save As dialog did not appear"` (+ `Save As stage=0`) |
+
+**8 de 9 ahora llegan a la lógica de interacción real del test** —
+mensajes de fallo específicos y con sentido, propios de cada
+verificación (no genéricos ni de parseo). Esto es, por primera vez en
+esta serie de sesiones, el arnés de test funcionando como fue
+diseñado: cada fallo que queda es una pregunta real sobre el
+comportamiento de `WORD1` bajo Debian 13 (¿el Ctrl+A no selecciona
+todo?, ¿el diálogo de Guardar Como no aparece?, etc.), no un problema
+del arnés en sí. Ninguno de los 9 pasa todavía, pero el tipo de
+trabajo que falta cambió por completo: de "arreglar el test harness"
+a "auditar comportamiento real de `WORD1`".
+
+**El caso `--typing` (test 13) es la excepción — sigue crasheando,
+misma firma que §24** (`malloc(): invalid size (unsorted)` +
+`virtual_setup_exception stack overflow`, dirección/rango de stack
+prácticamente idénticos). No es el mismo bug que §24 (ese ya está
+corregido y verificado ahí) — es, casi con certeza, uno de los "6+
+sitios más de `std::wstring`/`std::wcerr`" que §23-24 dejaron
+señalados como sospechosos sin auditar, específicamente el candidato
+de la línea ~1430 (`const std::wstring sentence = L"physical keyboard
+input line one";`, dentro del código que solo se ejecuta en modo
+`--typing`) — coincide con que sea justo *este* test, y ningún otro,
+el que lo dispare: es el único camino de código que llega a
+construir ese `std::wstring` en particular.
+
+**Consecuencia práctica para la próxima sesión, en orden de
+apalancamiento:**
+1. Auditar el sitio de `std::wstring` en la ruta de `--typing`
+   (línea ~1430 y `send_physical_text`) con el mismo patrón de fix de
+   §24 (buffer manual + `lstrcpyW`/`lstrcatW`, o construir el
+   `std::wstring` letra por letra con `+=` sobre literales cortos si
+   el uso real no necesita concatenación — no confirmado cuál aplica
+   sin leer el código con más detalle).
+2. Los 6 sitios restantes de `std::wstring`/`std::wcerr` (no
+   necesariamente en la ruta de ningún test todavía, pero cualquier
+   modo nuevo que los ejercite reproducirá el mismo crash).
+3. Los 7 mensajes de fallo "reales" de la tabla de arriba —cada uno
+   es ahora una investigación de comportamiento de `WORD1` en sí, no
+   del arnés; empezar por `--about` y `--save-as`, que ya traen
+   diagnóstico extra (`stage=`, `responsive=`) útil para acotar sin
+   instrumentar de nuevo.
+
+**No perseguido esta sesión:** auditar o corregir el sitio de
+`std::wstring` de `--typing`; investigar cualquiera de los 7 fallos
+de comportamiento real; confirmar si la contrapartida de diseño
+señalada en §25 (falso positivo por ventana residual de una corrida
+anterior) llegó a manifestarse en algún punto de esta corrida — no
+observado, pero tampoco se buscó activamente.

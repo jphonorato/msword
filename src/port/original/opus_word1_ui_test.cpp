@@ -75,10 +75,24 @@ bool wide_contains(const wchar_t* haystack, const wchar_t* needle) {
 
 BOOL CALLBACK find_window_callback(const HWND window, const LPARAM value) {
     auto& search = *reinterpret_cast<WindowSearch*>(value);
-    DWORD process_id = 0;
-    GetWindowThreadProcessId(window, &process_id);
-    if (process_id != search.process_id) {
-        return TRUE;
+    // search.process_id comes from CreateProcessW's PROCESS_INFORMATION,
+    // which this build's wine (10.0~repack-6, vanilla) returns zeroed for
+    // WORD1.exe.so specifically -- confirmed with a standalone repro
+    // outside this project entirely (docs/port-linux/
+    // 01-diagnostico-heap-corruption-arranque.md §25); real PID/handles
+    // come back fine for Wine's own builtin executables, so this looks
+    // like a Wine limitation for externally-built winelib targets, not a
+    // bug here. When it's 0 there's nothing valid to filter on, so fall
+    // back to matching by class/caption alone -- already proven to find
+    // the right window (§21, §24). Skip the filter only in that
+    // known-broken case; keep it whenever a real PID is available, since
+    // it's strictly more precise.
+    if (search.process_id != 0) {
+        DWORD process_id = 0;
+        GetWindowThreadProcessId(window, &process_id);
+        if (process_id != search.process_id) {
+            return TRUE;
+        }
     }
 
     wchar_t class_name[128] = {};
