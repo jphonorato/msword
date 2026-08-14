@@ -10,10 +10,16 @@
 
 #if defined(__GNUC__) && !defined(_MSC_VER)
 /* _wcsicmp is declared in Wine's msvcrt headers (corecrt_wstring.h), not
-   in <windows.h>/<cwchar> as included here. Rather than pull in the
-   msvcrt header tree for one function, use the POSIX equivalent, which
-   has the same signature. */
-#define _wcsicmp wcscasecmp
+   in <windows.h>/<cwchar> as included here. glibc's wcscasecmp (the POSIX
+   equivalent, same signature) was used previously, but it's wrong here:
+   this TU's wchar_t is winegcc's 2-byte Win32 WCHAR (-fshort-wchar), while
+   glibc's wcscasecmp is compiled against its own native 4-byte wchar_t and
+   silently misreads real WCHAR buffers regardless of the caller's local
+   type width -- confirmed empirically 2026-08-14 (see
+   docs/port-linux/01-diagnostico-heap-corruption-arranque.md §23) via the
+   sibling bug in this same file's argument parsing. lstrcmpiW is the
+   Win32-native, width-correct equivalent. */
+#define _wcsicmp lstrcmpiW
 #endif
 
 namespace {
@@ -39,6 +45,34 @@ struct WindowSearch {
     HWND result;
 };
 
+// Deliberately not std::wcsstr: winegcc compiles this TU's wchar_t as the
+// Win32 2-byte WCHAR (-fshort-wchar), but glibc's linked wcsstr/wcscmp/
+// wcslen/wcerr operate on the native 4-byte wchar_t regardless of the
+// caller's local type width -- they silently misread real WCHAR buffers
+// (confirmed empirically 2026-08-14: wcslen() on an 11-code-unit WCHAR
+// string returned 6, consistent with reading 4 bytes at a time past a
+// 24-byte buffer). Everything comparing genuine Win32 wide-char data in
+// this file must go through lstrcmpW/lstrcmpiW or a manual loop like this
+// one instead. See docs/port-linux/01-diagnostico-heap-corruption-arranque.md
+// §23.
+bool wide_contains(const wchar_t* haystack, const wchar_t* needle) {
+    if (haystack == nullptr || needle == nullptr || *needle == L'\0') {
+        return needle != nullptr && *needle == L'\0';
+    }
+    for (const wchar_t* start = haystack; *start != L'\0'; ++start) {
+        const wchar_t* h = start;
+        const wchar_t* n = needle;
+        while (*h != L'\0' && *n != L'\0' && *h == *n) {
+            ++h;
+            ++n;
+        }
+        if (*n == L'\0') {
+            return true;
+        }
+    }
+    return false;
+}
+
 BOOL CALLBACK find_window_callback(const HWND window, const LPARAM value) {
     auto& search = *reinterpret_cast<WindowSearch*>(value);
     DWORD process_id = 0;
@@ -52,9 +86,9 @@ BOOL CALLBACK find_window_callback(const HWND window, const LPARAM value) {
     GetClassNameW(window, class_name, static_cast<int>(std::size(class_name)));
     GetWindowTextW(window, caption, static_cast<int>(std::size(caption)));
     if ((search.class_name == nullptr ||
-         std::wcscmp(class_name, search.class_name) == 0) &&
+         lstrcmpW(class_name, search.class_name) == 0) &&
         (search.caption_fragment == nullptr ||
-         std::wcsstr(caption, search.caption_fragment) != nullptr)) {
+         wide_contains(caption, search.caption_fragment))) {
         search.result = window;
         return FALSE;
     }
@@ -584,34 +618,34 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
         return 1;
     }
     const bool typing_mode =
-        argument_count == 3 && std::wcscmp(arguments[2], L"--typing") == 0;
+        argument_count == 3 && lstrcmpW(arguments[2], L"--typing") == 0;
     const bool interaction_mode =
         argument_count == 3 &&
-        std::wcscmp(arguments[2], L"--interaction") == 0;
+        lstrcmpW(arguments[2], L"--interaction") == 0;
     const bool selection_mode =
         argument_count == 3 &&
-        std::wcscmp(arguments[2], L"--selection") == 0;
+        lstrcmpW(arguments[2], L"--selection") == 0;
     const bool caret_mode =
         argument_count == 3 &&
-        std::wcscmp(arguments[2], L"--caret") == 0;
+        lstrcmpW(arguments[2], L"--caret") == 0;
     const bool formatting_mode =
         argument_count == 3 &&
-        std::wcscmp(arguments[2], L"--formatting") == 0;
+        lstrcmpW(arguments[2], L"--formatting") == 0;
     const bool color_mode =
         argument_count == 3 &&
-        std::wcscmp(arguments[2], L"--color") == 0;
+        lstrcmpW(arguments[2], L"--color") == 0;
     const bool font_typing_mode =
         argument_count == 3 &&
-        std::wcscmp(arguments[2], L"--font-typing") == 0;
+        lstrcmpW(arguments[2], L"--font-typing") == 0;
     const bool about_mode =
         argument_count == 3 &&
-        std::wcscmp(arguments[2], L"--about") == 0;
+        lstrcmpW(arguments[2], L"--about") == 0;
     const bool clipboard_mode =
         argument_count == 3 &&
-        std::wcscmp(arguments[2], L"--clipboard") == 0;
+        lstrcmpW(arguments[2], L"--clipboard") == 0;
     const bool save_as_mode =
         argument_count == 3 &&
-        std::wcscmp(arguments[2], L"--save-as") == 0;
+        lstrcmpW(arguments[2], L"--save-as") == 0;
     if (argument_count == 3 && !typing_mode && !interaction_mode &&
         !selection_mode && !caret_mode && !formatting_mode && !color_mode &&
         !font_typing_mode && !clipboard_mode && !about_mode &&

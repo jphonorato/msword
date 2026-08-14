@@ -2716,3 +2716,104 @@ test mode"; medir el tiempo real entre `CreateProcessW` y que la ventana
 insuficiente o si `wait_for_window` tiene otro problema; rediseñar la
 condición de éxito de `word1_port_smoke_test`/`opus_word1_ui_test` para
 que un reposo sano cuente como pass.
+
+### 23. Causa raíz de "unknown test mode" — glibc de 4 bytes contra `WCHAR` real de 2 bytes; corregido y verificado; destapa un problema más amplio en el mismo archivo
+
+Retoma el pendiente #1 de §22. Instrumentación temporal en
+`opus_word1_ui_test.cpp` (revertida al cerrar, diff final limpio salvo por
+el fix real): `fprintf`/bucle manual de `%04x` por cada `wchar_t` de
+`arguments[2]`, sin pasar por `wcslen`/`%ls`.
+
+**Hallazgo, confirmado con evidencia directa:** `arguments[2]` para
+`--clipboard` contiene 11 unidades UTF-16 correctas (`002d 002d 0063
+006c 0069 0070 0062 006f 0061 0072 0064` = `"--clipboard"`) — el
+puntero-a-puntero avanza correctamente en pasos de 2 bytes, confirmando
+que `sizeof(wchar_t)` es 2 en esta TU (`-fshort-wchar` de `winegcc`, como
+el resto del proyecto). Pero `std::wcslen(arguments[2])` en la misma
+línea, mismo puntero, devuelve **6**, no 11. La única explicación
+consistente: `wcslen`/`wcscmp`/`wcsstr` de `<cwchar>` resuelven al símbolo
+de **glibc**, compilado con su propio `wchar_t` nativo de **4 bytes** —
+esa función ignora el tamaño de tipo local del llamador (es código ya
+compilado, no una plantilla) y lee la memoria 4 bytes a la vez. Sobre un
+buffer real de 24 bytes (11 unidades × 2 + nulo × 2), leer en pasos de 4
+aterriza justo un `uint32` más allá del buffer (offset 24), y lo que sea
+que haya ahí (memoria adyacente, no necesariamente cero) determina dónde
+"termina" la cadena según `wcslen` — en esta corrida, coincidió con
+`len=6`. Mismo mecanismo para `%ls` en `fprintf`/`std::wcerr` (ver
+§16, donde ya se había documentado como problema de *volcado*; acá se
+confirma que es un problema de **lógica**, no solo de impresión).
+
+**Fix aplicado y verificado — root cause, no síntoma:** reemplazadas las
+10 comparaciones `std::wcscmp(arguments[2], L"--flag")` por
+`lstrcmpW(arguments[2], L"--flag")` (Win32/`kernel32`, ya disponible sin
+cambiar el link de `target_link_libraries`, que solo tenía `user32
+gdi32`). **7/7 corridas con cada flag (`--clipboard`, `--typing`,
+`--interaction`, `--selection`, `--font-typing`, `--about`,
+`--save-as`), ninguna vuelve a imprimir `"unknown test mode"`.** Cierra
+la causa exacta que dejaba abierta §22.
+
+**El mismo patrón se encontró y corrigió en dos sitios más de este mismo
+archivo, sin haber sido pedido explícitamente pero necesarios para
+seguir avanzando en la investigación:**
+- `find_window_callback` (usada por `wait_for_window`, la que busca la
+  ventana `"Microsoft Word - Document1"`): `std::wcscmp`/`std::wcsstr`
+  sobre `class_name`/`caption` reales (de `GetClassNameW`/
+  `GetWindowTextW`) reemplazados por `lstrcmpW` y un `wide_contains()`
+  local (bucle manual, sin depender de ninguna función de `<cwchar>`).
+- El macro `_wcsicmp` (definido `#define _wcsicmp wcscasecmp`, usado en
+  `find_descendant_by_class`/`collect_descendants_by_class`/
+  `control_has_class`): cambiado a `#define _wcsicmp lstrcmpiW`.
+
+**Un tercer sitio del mismo patrón queda identificado pero sin corregir
+— y es, con evidencia, la causa real del siguiente bug detrás de
+"unknown test mode":** `std::wstring command_line = L"\"" +
+std::wstring(arguments[1]) + L"\"";` (construcción del command line para
+`CreateProcessW`, justo antes de la llamada). Con el fix de `argv` ya
+aplicado, `--clipboard` deja de imprimir "unknown test mode" pero
+crashea con `malloc(): invalid size (unsorted)` +
+`virtual_setup_exception stack overflow` — **antes de llegar siquiera a
+la primera línea de instrumentación puesta justo antes de
+`CreateProcessW`** (confirmado poniendo un marcador ahí y en
+`find_descendant_by_class`: ninguno de los dos llegó a imprimir en 5/5
+corridas del crash). Lo único entre el fin del parseo de argumentos y
+ese marcador es la construcción de `command_line` — un `std::wstring`
+construido desde `arguments[1]` (`WCHAR*` real). El constructor
+`std::wstring(const wchar_t*)` llama a `char_traits<wchar_t>::length()`
+internamente para dimensionar el buffer — si esa resolución cae en la
+misma implementación nativa de 4 bytes que `wcslen`, el `std::wstring`
+resultante queda con tamaño/capacidad corruptos desde su construcción,
+consistente con la corrupción de heap observada más tarde (no
+necesariamente en la misma línea que la escribe — es la firma típica de
+corrupción detectada tarde, igual que en §16). **No confirmado con la
+misma evidencia directa que los tres sitios de arriba (no se puso el
+volcado byte a byte sobre este `std::wstring` específico), pero es la
+lectura más consistente con la evidencia disponible.**
+
+**Alcance: el problema es del archivo, no de una línea.** `grep` encontró
+`std::wstring`/`std::wcerr` en 6 sitios más de este archivo
+(`send_physical_text`, líneas ~1430/1602/1849 con literales/variables
+`std::wstring`, `log_window_callback` con `std::wcerr <<`), todos
+potencialmente con el mismo problema — no auditados uno por uno esta
+sesión. La regla general para cualquier código de este archivo (y,
+posiblemente, cualquier `.cpp` de `src/port/` compilado con
+`wineg++`/`-fshort-wchar` que incluya `<cwchar>`/`<string>` en vez de
+usar solo punteros `wchar_t*` crudos o las funciones Win32
+`lstrcmpW`/`lstrcmpiW`/`lstrlenW`/`lstrcpyW`): **cualquier función de
+`<cwchar>`/`<string>`/`<iostream>` que toque contenido de un `wchar_t*`
+real (no solo su dirección) es sospechosa por defecto**, sin importar
+que el tipo `wchar_t` se vea "correcto" (2 bytes) en el código fuente de
+la misma TU.
+
+**No perseguido esta sesión:** confirmar con volcado directo que
+`std::wstring(arguments[1])` es el sitio exacto de la corrupción (en vez
+de solo inferirlo por descarte); auditar y corregir los 6 sitios
+restantes de `std::wstring`/`std::wcerr` en este archivo; retomar la
+pregunta de si, con esto resuelto del todo, `opus_word1_ui_test` en modo
+`--clipboard` (y los otros 6) llegan a pasar de verdad contra `WORD1` en
+Debian 13.
+
+**Build restaurado a los tres fixes reales** (macro `_wcsicmp`,
+`wide_contains`+`find_window_callback`, `lstrcmpW` en el parseo de
+`argv`) — toda la instrumentación temporal (marcadores `[DIAG]`/
+`[DRIVER]`, el parámetro `depth` de `find_descendant_by_class`) revertida,
+diff confirmado limpio salvo por esos tres cambios.
