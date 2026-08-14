@@ -1870,3 +1870,45 @@ mensajes se procesan en el intervalo de 350 ms entre `WM_CREATE` y el
 primer `WM_TIMER`.
 
 **Build restaurado** después de revertir esta instrumentación.
+
+### 14. `WM_TIMER` instrumentado — confirmado: crashea en el `tick#1`, en la propia llamada a `sync_mirrors`, antes de llegar a nada más
+
+Cierra directamente la pregunta que dejó abierta §13. Instrumentación
+temporal (`opus_win95_chrome.cpp`, revertida después, diff confirmado
+limpio): checkpoints en cada paso del cuerpo de `WM_TIMER` — contador de
+ticks, valores de `suppress_sync_until`/`GetTickCount64()`, antes/después
+de `sync_mirrors`, antes/después de `subclass_all_document_panes`, y de
+las tres ramas condicionales (refresco de regla, arranque de vista de
+página, pintado de regla horizontal).
+
+**Resultado, 5/5 corridas: el crash ocurre en el primerísimo `tick#1`**
+(`suppress_sync_until=0`, así que la condición nunca suprime nada),
+**inmediatamente después de "calling sync_mirrors" y antes de
+"sync_mirrors returned ok"** — es decir, dentro de esa llamada, nunca
+llega a retornar. **Ninguna de las cinco corridas alcanza
+`subclass_all_document_panes` ni ninguna de las ramas posteriores** —
+el crash ocurre antes de que el código tenga oportunidad de ejecutarlas.
+
+**Confirma sin ambigüedad la hipótesis de §13:** es la segunda llamada a
+`sync_mirrors` (la de `WM_TIMER`, no la de `WM_CREATE`) la que llega al
+`count=1395` de §12 y crashea — no hay una tercera ruta ni nada más
+dentro del propio `WM_TIMER` involucrado. `subclass_all_document_panes`
+y el resto del cuerpo de `WM_TIMER` quedan **descartados como
+candidatos** por esta misma razón: nunca se ejecutan antes del crash en
+ninguna corrida.
+
+**Consecuencia — precisa la ventana de búsqueda que quedaba abierta:**
+como `WM_TIMER` llama a `sync_mirrors` como su primer paso, nada del
+propio manejador de `WM_TIMER` corre "en paralelo" antes del crash. La
+ventana de interés real vuelve a ser, como en §13, **el intervalo de
+~350 ms entre que `WM_CREATE` retorna y que este primer `WM_TIMER`
+llega** — código que corre por fuera de `toolbar_window_proc` por
+completo (bombeo de mensajes de Wine, creación de otras ventanas/panes,
+u otro código de arranque de `WORD1`), no instrumentado todavía por
+esta investigación. Con esto, los diez candidatos dentro de la cadena
+`toolbar_window_proc`/`sync_mirrors`/`sync_combo`/
+`locate_source_combos`/`collect_original_combos` quedan agotados sin
+excepción — cualquier paso siguiente que quiera seguir la pista del
+heap corrupto necesita mirar fuera de esta cadena de funciones.
+
+**Build restaurado** después de revertir esta instrumentación.
