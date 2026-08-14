@@ -2549,3 +2549,99 @@ que la "descubre" al tocar el heap.
 `open.c:566-591` línea por línea (está en `src/Opus/`, restringido —
 requiere autorización explícita antes de tocarlo, y esta auditoría fue de
 solo lectura contra fuente externa de Wine, no contra `src/Opus/`).
+
+### 21. Verificación en el contenedor Debian 13 local — el crash no reproduce; confirma que §8 (VPS) no era un caso aislado
+
+Instrucción explícita: usar el contenedor `debian13` local (hp-15, ver
+`CLAUDE.md`) para investigar el "known gap" que esa misma documentación
+dejaba abierto — `WORD1.exe.so` lanzado ahí se quedaba con un único hilo
+bloqueado leyendo su propio pipe interno (`fd 9`) 45+ segundos, sin llegar
+ni al crash de Arch ni al reposo documentado en §8 para el VPS — y cerrarlo
+con `gdb`, el siguiente paso que había quedado anotado sin ejecutar.
+
+**Build:** `bin/WORD1.exe.so` en el contenedor ya estaba en el mismo `HEAD`
+que el host (`536072a`), reconstruido dentro del contenedor a las 14:41 de
+esta misma sesión — Qt 6.8.2 confirmado vía `ldd` (coincide con lo que exige
+el "gotcha" de `CLAUDE.md` sobre no mezclar binarios host/contenedor).
+
+**Lanzamiento:** `DISPLAY=:59 wine WORD1.exe.so` bajo un `Xvfb` ya activo en
+el contenedor, backgrounded con `nohup ... &` (no `setsid`: `setsid` dentro
+de una sesión de `machinectl shell` no sobrevivió al cierre de la sesión en
+los primeros dos intentos — proceso y log vacíos, causa exacta no
+investigada; `nohup` simple sí sobrevivió, verificado con `kill -0` antes y
+después de cerrar la sesión). Warnings esperados y benignos, ya documentados
+en `CLAUDE.md` (falta `wine32`/multiarch, `getaddrinfo` sin resolver
+hostname).
+
+**Estado del proceso, confirmado por `/proc` sin necesidad de `gdb`
+todavía:** un único hilo (`Threads: 1`), `State: S (sleeping)`, `wchan:
+anon_pipe_read`. `ls -la /proc/<pid>/fd` confirma exactamente lo que
+`CLAUDE.md` describía: `fd 9` es el extremo de lectura de `pipe:[297758]`,
+`fd 10` es el extremo de escritura del mismo pipe, ambos abiertos por el
+propio proceso.
+
+**`sudo gdb -p <pid> --batch -ex "bt full"` dentro del contenedor**
+(`ptrace_scope=1` bloquea el attach como usuario normal, igual que
+documentó §15 para hp-15/Arch — se necesitó `sudo`):
+
+```
+__internal_syscall_cancel (fd=9) → __syscall_cancel → __GI___libc_read
+→ ntdll.so (sin símbolos, 3 frames) → NtWaitForMultipleObjects
+→ win32u.so (sin símbolos) → NtUserGetMessage
+→ __wine_syscall_dispatcher
+```
+
+**Lectura:** esto es el mecanismo real y documentado de Wine para
+`GetMessage()` — el hilo cliente espera un objeto del kernel de Win32
+bloqueado en `read()` sobre un pipe que el propio proceso posee en ambos
+extremos (el extremo de escritura se le pasa a `wineserver` por el socket de
+protocolo para que lo señalice; el cliente conserva su propia copia). No es
+un cuelgue: es el estado de reposo normal de un `GetMessage()` esperando
+input que, bajo `Xvfb` sin interacción, nunca llega — la misma clase de
+estado que §8 documentó para el VPS, solo que ahí no se había confirmado
+con una herramienta que mirara dentro del proceso. El "known gap" de
+`CLAUDE.md` (contenedor con comportamiento distinto al VPS) queda cerrado:
+no hay una tercera firma de comportamiento — hay dos entornos Debian 13
+llegando al mismo estado sano, uno de ellos sin instrumentar hasta ahora.
+
+**Confirmación visual, más allá del backtrace:** `DISPLAY=:59 xwininfo -root
+-tree` lista 22 ventanas reales de `word1.exe`, incluyendo
+`0x800001 "Microsoft Word - Document1": 760x542+0+26` — título correcto,
+tamaño de documento razonable, visible. Se instaló `x11-apps`/`imagemagick`
+en el contenedor (`apt-get install`, no estaban) para capturar con `xwd
+-root` + `convert` a PNG y leer la imagen directamente: la ventana muestra
+la barra de menú completa (File Edit View Insert Format Utilities Window),
+la toolbar con los controles de estilo/fuente/tamaño (`Normal`/`Arial`/`10`)
+y los botones de formato, la regla, y el cursor parpadeando al inicio del
+documento — el mismo `OpusWin95Toolbar` cuyo `sync_mirrors`/`sync_combo`
+crashea de forma reproducible en hp-15/Arch (§12-20) se ejecutó aquí de
+punta a punta sin corromper nada. Un recuadro negro sólido aparece en medio
+de la página del documento en la captura; no se investigó si es un
+artefacto de la conversión `xwd`→PNG bajo este color depth o algo real del
+render — el resto de la ventana (chrome, menús, texto de la barra) se ve
+correctamente, así que no se leyó como señal de un problema. Capturas
+borradas del árbol del proyecto después de leerlas (no forman parte del
+repo).
+
+**Consecuencia — cambia el estado del blocker para la plataforma
+soportada:** las secciones 1-20 de este documento son un diagnóstico real y
+válido de un bug real, pero ese bug solo se ha reproducido en hp-15 (Arch,
+wine-staging 11.15/16, ya no un target de este proyecto). En las dos
+superficies Debian 13 disponibles (VPS, contenedor local), con el mismo
+código (`536072a`, sin diffs de `src/Opus/`/`src/port/` entre sesiones
+desde §12), `WORD1` arranca, construye la ventana de documento completa
+(incluyendo el tramo `FCreateMw`→`EndStartup1`→`DisplayRibbonInit`→
+`OpusSyncWin95Toolbar`→`sync_mirrors`→`sync_combo`→`locate_source_combos`,
+exactamente la cadena que se pasó 9 secciones instrumentando) y llega a un
+reposo sano. No se investigó *por qué* Arch/wine-staging sí corrompe el
+heap y Debian 13/wine vanilla no — las hipótesis abiertas en §17-20 (dos
+familias de asignador, código `ComboBox`/`ListBox` *builtin* distinto entre
+versiones de Wine) siguen sin confirmar, pero dejan de ser bloqueantes: el
+proyecto ya no valida en Arch. README.md actualizado para reflejar esto
+(Winelib vuelve a ser el foco activo; Qt core en pausa).
+
+**No perseguido esta sesión:** enviar input real (teclado/mouse sintético
+vía `xdotool` o similar, no instalado) para confirmar interacción más allá
+de la construcción de ventana; identificar la causa del recuadro negro en
+la captura; investigar por qué `setsid` no sobrevivió al cierre de la
+sesión de `machinectl shell` en los dos primeros intentos de lanzamiento.

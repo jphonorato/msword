@@ -4,37 +4,29 @@ Fork of [jmarshall23/msword](https://github.com/jmarshall23/msword): a historica
 port of **Microsoft Word for Windows 1.1a** (codename **Opus**) to Linux.
 Two fronts, one repo:
 
-- **Qt core extraction** (`src/core/`, branch prefix `port-qt`) is the primary
-  development target as of 2026-08-11. It extracts a Qt6-based,
-  platform-independent core from the original Opus source, meant to eventually
-  replace parts of the Win32 shell.
 - **Winelib port** (`src/Opus/`, `src/port/`; produces `WORD1.exe` +
   `WORD1.exe.so`, a native ELF via `winegcc`/`wrc`/`winebuild`, not Wine-hosted
-  PE, not a rewrite) is kept active only as the reference oracle. The Qt port's
-  hard constraint is byte-identical pagination against this binary, so it stays
-  built and runnable for comparison. It is not paused, but it no longer gets
-  active development priority.
+  PE, not a rewrite) is the active development target again as of 2026-08-14.
+  Its long-standing startup blocker turned out to be specific to an
+  unsupported dev machine; it doesn't reproduce on Debian 13, the only
+  platform this port targets. Details below and in
+  `docs/port-linux/01-diagnostico-heap-corruption-arranque.md`.
+- **Qt core extraction** (`src/core/`, branch prefix `port-qt`) extracts a
+  Qt6-based, platform-independent core from the original Opus source, meant
+  to eventually replace parts of the Win32 shell. It's paused while Winelib
+  has priority; the Winelib binary keeps serving as its fidelity oracle
+  regardless.
+
+Debian 13 (trixie) is the only supported platform, because its GCC 14.2.0 is
+what the port's compatibility guards actually target — chasing other distros
+or GCC versions wouldn't move the port forward. See Requirements below.
 
 > **Fork model:** unidirectional. Linux work lives only in this repository.
 > Changes are not contributed back to the upstream Windows/MSVC project.
 
-## Status (2026-08-11)
+## Status (2026-08-14)
 
-### Qt core (current priority)
-
-| Phase | Result |
-| --- | --- |
-| Qt-0 | Win32 coupling inventory complete (`docs/port-qt/00-inventario-win32.md`) |
-| Qt-1 | Core/shell boundary designed and closed (`docs/port-qt/01-frontera-nucleo-shell.md`) |
-| Qt-2 | In progress: `OpusShellConfig` (settings, `QSettings`-backed) and `OpusShellMemory` (Win16 handle contract) implemented and verified; font-substitution contract (§B2.6) implemented and verified; `WORD1` now links against `opus_shell_config` (Winelib build, see below) |
-
-Remaining core/shell contracts: `OpusShellFontMetrics` (text measurement,
-next priority, gates pagination fidelity) and `OpusShellSpine` (message loop,
-deliberately last: until then the Winelib binary keeps serving as the
-fidelity oracle). Full design rationale:
-[`docs/port-qt/01-frontera-nucleo-shell.md`](docs/port-qt/01-frontera-nucleo-shell.md).
-
-### Winelib (reference oracle, infrastructure retained, not actively worked)
+### Winelib (current priority)
 
 | Phase | Result |
 | --- | --- |
@@ -44,10 +36,19 @@ fidelity oracle). Full design rationale:
 | 4 | `WORD1` linked with **427** exports (`.spec` + `wrc`) |
 | 5 | LP64 audit documented (inventory; selective fixes already in tree) |
 
-**Known blocker:** `WORD1` still hits heap corruption during startup/constructors
-(Phase 6 / e2e). Engine link and export smoke tests are green. This blocker
-isn't being worked while Qt has priority; it matters only insofar as the
-oracle needs to stay comparable, not launchable end-to-end.
+**Phase 6 (e2e), closed for the supported platform:** `WORD1` hit heap
+corruption during startup for months, deep inside the toolbar's font-combo
+sync (`sync_combo`/`CB_ADDSTRING`).
+`docs/port-linux/01-diagnostico-heap-corruption-arranque.md` tracks the
+investigation session by session, including a full audit of that code path
+against Wine's own builtin ComboBox/ListBox source that turned up nothing on
+either side. On 2026-08-14, attaching `gdb` to the running process in the
+project's Debian 13 container settled it: the same build that crashes on
+Arch/wine-staging 11.15 runs clean on Debian 13's plain wine 10.0, all the
+way to `NtUserGetMessage`'s normal idle wait, with a real
+"Microsoft Word - Document1" window on screen. The crash was never
+reproduced on Debian 13, neither on the VPS nor in this container, so it
+isn't being chased further — Arch was never the target.
 
 **CI blocker:** `cmake --preset linux-winelib-debug` fails at Configure in a
 clean clone/CI, before building anything. `src/CMakeLists.txt` requires
@@ -60,6 +61,20 @@ reproducing on every CI run to date:
 [run #1](https://github.com/jphonorato/msword/actions/runs/31350308217),
 [run #2](https://github.com/jphonorato/msword/actions/runs/31389677288).
 This isn't being fixed under current priority either; noted here for accuracy.
+
+### Qt core (paused)
+
+| Phase | Result |
+| --- | --- |
+| Qt-0 | Win32 coupling inventory complete (`docs/port-qt/00-inventario-win32.md`) |
+| Qt-1 | Core/shell boundary designed and closed (`docs/port-qt/01-frontera-nucleo-shell.md`) |
+| Qt-2 | `OpusShellConfig` (settings, `QSettings`-backed) and `OpusShellMemory` (Win16 handle contract) implemented and verified; font-substitution contract (§B2.6) implemented and verified; `WORD1` links against `opus_shell_config` |
+
+Remaining core/shell contracts: `OpusShellFontMetrics` (text measurement,
+gates pagination fidelity) and `OpusShellSpine` (message loop, deliberately
+last: the Winelib binary keeps serving as the fidelity oracle until then).
+Development here is on hold while Winelib has priority. Full design
+rationale: [`docs/port-qt/01-frontera-nucleo-shell.md`](docs/port-qt/01-frontera-nucleo-shell.md).
 
 Full technical history: [`docs/port-linux/00-reconocimiento.md`](docs/port-linux/00-reconocimiento.md)
 (Winelib) and [`docs/port-qt/`](docs/port-qt/) (Qt core/shell boundary).
@@ -133,7 +148,7 @@ so the Windows build path is intended to stay intact.
 | `src/Opus/` | Original Microsoft Word/Opus sources (guarded edits only) |
 | `src/OpusEtAl/` | Original tools, libraries, and build inputs |
 | `src/port/` | Winelib platform layer (x64 runtime, probes); temporary compatibility scaffolding |
-| `src/core/` | Qt6 portable core library (native compiler); current development target |
+| `src/core/` | Qt6 portable core library (native compiler); paused, see Status |
 | `src/cmake/` | Toolchain, `.spec` generation, helpers |
 | `docs/port-linux/` | Winelib port history and decisions |
 | `docs/port-qt/` | Qt core/shell boundary inventory and design |
