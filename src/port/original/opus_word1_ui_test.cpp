@@ -1873,13 +1873,19 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
         // Win32-native and width-correct.
         wchar_t text[40 * 20 + 1] = {};
         wchar_t* text_cursor = text;
+        const wchar_t* const text_end = text + (40 * 20 + 1);
         for (int line = 0; line != 40; ++line) {
             wchar_t line_text[32] = {};
             wsprintfW(line_text, L"original line %02d\r", line);
             const int line_length = lstrlenW(line_text);
-            for (int i = 0; i != line_length; ++i) {
-                *text_cursor++ = line_text[i];
+            // Bounds-checked against text_end rather than trusting the
+            // %02d/40-line format to keep fitting the fixed buffer forever.
+            if (text_cursor + line_length >= text_end) {
+                return fail(process, 78,
+                            "generated typing text exceeds fixed buffer");
             }
+            lstrcpyW(text_cursor, line_text);
+            text_cursor += line_length;
         }
         for (const wchar_t character : text) {
             if (character != L'\0') {
