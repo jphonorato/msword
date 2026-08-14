@@ -1195,23 +1195,53 @@ esta sesión) ni se descartó la otra candidata más débil del mismo bloque
 correcta a simple lectura — MultiByteToWideChar con `cchMultiByte=-1` ya
 incluye el terminador nulo en el conteo devuelto, sin off-by-one visible).
 
-### 4. Dónde retomar
+### 4. Hipótesis de §3 (`mirror_text`) — instrumentada y **refutada**
 
-1. Instrumentar `sync_combo` (línea 886-888): comparar `mirror_length`
-   (de `GetWindowTextLengthW`) contra el valor real devuelto por
-   `GetWindowTextW` (su valor de retorno es la cuenta de caracteres
-   copiados) — si difieren, confirma la hipótesis directamente sin
-   necesitar más spelunking de heap.
-2. Si se confirma: el fix es acotado (usar el valor de retorno de
-   `GetWindowTextW`, o sobre-reservar con margen, o cambiar a
-   `std::vector<wchar_t>` con `resize` post-escritura) — dentro de
-   `src/port/original/`, no en `Opus/` ni `OpusEtAl/` (no requiere la
-   autorización de árbol restringido de `CLAUDE.md`).
+Instrumentación temporal aplicada a `sync_combo` (línea 886-888, revertida
+después, no commiteada): en vez de escribir directamente en
+`mirror_text[0]`, se escribió en un `std::vector<wchar_t>` sobre-reservado
+con 16 celdas canario (`0xCDCD`) más allá del límite `mirror_length + 1`
+pasado como `nMaxCount` a `GetWindowTextW`, comparando además su valor de
+retorno contra `mirror_length`.
+
+```
+[sync_combo DIAG] mirror_length=5 copied=5 guard_cells_clobbered=0/16
+```
+
+**5/5 corridas, mismo resultado exacto** (los tres combos —
+style/font/size— pasan por este mismo bloque instrumentado en cada
+corrida). `GetWindowTextW` devuelve exactamente lo pedido y **no toca
+ninguna celda canario** — el par `GetWindowTextLengthW`/`GetWindowTextW`
+sobre `mirror` se comporta correctamente en esta reimplementación de Wine.
+**Hipótesis refutada, no es la fuente de la corrupción.**
+
+El crash **sigue ocurriendo** con la instrumentación puesta (1/5 corridas,
+`free(): invalid pointer`) — el bug es real y sigue vivo, solo que no es
+este overflow puntual. El resto de la cadena de stack de §3 (destructor de
+`std::wstring` dentro de `sync_combo`/`locate_source_combos`/
+`sync_mirrors`) sigue siendo la evidencia más sólida que hay; lo que se
+descarta es específicamente el mecanismo propuesto en §3, no la ubicación
+general.
+
+### 5. Dónde retomar
+
+1. **Candidata siguiente, no probada:** `combo_item()`/`wide_from_ansi()`
+   (línea ~798-857) — el otro tramo de la misma cadena de stack, revisado
+   solo por lectura en §3 (aritmética de `MultiByteToWideChar` parecía
+   correcta) pero nunca instrumentado como sí se hizo con `mirror_text`.
+   Mismo método de canario aplicaría directo.
+2. **También sin probar:** el propio `ComboEnumeration`/
+   `collect_original_combos` (línea 814-828) — aparece en la cadena de
+   stack de §3 como destructor, pero no se revisó su contenido en detalle
+   (`std::vector<HWND> combos`, callback de `EnumChildWindows`).
 3. Repetir el mismo escaneo de stack (`info proc mappings` + `x/400gx $rsp`
    + `addr2line`) en el VPS/Debian una vez que se entienda por qué ahí no
    reproduce — podría no ser "no reproduce el bug", sino "reproduce pero no
    se manifiesta como abort visible" bajo GCC 14 (layout de heap distinto).
    No verificado.
 4. La técnica de escaneo manual de stack (sin depender de `bt`/unwind roto)
-   queda como método reutilizable para cualquier crash futuro sin DWARF/CFI
-   confiable en este proyecto — no es específica de este bug.
+   y la de canario post-buffer (sin depender de ASan/valgrind, ambos ya
+   descartados en Fedora por chocar con `wine-preloader`, §7 de
+   `02-pendientes-fedora.md`) quedan como métodos reutilizables para
+   cualquier crash futuro sin DWARF/CFI confiable en este proyecto — no son
+   específicos de este bug.
