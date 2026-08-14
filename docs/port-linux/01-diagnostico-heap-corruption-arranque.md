@@ -1526,3 +1526,60 @@ no queda pendiente de reintentar en Fedora, la dirección/símbolo es
 consistente entre entornos (misma clase de dirección genérica de
 glibc), solo cambia numéricamente por ASLR/versión de glibc, no en
 naturaleza.
+
+### 10. `C_FormatLineDxa` instrumentado — resultado negativo limpio: **no se llega a ejecutar** antes del crash de este startup
+
+Retoma el candidato original de §7 ("revisar `C_FormatLineDxa` y su
+vecindario a mano"), que quedó leído pero nunca instrumentado en §9/§10
+(sesión de Fedora, antes de que hp-15 desviara el foco a
+`sync_combo`/toolbar). `src/Opus/wordtech/format.c` es árbol restringido
+(`CLAUDE.md`) — autorización explícita confirmada con el usuario antes
+de editar, sin pasar por el trámite de issue dado que la instrucción fue
+directa.
+
+**Instrumentación temporal (revertida después, no commiteada — diff
+confirmado limpio contra `HEAD`):**
+
+1. Log de entrada en cada llamada (contador + `ww`/`doc`/`cp`/`dxa`),
+   antes de cualquier `return` temprano.
+2. Log en cada uno de los dos `return` tempranos de la función (guard de
+   reentrancia `vrf.fInFormatLine`, línea ~540; cache-hit "Just did this
+   one", línea ~591) y en el punto donde el código sigue de largo hacia
+   la ejecución completa.
+3. Canario de verdad (no de celdas, sino contra la asignación real del
+   heap) en el único punto de la función que escribe en el buffer
+   compartido `vhgrpchr` **sin chequeo de rango** — el comentario del
+   propio código lo dice explícitamente: `/* Note: no need to check for
+   sufficient space */` (línea ~2601, el terminador `chrmEnd` de fin de
+   línea). Se comparó `bchrBreak + cbCHR` (lo que el código está por
+   escribir) contra `CbOfH(vhgrpchr)` (tamaño real asignado al handle,
+   vía `OpusCbOfH` — no `vbchrMax`, que es solo la cuenta que lleva el
+   propio código y podría estar desincronizada de la realidad bajo un
+   bug de tamaño LP64 como el ya confirmado en `bitapp.h:29`).
+
+**Resultado, 5/5 corridas (dos tandas, la primera solo con el canario
+del punto 3, la segunda añadiendo también el log de entrada/salida del
+punto 1-2): cero líneas DIAG en las diez corridas combinadas.** El
+crash ocurre con la firma y el punto de arranque de siempre
+(`DwmSetWindowAttribute` stub → `free()`/`SIGABRT`), confirmando que el
+pipeline de captura funciona (se ve todo el resto de la salida de Wine
+normalmente) — la ausencia de DIAG no es un problema de instrumentación.
+
+**Conclusión: `C_FormatLineDxa` nunca se llama** durante este arranque
+concreto (documento en blanco recién abierto, sin tipeo ni interacción)
+— ni siquiera entra a evaluar el guard de reentrancia, que es la primera
+línea ejecutable de la función. Coherente con que no hay texto que
+paginar todavía: el crash ocurre enteramente durante la construcción de
+la ventana/toolbar (la cadena `sync_combo`/`locate_source_combos` de §3,
+agotada en §4/§6/§7), antes de que el documento en blanco necesite su
+primer pase de formateo de línea.
+
+**Esto no descarta bugs reales dentro de `C_FormatLineDxa`** — solo
+descarta que sea la causa de *este* crash de arranque específico. Sigue
+siendo candidata legítima para cualquier crash que involucre paginación
+real (con texto tipeado), camino que `opus_word1_ui_test --typing`/
+`--font-typing` (`02-pendientes-fedora.md` §5, nunca ejecutado) sí
+alcanzaría — pero es un bug distinto, con un repro distinto, no el que
+este documento viene rastreando desde §1.
+
+**Build restaurado** después de revertir ambas tandas de instrumentación.

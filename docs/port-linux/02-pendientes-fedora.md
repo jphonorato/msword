@@ -157,14 +157,22 @@ lo hay.
 
 ---
 
-## 5. Alternativa/complemento: disparar `C_FormatLineDxa` con `opus_word1_ui_test`
+## 5. Disparar `C_FormatLineDxa` con `opus_word1_ui_test` — ahora confirmado necesario, no solo "puede dar mejor repro"
 
 Ahora que `opus_word1_ui_test` compila y linkea (`6ff2b53`, ver §0), está
 disponible el camino que §11.1 dejó bloqueado: usar `--typing`/
 `--font-typing` para forzar una ruta de formateo de línea real en vez de
-depender de que el arranque en vacío la ejercite por su cuenta. Puede dar
-una reproducción más determinista o más rápida del crash que lanzar
-`WORD1` sin interacción.
+depender de que el arranque en vacío la ejercite por su cuenta.
+
+**Confirmado en hp-15 cont. (`01-...md` §10): con el arranque en vacío
+`C_FormatLineDxa` nunca se llama** — instrumentado con log de entrada,
+cero invocaciones en 5/5 corridas del crash de §1. El crash de este
+documento (arranque, documento en blanco) ocurre enteramente en la
+construcción de ventana/toolbar, no en formateo de línea. Esta vía deja
+de ser "puede dar mejor repro" y pasa a ser **la única forma de ejercitar
+`C_FormatLineDxa` en absoluto** — necesaria si se quiere seguir esa
+función como candidata (para un bug distinto al de §1, con texto real
+tipeado), no como atajo para reproducir el crash de arranque.
 
 ---
 
