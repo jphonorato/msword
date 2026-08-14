@@ -2290,3 +2290,85 @@ antes); extraer/generar el archivo de supresiones de Wine; diagnosticar el
 código de salida 137 del intento 3; probar `AddressSanitizer` como
 alternativa más liviana a `valgrind` (mencionado como idea, no evaluado —
 incierto si winegcc/Wine toleran bien el modelo de shadow memory de ASan).
+
+### 18. `valgrind` — infraestructura completa construida, conclusión definitiva: incompatible con este `winex11.drv` en este entorno, no es un problema de tuning
+
+Instrucción explícita: "apply whatever is necessary to make valgrind
+available and continue". Se construyó la infraestructura que faltaba y se
+hicieron 2 intentos más (4 y 5) con ella, más una corrida de control nativa
+que aísla la causa real.
+
+**Infraestructura construida:**
+- **`WINEPREFIX` desechable, pre-calentado fuera de `valgrind`:** `wineboot
+  --init` corrido nativamente (sin `valgrind`) en un prefijo nuevo, luego
+  snapshot vía `tar` a un `.tar.gz` "pristine" restaurable en segundos. Esto
+  elimina de la corrida bajo `valgrind` toda la fase lenta de arranque
+  (`wineboot`/registro/`explorer`) que dominaba el intento 1 de §17.
+- **Archivo de supresiones real de Wine:** no viene empaquetado en este Arch
+  (confirmado, §17); obtenido de
+  [`austin987/wine-valgrind-scripts`](https://github.com/austin987/wine-valgrind-scripts)
+  (mantenedor de Wine, colección de supresiones basada en los scripts
+  originales de Dan Kegel) — `valgrind-suppressions-external` (ruido de
+  drivers nvidia/mesa, glibc, etc.) + `valgrind-suppressions-ignore`
+  (comportamiento intencional de Wine), combinados en un solo archivo.
+- **`--vex-iropt-register-updates=allregs-at-mem-access`:** el flag que el
+  propio `vg-wrapper.sh` de esa colección usa para correr Wine bajo
+  `valgrind` — atenúa falsos positivos por el modelo de actualización de
+  registros de VEX (el motor de instrumentación de `valgrind`) frente a los
+  cambios de contexto manuales de Wine.
+- **Supresión propia adicional**, escrita a mano a partir de la evidencia
+  directa de las 3 corridas de §17 (no del archivo externo, que probablemente
+  es anterior a este nombre de función): 5 entradas `Memcheck:Addr{1,2,4,8,16}`
+  con `fun:__wine_syscall_dispatcher` — el trampolín exacto que producía
+  el 100% de los falsos positivos observados hasta ahora.
+
+**Intento 4** (prefijo pre-calentado nuevo, `LIBGL_ALWAYS_SOFTWARE=1`, toda
+la infraestructura anterior): **mismo `nodrv_CreateWindow` que en los
+intentos 2/3 de §17**, esta vez con un prefijo genuinamente nunca tocado por
+`valgrind` antes — **refuta la hipótesis de §17** de que un `WINEPREFIX`
+contaminado por el intento 1 (matado a mitad de arranque) fuera la causa.
+
+**Intento 5** (mismo prefijo pristine restaurado de nuevo, **sin ningún
+override de GL/EGL** esta vez — para aislar si el propio
+`LIBGL_ALWAYS_SOFTWARE`/override de vendor era la causa real —, Xvfb
+reiniciado con `+iglx` por si el rechazo de contextos GLX indirectos por
+defecto en Xvfb importaba): **el mismo `nodrv_CreateWindow` otra vez**, en
+menos de 3 minutos reales. Esto descarta tanto el override de vendor EGL
+como `LIBGL_ALWAYS_SOFTWARE` como causa — ninguno de los dos estaba presente
+esta vez.
+
+**Corrida de control decisiva:** el mismo prefijo pristine restaurado una
+vez más, mismo Xvfb (`+iglx`), pero **sin `valgrind`** — `wine
+WORD1.exe.so` directo. Resultado: **llega limpio al crash real conocido**
+(`elf_search_auxv can't find symbol in module` — el manejador de crash de
+Wine intentando symbolizar tras el `SIGABRT` de `sync_combo`, la misma firma
+de §15/§16). Es decir: **con exactamente el mismo prefijo y el mismo Xvfb,
+quitar `valgrind` es lo único que hace falta para que la creación de ventana
+funcione.**
+
+**Conclusión definitiva de esta serie de intentos (5 en total entre §17 y
+este apartado): no es un problema de configuración, supresiones, prefijo ni
+variables de entorno de GL — `valgrind` en sí mismo rompe la carga de
+`winex11.drv` en la combinación wine-staging 11.15 / Xvfb / `valgrind`
+3.25.1 de este entorno.** La causa raíz exacta no se investigó más allá de
+aislar que es `valgrind` el factor (no se probó, por ejemplo, si es
+específicamente la extensión `MIT-SHM` de X11 — un punto de fricción
+conocido e independiente entre `valgrind` y memoria compartida de X, y una
+hipótesis razonable dado que `winex11.drv` típicamente usa `XShm` al
+inicializar — ni si un servidor X real en vez de `Xvfb` cambia el
+resultado).
+
+**Esto cierra el camino de `valgrind` para esta investigación, con
+evidencia sólida en vez de una sospecha.** La recomendación de §17 se
+mantiene, ahora con más peso: seguir con la instrumentación manual nativa de
+§15/§16 (ya localizó el bug en `sync_combo`/`CB_ADDSTRING`, franja de índice
+14-15 de 1395, en corridas de menos de un segundo, sin ninguna fricción de
+herramientas). Si en el futuro se quiere retomar `valgrind`, el punto de
+partida ya no es "arréglalo" sino una pregunta más específica y acotada:
+¿por qué exactamente rompe `winex11.drv` — `XShm`, el modelo de hilos de
+Wine, u otra cosa? — antes de invertir más tiempo.
+
+**No perseguido esta sesión:** aislar `MIT-SHM` como causa (probar
+`Xvfb ... -extension MIT-SHM` o equivalente); probar contra un servidor X
+real; AddressSanitizer como alternativa (sigue sin evaluar, mencionado en
+§17).
