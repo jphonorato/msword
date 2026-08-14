@@ -2202,3 +2202,91 @@ como plan, no ejecutado); confirmar C contra `open.c`; determinar si la
 franja 14-15 se mantiene bajo un juego de fuentes del sistema distinto
 (dependería de qué haya entre `fc-list` y estas posiciones, así que no es
 necesariamente estable entre máquinas).
+
+### 17. `valgrind` — tres intentos, ninguno alcanza el crash; conclusión: no viable en este entorno sin más trabajo de infraestructura
+
+Retoma el plan que cerraba §16: correr bajo `valgrind` (3.25.1, ya disponible
+en este entorno) para atrapar la escritura real fuera de límites en vez de
+seguir leyendo la detección tardía de glibc.
+
+**Intento 1 — sin mitigaciones, `--track-origins=yes`, timeout 240s:**
+`valgrind --tool=memcheck --track-origins=yes --trace-children=yes
+--error-exitcode=99 wine WORD1.exe.so`. Resultado: **timeout, no llega a
+crashear.** El log más grande (proceso `WORD1.exe.so` real, distinguible por
+`Command:` en el log) muestra que en 240s reales solo avanzó hasta
+`NtQueryDirectoryFile`/registro (arranque de `wineboot`/`explorer`), sin
+llegar siquiera a crear la ventana de la aplicación. La carga de
+`libnvidia-glcore`/`libGLX_nvidia`/`libEGL_nvidia` (el driver propietario de
+la GPU de este equipo — ver `CLAUDE.md`, GTX 1050 Max-Q) bajo instrumentación
+genera **93.442 allocs / 49.463 frees** solo en sus constructores de carga,
+dominando el tiempo disponible. Los 6 "Invalid write/read" que sí aparecieron
+apuntan todos a `Address 0x... is on thread 1's stack`, originados en
+`__wine_syscall_dispatcher` — el trampolín de cambio de stack Unix↔PE de Wine
+en su despachador de syscalls, un falso positivo de `valgrind` frente a Wine
+**ampliamente documentado** (Wine cambia el puntero de pila a mano al cruzar
+esa frontera; `valgrind` no lo entiende y lo marca como acceso inválido).
+No hay archivo de supresiones de Wine instalado en este sistema
+(`find / -iname "*wine*.supp"` → nada; el paquete `wine-staging` de este
+Arch no lo incluye) para filtrar este ruido.
+
+**Intento 2 — forzando el vendor EGL a mesa para evitar la carga del blob
+nvidia:** `__EGL_VENDOR_LIBRARY_FILENAMES=.../50_mesa.json
+LIBGL_ALWAYS_SOFTWARE=1`, `--leak-check=no` (menos overhead), timeout 1100s
+en background. Resultado: **mucho más rápido** — en ~2 minutos reales llegó
+hasta código real de creación de ventana/menú (`NtUserCreateWindowEx`,
+`calc_menu_bar_size`, `DrawTextW` — muy por delante de donde llegó el intento
+1) — pero murió con un fallo **distinto y ajeno al bug perseguido**:
+`nodrv_CreateWindow` — *"Application tried to create a window, but no driver
+could be loaded"* / *"The explorer process failed to start"* — seguido del
+propio manejo de error de Opus, `Win32 error 1400` en `init2.c:324`. Forzar
+el vendor EGL a mesa rompió la carga de `winex11.drv` antes de que Word
+llegara a la ventana de documento — un problema de entorno nuevo, inducido
+por la propia mitigación, no relacionado con `sync_combo`.
+
+**Intento 3 — solo `LIBGL_ALWAYS_SOFTWARE=1`, sin forzar el vendor EGL
+(para aislar si el problema del intento 2 era el override de vendor o
+otra cosa):** mismo resultado — **el mismo `nodrv_CreateWindow`**, esta vez
+en menos de 90s reales (no timeout; el proceso murió solo, con un código de
+salida 137 sin explicación clara — no hay evidencia de OOM en `dmesg`/dmesg
+del kernel, memoria disponible de sobra según `free -h`). Que el fallo se
+repita **sin** el override de vendor EGL refuta que ese override fuera la
+causa; el sospechoso más plausible es que el intento 1, al morir por
+`timeout` (`SIGTERM`) a mitad de la inicialización de `wineboot`/`explorer`,
+dejó el `WINEPREFIX` compartido en un estado a medio escribir (registro,
+locks, estado de `explorer.exe`) que los intentos 2 y 3 heredaron —
+**no verificado**, solo la explicación más consistente con la evidencia
+disponible.
+
+**Conclusión de esta sesión: `valgrind` no es viable aquí sin trabajo de
+infraestructura adicional, no intentado.** Tres corridas, cero alcanzaron el
+punto de crash real (`sync_combo`/`CB_ADDSTRING`). Los únicos "Invalid
+write/read" observados son el falso positivo conocido de
+`__wine_syscall_dispatcher`. Para que este camino sea viable haría falta,
+como mínimo: (1) un `WINEPREFIX` dedicado y desechable para corridas de
+`valgrind` (para que un intento matado a mitad de camino no envenene el
+siguiente); (2) el archivo de supresiones oficial de Wine
+(`tools/valgrind/wine.supp` en el árbol fuente de Wine — no viene empaquetado
+en este Arch, habría que extraerlo del código fuente de wine-staging 11.15 o
+construirlo a mano) para eliminar el ruido de `__wine_syscall_dispatcher`;
+(3) entender por qué evitar el blob nvidia rompe la carga del driver de
+ventana — no se investigó si es el propio `LIBGL_ALWAYS_SOFTWARE`, el
+`WINEPREFIX` contaminado, o alguna otra interacción.
+
+**Recomendación para la próxima sesión, dado el costo ya incurrido:** no
+insistir con `valgrind` como primer paso. La técnica de instrumentación
+manual de §15/§16 (`fprintf`/`backtrace()` + `addr2line`, sin `gdb`, sin
+`valgrind`) ya localizó el bug con precisión razonable (`sync_combo`,
+bucle `CB_ADDSTRING`, franja de índice 14-15 de 1395) en corridas nativas de
+menos de un segundo. Más rendimiento por el mismo esfuerzo probablemente
+venga de (a) auditar a mano el código de `sync_combo`/`combo_item` y lo que
+hace Wine internamente en su implementación *builtin* de `COMBOBOX`/listbox
+alrededor de `CB_ADDSTRING`/`CB_RESETCONTENT` en ese rango de operaciones, o
+(b) si se retoma `valgrind`, hacerlo solo después de resolver (1) y (2)
+arriba, no como exploración rápida.
+
+**No perseguido esta sesión:** crear un `WINEPREFIX` dedicado para
+`valgrind` (cambio de infraestructura más grande, no intentado sin acordarlo
+antes); extraer/generar el archivo de supresiones de Wine; diagnosticar el
+código de salida 137 del intento 3; probar `AddressSanitizer` como
+alternativa más liviana a `valgrind` (mencionado como idea, no evaluado —
+incierto si winegcc/Wine toleran bien el modelo de shadow memory de ASan).
