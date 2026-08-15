@@ -1428,6 +1428,20 @@ if(OPUS_WINELIB_BUILD)
     # GUI subsystem + Unicode entry (wWinMain).  winecrt0 looks for WinMain
     # unless -municode selects the wide entry point.
     target_link_options(WORD1 PRIVATE -mwindows -municode)
+
+    # Guard the setjmp/longjmp ABI pinning done by opus_x64_setjmp.cpp. Wine
+    # ships 14 import archives exporting Microsoft-x64 _setjmp/_setjmpex/
+    # longjmp (ntdll among them), so a toolchain or link-order change could
+    # recapture either half; this turns that into a build error instead of a
+    # wild write during layout. winegcc emits the real ELF next to the launcher
+    # script, hence the .so suffix on the target file.
+    add_custom_command(TARGET WORD1 POST_BUILD
+        COMMAND "${CMAKE_COMMAND}"
+            "-DWORD1_BINARY=$<TARGET_FILE:WORD1>.so"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/AssertNoWineCrtSetjmp.cmake"
+        COMMENT "Checking WORD1 does not import Wine's MS-x64 setjmp/longjmp"
+        VERBATIM
+    )
 endif()
 set_target_properties(WORD1 PROPERTIES
     FOLDER "Original Opus x64/product"
@@ -1577,7 +1591,11 @@ endif()
 # line (and, for the 8 UI variants, confirm a graphical session/Xvfb is
 # still provided) and let them gate CI like the tests above.
 add_test(NAME word1_port_smoke_test COMMAND $<TARGET_FILE:WORD1> --self-test)
-set_tests_properties(word1_port_smoke_test PROPERTIES LABELS "word1_startup_blocked")
+# TIMEOUT matches the 8 siblings below. It used to be absent, which stayed
+# invisible only because WORD1 crashed during startup; now that it reaches a
+# healthy idle, --self-test has no success condition to end on and a full ctest
+# run would park here until ctest's 1500 s default.
+set_tests_properties(word1_port_smoke_test PROPERTIES TIMEOUT 20 LABELS "word1_startup_blocked")
 add_test(NAME opus_word1_ui_test
     COMMAND $<TARGET_FILE:opus_word1_ui_test> $<TARGET_FILE:WORD1>
 )

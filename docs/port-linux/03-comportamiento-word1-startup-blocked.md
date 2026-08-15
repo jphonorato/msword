@@ -394,43 +394,91 @@ recuperan el filtro por PID exacto que el §26 prefiere.
 
 Estable en 3 ejecuciones consecutivas (2.84 / 2.97 / 2.83 s).
 
-La etiqueta `word1_startup_blocked` pasa de **0/9** a **4/8** (sin contar
-`word1_port_smoke_test`, ver más abajo):
+La etiqueta `word1_startup_blocked` pasa de **0/9** a **5/9** (cifras
+tras la revisión, ver "Cierre de revisión" abajo):
 
 ```
-1/8 Test #11: opus_word1_ui_test ...................   Passed    0.37 sec
-2/8 Test #12: opus_word1_clipboard_shortcut_test ...   Passed    0.56 sec
-3/8 Test #13: opus_word1_typing_test ...............   Passed   11.24 sec
-4/8 Test #14: opus_word1_interaction_test ..........***Failed    0.91 sec
-5/8 Test #15: opus_word1_selection_test ............***Failed    1.96 sec
-6/8 Test #16: opus_word1_font_typing_test ..........***Failed    0.25 sec
-7/8 Test #17: opus_word1_about_test ................   Passed    1.35 sec
-8/8 Test #18: opus_word1_save_as_test ..............***Failed    6.39 sec
-50% tests passed, 4 tests failed out of 8
+1/9 Test #10: word1_port_smoke_test ................   Passed    1.56 sec
+2/9 Test #11: opus_word1_ui_test ...................   Passed    1.82 sec
+3/9 Test #12: opus_word1_clipboard_shortcut_test ...   Passed    2.02 sec
+4/9 Test #13: opus_word1_typing_test ...............   Passed   12.70 sec
+5/9 Test #14: opus_word1_interaction_test ..........***Failed    2.52 sec
+6/9 Test #15: opus_word1_selection_test ............***Failed    3.39 sec
+7/9 Test #16: opus_word1_font_typing_test ..........***Failed    1.69 sec
+8/9 Test #17: opus_word1_about_test ................   Passed    2.78 sec
+9/9 Test #18: opus_word1_save_as_test ..............***Failed    7.83 sec
+56% tests passed, 4 tests failed out of 9
 ```
 
 Los 4 que siguen fallando ya no mueren por el AV: fallan rápido y con
 mensaje propio. Son el material de las Tasks 4–5.
 
-Gating: 7/7 verdes (`opus_original_sttb_test`, `opus_original_plc_test`,
-`opus_sdm_cab_test`, `opus_original_command_test`,
-`opus_shell_memory_foreign_test`, `opus_shell_config_test`,
-`opus_shell_font_substitution_test`) más `opus_original_strtbl_test`.
+Gating: 8/8 verdes (`opus_original_strtbl_test`,
+`opus_original_sttb_test`, `opus_original_plc_test`, `opus_sdm_cab_test`,
+`opus_original_command_test`, `opus_shell_memory_foreign_test`,
+`opus_shell_config_test`, `opus_shell_font_substitution_test`).
 
-**Dos cosas pendientes, ninguna causada por este fix:**
+### Cierre de revisión (2026-08-15): las dos mitades del par, y el guard
 
-1. `opus_x64_runtime_test` (gating) **se cuelga** en el tip de la rama:
-   ejecutado directamente termina en `timeout 40` sin imprimir una sola
-   línea (`rc=124`). No lo provoca esta ronda — el binario de ayer
-   (05:46, anterior a `5bebdd9` y a este fix) se colgaba igual, y ni
-   `opus_x64_setjmp.cpp` ni el cambio del harness entran en ese target.
-   Reconstruirlo no lo arregla. Hay que investigarlo aparte.
-2. `word1_port_smoke_test` (`WORD1 --self-test`) no tiene propiedad
-   `TIMEOUT` en `CMakeLists.txt:1580`, a diferencia de sus 8 hermanos.
-   Mientras WORD1 se moría solo eso no se notaba; ahora que sobrevive,
-   un `ctest` completo se queda ahí hasta el default de 1500 s.
-   Recomendado (no hecho aquí, queda fuera del alcance de esta ronda):
-   añadirle `TIMEOUT 20` igual que a los demás.
+La revisión levantó dos cosas importantes; ambas corregidas.
+
+**1. `longjmp` seguía atado a glibc solo por suerte de link order.**
+El fix original fijaba `_setjmp` por definición pero dejaba `longjmp`
+a lo que decidiera el enlazador. No es una preocupación teórica: en
+este contenedor hay **14 archivos de import de Wine** que definen
+`longjmp`, `_setjmp` y `_setjmpex` — `libmsvcrt.a`, `libmsvcr70..120`,
+`libucrtbase.a`, `libvcruntime140.a`, `libntdll.a`, `libntoskrnl.a`,
+tanto en `x86_64-unix` como en `x86_64-windows`. `libntdll.a` lo enlaza
+cualquier target winelib. Pasarle un `jmp_buf` de glibc al `longjmp`
+Microsoft-x64 de Wine es la misma catástrofe silenciosa en la otra
+dirección.
+
+`opus_x64_setjmp.cpp` fija ahora también `longjmp`, como salto de cola
+a `_longjmp@PLT`. `_longjmp` es un nombre que **ninguno** de esos 14
+archivos define (verificado), así que es un destino seguro; y en glibc
+`longjmp`, `_longjmp` y `siglongjmp` son alias débiles de un mismo
+`__libc_siglongjmp` (misma dirección `0x3fab0` en `libc.so.6`), o sea
+que el reenvío es exacto.
+
+Comprobación en el binario:
+
+```
+                 U __sigsetjmp@GLIBC_2.2.5
+                 U _longjmp@GLIBC_2.2.5
+000000000008bd34 T _setjmp
+000000000008bd3b T longjmp
+```
+
+**2. Guard en tiempo de build.** `src/cmake/AssertNoWineCrtSetjmp.cmake`
+corre como `POST_BUILD` de WORD1 y falla el build si reaparece
+cualquier thunk `__imp_` de la familia (`__imp__setjmp`,
+`__imp__setjmpex`, `__imp_longjmp`, `__imp__longjmp`,
+`__imp_siglongjmp`). Así, un cambio futuro de toolchain o de orden de
+enlace sale como error de build y no como escritura salvaje durante
+layout.
+
+El guard está probado en los dos sentidos, no solo escrito:
+
+```
+NEGATIVO: binario fabricado con `void *__imp__setjmp = 0;`
+  -> CMake Error ... imports the Microsoft-x64 CRT setjmp/longjmp
+     family from Wine: __imp__setjmp        (rc=1)
+POSITIVO: bin/WORD1.exe.so                  (rc=0)
+CABLEADO: ninja -t commands WORD1 | grep AssertNoWineCrtSetjmp.cmake  -> presente
+```
+
+**3. `word1_port_smoke_test` ya tiene `TIMEOUT 20`**
+(`CMakeLists.txt:1580`), igual que sus 8 hermanos. Le faltaba, y
+mientras WORD1 moría solo eso no se notaba. Con el par setjmp/longjmp
+completo el test además **pasa** (1.56 s), no solo deja de colgarse.
+
+**Sigue pendiente, y no lo causa este fix:**
+`opus_x64_runtime_test` (gating) **se cuelga** en el tip de la rama:
+ejecutado directamente termina en `timeout 40` sin imprimir una sola
+línea (`rc=124`). El binario de ayer (05:46, anterior a `5bebdd9` y a
+este fix) se colgaba igual, no contiene ningún símbolo `setjmp`, y ni
+`opus_x64_setjmp.cpp` ni el cambio del harness entran en ese target.
+Reconstruirlo no lo arregla. Hay que investigarlo aparte.
 
 **Alcance real del bug.** `SetJmp` no se usa solo en layout: también en
 `GRSPEC.C`, `eldde.c`, `fieldpic.c`, `fltexp.c`, `ffread.c`,
@@ -455,9 +503,11 @@ Rama `fix/winelib-startup-blocked` (no está en `main`). Plan:
 Build/test solo en debian13 contra `/home/pablo/build-debian13-verify`,
 `DISPLAY=:59`. No usar el `--preset` del host.
 
-Task 3 **cerrada** en Fix round 3: el AV era `_setjmp` con ABI
-Microsoft-x64 pisando `*vhpllbs`. `opus_word1_about_test` pasa y la
-etiqueta va 4/8. Tasks 1–2 hechas.
+Task 3 **cerrada** en Fix round 3 (+ cierre de revisión): el AV era
+`_setjmp` con ABI Microsoft-x64 pisando `*vhpllbs`. Las dos mitades del
+par (`_setjmp` y `longjmp`) están fijadas a System V por definición, con
+guard de build que lo verifica. `opus_word1_about_test` pasa y la
+etiqueta va 5/9. Tasks 1–2 hechas.
 
 Siguiente:
 
@@ -465,5 +515,4 @@ Siguiente:
   `font-typing`, `save-as`). Ya fallan rápido y con mensaje propio;
   empezar por leer ese mensaje, no por asumir el AV viejo.
 - Aparte y sin relación con Task 3: `opus_x64_runtime_test` (gating)
-  se cuelga sin imprimir nada, y `word1_port_smoke_test` no tiene
-  `TIMEOUT` (`CMakeLists.txt:1580`). Detalle en Fix round 3.
+  se cuelga sin imprimir nada. Detalle en Fix round 3.

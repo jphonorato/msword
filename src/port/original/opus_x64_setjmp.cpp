@@ -22,10 +22,25 @@
  * no longer generates the msvcrt import thunk and every caller reaches glibc's
  * System V implementation.  It has to be a tail jump: a C wrapper would leave
  * a stack frame behind that no longer exists by the time longjmp returns into
- * it.  glibc's own `_setjmp` is exactly `__sigsetjmp(env, 0)`, and `longjmp`
- * already binds to glibc (`longjmp@GLIBC_2.2.5`), so the pair stays matched --
- * savemask 0 means longjmp finds `__mask_was_saved` clear and skips the
- * sigprocmask restore.
+ * it.  glibc's own `_setjmp` is exactly `__sigsetjmp(env, 0)`.
+ *
+ * `longjmp` is pinned the same way, and for the same reason.  It is not enough
+ * that the current link happens to resolve it to glibc: on this container 14
+ * Wine import archives define `longjmp` (and `_setjmp`, and `_setjmpex`)
+ * alongside msvcrt -- including `libntdll.a`, which every winelib target
+ * links.  Feeding a glibc `jmp_buf` to Wine's Microsoft-x64 `longjmp` is the
+ * same silent catastrophe in the other direction, so leaving that half to
+ * link order would just re-arm the trap.  None of those archives define
+ * `_longjmp`, which makes it a safe forwarding target; in glibc `longjmp`,
+ * `_longjmp` and `siglongjmp` are all weak aliases of one `__libc_siglongjmp`
+ * (verified: same address in `libc.so.6`), so the forward is exact.  Behaviour
+ * stays data-driven through `env->__mask_was_saved`, which `__sigsetjmp(env,
+ * 0)` leaves clear, so the sigprocmask restore is skipped as it should be.
+ *
+ * `src/cmake/AssertNoWineCrtSetjmp.cmake` runs after the link and fails the
+ * build if any `__imp_` thunk for this family comes back, so a future
+ * toolchain or link-order change surfaces as a build error instead of a wild
+ * write during layout.
  */
 
 #if defined(__GNUC__) && !defined(_MSC_VER) && defined(__x86_64__)
@@ -39,6 +54,14 @@ __asm__(
     "\txorl %esi, %esi\n"
     "\tjmp __sigsetjmp@PLT\n"
     "\t.cfi_endproc\n"
-    "\t.size _setjmp, .-_setjmp\n");
+    "\t.size _setjmp, .-_setjmp\n"
+
+    "\t.globl longjmp\n"
+    "\t.type longjmp, @function\n"
+    "longjmp:\n"
+    "\t.cfi_startproc\n"
+    "\tjmp _longjmp@PLT\n"
+    "\t.cfi_endproc\n"
+    "\t.size longjmp, .-longjmp\n");
 
 #endif
