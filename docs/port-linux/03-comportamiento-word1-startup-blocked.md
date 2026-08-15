@@ -128,3 +128,49 @@ Pendiente de producto, fuera de este ítem: por qué
 `CreateFontIndirect` falla (Arial 10 en la cinta se ve; el documento
 cae a `SYSTEM_FONT`); el `#32770` y el About se pintan negros en este
 Xvfb/Wine.
+
+### Fix round (2026-08-15): sitio LOADFONT + `OpusShellCharWidths`
+
+De los tres sitios que ponen `matFont` en `LOADFONT.C`, el que disparó
+antes del MessageBox es el **3** (camino Linux, líneas 428-459):
+`OpusShellCharWidths(...) != 0` → `LSystemFontErr`.
+
+Instrumentación temporal de `OpusShellCharWidths` (luego retirada):
+
+```
+OpusShellCharWidths ftc=2 ps=0 catr=0 chFirst=0 cch=256 rc=-1 why=bad-px
+```
+
+No es `CreateFontIndirect` NULL (sitio 1) ni `OurSelectObject`/`FSelectFont`
+(sitio 2): se llegó a pedir anchos. La petición de arranque es Helv
+(`ftc=2`) con `hps==0`. `RawFontFor` hacía `px = MulDiv(ps/2, 96, 72)`
+y rechazaba `px<=0`. Ese `-1` es el que pone `matFont` y deja
+`vcInMessageBox=1`.
+
+Cambio en `src/core/src/OpusShellFontMetrics.cpp` (sin tocar `src/Opus/`):
+
+- `hps==0` se mide como 10 pt (`hpsDefault`), igual que
+  `CreateFontIndirect(lfHeight==0)` usa altura por defecto.
+- WORD1 no tiene `QGuiApplication`. Crear una en el hilo Wine cuelga el
+  pump o mata el proceso. Sin app, `QRawFont` no se construye: se
+  rellenan los anchos desde la tabla oráculo ya medida
+  (`opus_shell_font_metrics_oracle_table.h`, Helv 10 pt).
+
+Tras ese éxito, el MessageBox de fuente **no aparece**, pero WORD1
+sigue sin dejar About verde: el init continúa y cae en
+`FInsertInPl` (`clsplc.c:829`) desde `C_PushLbs` (`layout2.c:1430`),
+write AV `0xC0000005` vía `HpInPl` (`opus_asm_resn2_pl.cpp`).
+`ctest -R opus_word1_about_test` queda:
+
+```
+Help About process exit=0x0 mainWindow=0 responsive=0 stage=0
+Help About dialog did not appear
+```
+
+(debian13, `/home/pablo/build-debian13-verify`, `DISPLAY=:59`)
+
+Una vez con `QGuiApplication` en el hilo Wine el diálogo About
+*sí* se creó (`OpusSdmDialog`) y el fallo pasó a “did not finish
+initializing” (el host no respondía `WM_NULL`). Ese camino no se dejó:
+Qt en el hilo Wine no es viable. El crash de `FInsertInPl` es el
+siguiente bloqueo; no es un quinto skip del MessageBox.

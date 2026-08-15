@@ -77,6 +77,17 @@ int main(int argc, char **argv) {
         Check(m.dxuFixed == 0, "Tms Rmn no deberia ser dxuFixed");
     }
 
+    /* hps==0 (ps==0): GDI usa altura por defecto; el contrato no debe
+       fallar -- LOADFONT trata el -1 como matFont y bloquea la UI. */
+    {
+        OpusFontKey key{2, 0, 0};
+        unsigned short w = 0xFFFF;
+        Check(OpusShellCharWidths(&key, 'A', 1, &w) == 0,
+              "OpusShellCharWidths(Helv, ps=0) deberia medir a 10pt");
+        Check(w > 0 && w != 0xFFFF,
+              "OpusShellCharWidths(Helv, ps=0) ancho degenerado");
+    }
+
     /* Falla controlada: ftc fuera de rango, catr no soportado, args
        invalidos -- ninguno debe abortar ni devolver 0 exito. */
     {

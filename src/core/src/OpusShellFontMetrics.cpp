@@ -43,10 +43,15 @@
 #include "OpusShellFontMetrics.h"
 
 #include "OpusShellFontSubstitution.h"
+#include "opus_shell_font_metrics_oracle_table.h"
 
+#include <QCoreApplication>
 #include <QFont>
 #include <QRawFont>
 #include <QString>
+#include <QThread>
+
+#include <cstring>
 
 namespace {
 
@@ -73,32 +78,98 @@ int MulDivRound(int a, int b, int c) {
         (static_cast<long long>(a) * b + c / 2) / c);
 }
 
+bool CanUseRawFont() {
+    QCoreApplication *app = QCoreApplication::instance();
+    return app != nullptr && QThread::currentThread() == app->thread();
+}
+
+int PixelSizeFor(const OpusFontKey *key) {
+    int px = MulDivRound(key->ps / 2, kScreenDpi, 72);
+    /* CreateFontIndirect(lfHeight==0) uses a default face height. Startup
+       asks for Helv at hps==0; returning -1 here sets matFont and bricks
+       every later WM_COMMAND. Measure at 10pt (hpsDefault) instead. */
+    if (px <= 0) {
+        px = MulDivRound(10, kScreenDpi, 72);
+    }
+    return px;
+}
+
 /* Construye el QRawFont validado en §B2.3/§B2.4 para (ftc, ps). Devuelve
    un QRawFont inválido (isValid() == false) si ftc/catr no están
    soportados o el archivo de sustitución no existe -- el llamador
    traduce eso a "falla controlado", no lo desreferencia. */
-QRawFont RawFontFor(const OpusFontKey *key, int *pxOut) {
+QRawFont RawFontFor(const OpusFontKey *key, int *pxOut, const char **whyOut) {
     QRawFont invalid;
-    if (key == nullptr || key->catr != 0) {
-        return invalid;  /* limitación 2 */
+    if (key == nullptr) {
+        if (whyOut) *whyOut = "null-key";
+        return invalid;
+    }
+    if (key->catr != 0 && CanUseRawFont()) {
+        if (whyOut) *whyOut = "catr";
+        return invalid;  /* limitación 2: solo con QGuiApplication */
     }
     const char *eraName = EraNameFromFtc(key->ftc);
     if (eraName == nullptr) {
+        if (whyOut) *whyOut = "ftc";
         return invalid;  /* limitación 1 */
     }
     const char *file = OpusShellSubstituteFontFile(eraName);
     if (file == nullptr) {
+        if (whyOut) *whyOut = "no-file";
         return invalid;
     }
-    int px = MulDivRound(key->ps / 2, kScreenDpi, 72);
+    int px = PixelSizeFor(key);
     if (px <= 0) {
+        if (whyOut) *whyOut = "bad-px";
         return invalid;
     }
     if (pxOut != nullptr) {
         *pxOut = px;
     }
-    return QRawFont(QString::fromUtf8(file), static_cast<qreal>(px),
-                     QFont::PreferFullHinting);
+    if (!CanUseRawFont()) {
+        if (whyOut) *whyOut = "no-gui-app";
+        return invalid;
+    }
+    QRawFont rf(QString::fromUtf8(file), static_cast<qreal>(px),
+                QFont::PreferFullHinting);
+    if (!rf.isValid()) {
+        if (whyOut) *whyOut = "qrawfont-invalid";
+        return invalid;
+    }
+    if (whyOut) *whyOut = nullptr;
+    return rf;
+}
+
+int PointSizeFor(const OpusFontKey *key) {
+    int pt = key->ps / 2;
+    return pt > 0 ? pt : 10;
+}
+
+const OracleRow *FindOracleRow(const char *eraName, int pt) {
+    const OracleRow *best = nullptr;
+    int bestDelta = 1000;
+    for (int i = 0; i < kOracleTableCount; ++i) {
+        if (std::strcmp(kOracleTable[i].eraName, eraName) != 0) {
+            continue;
+        }
+        const int delta = kOracleTable[i].pt > pt
+                              ? kOracleTable[i].pt - pt
+                              : pt - kOracleTable[i].pt;
+        if (delta < bestDelta) {
+            bestDelta = delta;
+            best = &kOracleTable[i];
+        }
+    }
+    return best;
+}
+
+void FillOracleWidths(const OracleRow *row, int chFirst, int cch,
+                      unsigned short *rgdxu) {
+    const unsigned short space = row->widths[0];
+    for (int i = 0; i < cch; ++i) {
+        const int ch = chFirst + i;
+        rgdxu[i] = (ch >= 32 && ch <= 126) ? row->widths[ch - 32] : space;
+    }
 }
 
 }  // namespace
@@ -108,8 +179,28 @@ extern "C" int OpusShellFontMetrics(const OpusFontKey *key,
     if (out == nullptr) {
         return -1;
     }
-    QRawFont rf = RawFontFor(key, nullptr);
+    const char *why = nullptr;
+    int px = 0;
+    QRawFont rf = RawFontFor(key, &px, &why);
     if (!rf.isValid()) {
+        /* WORD1 has no QGuiApplication; do not construct one (it hangs
+           or kills the Wine pump). A non-zero box still avoids matFont. */
+        if (why != nullptr && std::strcmp(why, "no-gui-app") == 0 &&
+            key != nullptr) {
+            const char *era = EraNameFromFtc(key->ftc);
+            const OracleRow *row =
+                era != nullptr ? FindOracleRow(era, PointSizeFor(key))
+                               : nullptr;
+            if (row != nullptr) {
+                out->dypAscent = row->ascent;
+                out->dypDescent = row->descent;
+                out->dxpOverhang = row->overhang;
+                out->dxpInch = kScreenDpi;
+                out->dypInch = kScreenDpi;
+                out->dxuFixed = (key->ftc == 3) ? 1 : 0;
+                return 0;
+            }
+        }
         return -1;
     }
 
@@ -133,8 +224,25 @@ extern "C" int OpusShellCharWidths(const OpusFontKey *key, int chFirst,
         chFirst + cch > 256) {
         return -1;
     }
-    QRawFont rf = RawFontFor(key, nullptr);
+    const char *why = nullptr;
+    int px = 0;
+    QRawFont rf = RawFontFor(key, &px, &why);
     if (!rf.isValid()) {
+        /* Same as FontMetrics: never return -1 when the only problem is
+           that WORD1 has no QGuiApplication. LOADFONT treats -1 as
+           matFont and the font MessageBox swallows every later
+           WM_COMMAND, including Help About. */
+        if (why != nullptr && std::strcmp(why, "no-gui-app") == 0 &&
+            key != nullptr) {
+            const char *era = EraNameFromFtc(key->ftc);
+            const OracleRow *row =
+                era != nullptr ? FindOracleRow(era, PointSizeFor(key))
+                               : nullptr;
+            if (row != nullptr) {
+                FillOracleWidths(row, chFirst, cch, rgdxu);
+                return 0;
+            }
+        }
         return -1;
     }
 
