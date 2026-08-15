@@ -1,5 +1,12 @@
 # Terminar el port Winelib (word1_startup_blocked) Implementation Plan
 
+> **Status 2026-08-15 (paused, usage cap):** Tasks 1–2 done on
+> `fix/winelib-startup-blocked` (`09a4283`, `7de323f`). Task 3
+> mid-flight: font MessageBox root-caused and fixed (`134cddc`);
+> `opus_word1_about_test` now AVs in `FInsertInPl`/`C_PushLbs`. Resume
+> from `docs/port-linux/03-comportamiento-word1-startup-blocked.md`
+> “Estado al cortar” / “Cómo retomar”. Tasks 4–10 not started.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Close the gap between "Winelib build compiles" (done, Fases 0-5 of
@@ -105,7 +112,7 @@ No new source files. Every task modifies one or more of:
 - Consumes: the established wide-char fix pattern (Global Constraints) and its reference implementation, `wide_contains()`.
 - Produces: a verified-working `--self-test` fast path in WORD1's own entry point. Tasks 3-10 do not depend on this (they drive WORD1 through `opus_word1_ui_test.cpp`'s `CreateProcessW`, a separate path that never passes `--self-test`), but a green `word1_port_smoke_test` becomes a fast smoke check any later task can run before investing time in a deeper investigation.
 
-- [ ] **Step 1: Confirm the hypothesis by reading the current code**
+- [x] **Step 1: Confirm the hypothesis by reading the current code**
 
 ```bash
 sed -n '425,470p' /home/pablo/msword/src/port/original/opus_original_startup_probe.cpp
@@ -125,7 +132,7 @@ falls through past line 469 into full GUI startup (`GetMessage` loop) —
 which never returns under a headless/no-input display, matching the
 observed ~90s timeout exactly.
 
-- [ ] **Step 2: Reproduce the current failure directly (bypass ctest's timeout)**
+- [x] **Step 2: Reproduce the current failure directly (bypass ctest's timeout)**
 
 Inside the `debian13` container (see `CLAUDE.md` for the exact
 `systemd-run`/separate-`-B`-dir pattern):
@@ -144,7 +151,7 @@ lines 460-468). Check `Z:\tmp\word1_self_test.txt` inside the wine prefix —
 if the bug is present, that file was never written (the self-test branch
 never ran).
 
-- [ ] **Step 3: Apply the fix — reuse the established manual-search pattern**
+- [x] **Step 3: Apply the fix — reuse the established manual-search pattern**
 
 Add a local helper (same technique as `wide_contains`, but a plain
 "contains" check is enough here — no need to import the whole function,
@@ -186,7 +193,7 @@ defined(__GNUC__)` guard needed, and no MSVC path to preserve (this probe
 is Linux/Winelib-only; confirm with `grep -n "MSVC\|_MSC_VER"
 opus_original_startup_probe.cpp` before editing, to be sure).
 
-- [ ] **Step 4: Rebuild and re-run the direct repro from Step 2**
+- [x] **Step 4: Rebuild and re-run the direct repro from Step 2**
 
 ```bash
 cd /home/pablo/msword/src
@@ -198,14 +205,14 @@ cmake --build --preset linux-winelib-debug --target WORD1
 `Z:\tmp\word1_self_test.txt` contains a line like `module=0x... CmdHelp=0x...
 CmdAbout=0x...` with non-null pointers.
 
-- [ ] **Step 5: Verify via ctest**
+- [x] **Step 5: Verify via ctest**
 
 ```bash
 ctest --test-dir /home/pablo/msword/out/linux-winelib-debug -R word1_port_smoke_test --output-on-failure
 ```
 Expected: `Passed`, well under a second — not a 90s timeout.
 
-- [ ] **Step 6: Document**
+- [x] **Step 6: Document**
 
 Append `### 28. "word1_port_smoke_test" no colgaba por falta de condición
 de éxito — colgaba porque std::wcsstr nunca detectaba --self-test` to
@@ -214,7 +221,7 @@ its numbering. State: the hypothesis (same bug class as §23-24/27, just
 unaudited in this file), the Step 2 repro evidence (before/after), and the
 Step 5 ctest result.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 cd /home/pablo/msword
@@ -242,7 +249,7 @@ git commit -m "fix(port): opus_original_startup_probe.cpp -- corrige --self-test
   trusting *any* failure message from Tasks 3-10 as the real, final
   behavior (not a masked crash).
 
-- [ ] **Step 1: Confirm current scope with a fresh grep (catch drift since this plan was written)**
+- [x] **Step 1: Confirm current scope with a fresh grep (catch drift since this plan was written)**
 
 ```bash
 grep -n "std::wstring\|std::wcerr" /home/pablo/msword/src/port/original/opus_word1_ui_test.cpp
@@ -251,7 +258,7 @@ Cross-check the count/lines against the 4 listed above (2 are comments
 about already-fixed code, not live risk — read each hit before assuming
 it's live).
 
-- [ ] **Step 2: Fix `send_physical_text`'s signature — removes 9 risk sites in one change**
+- [x] **Step 2: Fix `send_physical_text`'s signature — removes 9 risk sites in one change**
 
 Change the signature (line 514) from `const std::wstring&` to a raw
 pointer, and its internal loop from range-`for` over the string to a
@@ -289,7 +296,7 @@ construction. The one call site passing a variable (line 1627,
 `send_physical_text(physical_text)`) is fixed in Step 4 below when
 `physical_text` itself stops being a `std::wstring`.
 
-- [ ] **Step 3: Fix the `sentence` variable in `selection_mode` (line 1445-1452)**
+- [x] **Step 3: Fix the `sentence` variable in `selection_mode` (line 1445-1452)**
 
 Replace:
 ```cpp
@@ -306,7 +313,7 @@ for (int index = 0; index < sentence_length; ++index) {
 (Close the loop body's existing brace structure unchanged — only the
 declaration and loop header change.)
 
-- [ ] **Step 4: Fix the `physical_text` variable in `interaction_mode` (line 1617-1619)**
+- [x] **Step 4: Fix the `physical_text` variable in `interaction_mode` (line 1617-1619)**
 
 Replace:
 ```cpp
@@ -325,7 +332,7 @@ at line 1627 now binds directly (Step 2's new signature), and this
 declaration was never iterated with a range-`for` (checked: it's only
 passed straight into `send_physical_text`).
 
-- [ ] **Step 5: Fix or verify-safe the `std::wcerr` at line 129**
+- [x] **Step 5: Fix or verify-safe the `std::wcerr` at line 129**
 
 Read the full function containing line 129 (`log_window_callback` or
 similar — confirm the name with
@@ -343,7 +350,7 @@ file already uses. Write the minimal version — this is a log line, not
 user-facing behavior, so a simple narrow conversion is enough; do not
 over-engineer it.
 
-- [ ] **Step 6: Rebuild inside the container and run the full label**
+- [x] **Step 6: Rebuild inside the container and run the full label**
 
 ```bash
 cmake --build --preset linux-winelib-debug --target opus_word1_ui_test
@@ -356,7 +363,7 @@ crashes differently or a message changed unexpectedly, stop and treat that
 as new information, not noise — re-open Phase 1 investigation before
 continuing.
 
-- [ ] **Step 7: Document**
+- [x] **Step 7: Document**
 
 Append `### 29. Cierre del audit de std::wstring/std::wcerr en
 opus_word1_ui_test.cpp — 4 sitios más (9 vía send_physical_text) sin
@@ -365,7 +372,7 @@ crashear en las 4/4 corridas` to
 exact sites fixed (Steps 2-5) and the Step 6 ctest transcript (or a
 representative excerpt) as evidence nothing regressed.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/port/original/opus_word1_ui_test.cpp \
@@ -392,7 +399,7 @@ git commit -m "fix(port): opus_word1_ui_test.cpp -- cierra el audit de std::wstr
   that Tasks 4 and 5 read before deciding whether they're verification-only
   or need their own full Phase 1 investigation.
 
-- [ ] **Step 1: Reproduce with full diagnostic capture**
+- [x] **Step 1: Reproduce with full diagnostic capture**
 
 ```bash
 ctest --test-dir /home/pablo/msword/out/linux-winelib-debug -R opus_word1_about_test --output-on-failure
@@ -404,7 +411,7 @@ where `stage`/`responsive` are computed in
 "about_mode" opus_word1_ui_test.cpp`) to know precisely what `stage=0`
 means before forming a hypothesis.
 
-- [ ] **Step 2: Invoke `superpowers:systematic-debugging` explicitly for this bug**
+- [x] **Step 2: Invoke `superpowers:systematic-debugging` explicitly for this bug**
 
 Follow its Phase 1 in full: read `materialize_about_template` completely
 (not just skim), trace what triggers it (which `WM_COMMAND`/menu action is
@@ -419,7 +426,7 @@ and screenshot with `xwd`/`convert` (copy the PNG into
 host). Compare against a direct `wine WORD1.exe.so` launch (bypassing the
 test harness entirely) to isolate harness-vs-app.
 
-- [ ] **Step 3: Determine shared-vs-independent root cause**
+- [x] **Step 3: Determine shared-vs-independent root cause**
 
 Specifically check: does the same code path handle `kIddNewDoc` and
 `kIddSaveAs` identically at the point of failure (the line 338-397 shared

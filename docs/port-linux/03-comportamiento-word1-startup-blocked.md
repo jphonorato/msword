@@ -174,3 +174,67 @@ Una vez con `QGuiApplication` en el hilo Wine el diálogo About
 initializing” (el host no respondía `WM_NULL`). Ese camino no se dejó:
 Qt en el hilo Wine no es viable. El crash de `FInsertInPl` es el
 siguiente bloqueo; no es un quinto skip del MessageBox.
+
+### Estado al cortar (2026-08-15, HEAD `134cddc`)
+
+`opus_word1_about_test` **sigue en Failed** (~7.8 s,
+`exit=0x0 mainWindow=0`). El MessageBox de fuente ya no aparece. El
+proceso muere en layout:
+
+```
+Exception 0xC0000005 write at 0xFFFFFFFD3726D202
+OpusMoveBytesEnd+0x2B
+FInsertInPl+0x1B6
+C_PushLbs+0x296
+```
+
+(`build/WORD1-crash.txt`; call site C `layout2.c:1430`
+`FInsertInPl(vhpllbs, ilbs, plbsTo)`.)
+
+Instrumentación temporal de `HpInPl`/`OpusPlData` (revertida, no quedó
+en el árbol) dejó `build/t3-h2-pl.log`. Las primeras llamadas son
+PLs sanos:
+
+```
+iMac=1 iMax=1 cb=2  brgfoo=20  fExternal=0
+iMac=1 iMax=1 cb=136 brgfoo=256 fExternal=0   ← dest in-heap, insane=0
+```
+
+La última, ya con el header destrozado, es otro `hpl`:
+
+```
+HpInPl hpl=0x7ffffe811970 *hpl=0x7ffffe811bc0
+  iMac=-1072622911 iMax=32726 cb=6 brgfoo=0 fExternal=-31497312
+  i=-1072622912 base=(nil) dest=0xfffffffe80667080 insane=1
+```
+
+`HpInPl` no inventa ese puntero: le pasan un bloque que ya no es un
+`struct PL`. `iMac==iMax==1` en las llamadas sanas implica que el
+siguiente `FInsertInPl` entra en el grow (`clsplc.c:847-874`).
+Siguiente Phase 1 (no hecha): discriminar *grow que corrompe el
+header* (`FChngSizeHCw` / tamaño `brgfoo + cb*iMax`) vs *handle
+equivocado* (no es `vhpllbs`). No editar `src/Opus/`.
+
+Un intento a medias de anchos GDI (`opus_gdi_char_widths.cpp` +
+`OpusShellSetCharWidthsFallback`) se descartó al cortar: no llegó a
+ctest verde. No reintroducirlo hasta tener el log de `HpInPl` sobre
+el grow.
+
+**Shared vs independent (Tasks 4–5), actualizado:** About / New /
+Save As ya no están tapados por `vcInMessageBox`. Siguen
+bloqueados porque el proceso no sobrevive al primer layout. Verificar
+primero cuando About esté verde.
+
+---
+
+## Cómo retomar
+
+Rama `fix/winelib-startup-blocked` (no está en `main`). Plan:
+`docs/superpowers/plans/2026-08-15-terminar-winelib.md`. Ledger SDD:
+`.superpowers/sdd/2026-08-15-terminar-winelib/progress.md`.
+
+Build/test solo en debian13 contra `/home/pablo/build-debian13-verify`,
+`DISPLAY=:59`. No usar el `--preset` del host.
+
+Retomar en Task 3, Phase 1 del AV de `FInsertInPl` (arriba). Tasks
+1–2 están hechas y revisadas. Tasks 4–10 no se empezaron.
