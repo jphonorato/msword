@@ -3128,3 +3128,79 @@ ya estaba identificado con certeza razonable por lectura de código.
 `std::wstring`/`std::wcerr`; investigar la variación 13 vs. 15 entre
 corridas de `--typing`; retomar cualquiera de los 7 fallos de
 comportamiento real que §26 dejó como lista de trabajo pendiente.
+
+### 28. Cuarto entorno independiente, máquina virgen — confirma build limpio y arranque real fuera de hp-15 y del contenedor del proyecto (2026-08-14)
+
+Verificación solicitada explícitamente para probar el port en un
+Debian 13 distinto de los dos ya usados en esta serie: ni hp-15
+(EndeavourOS/Arch, §Sesión hp-15) ni "el contenedor Debian 13 del
+proyecto" (el que asentó el hallazgo de §README — que el crash de
+arranque no reproduce fuera de Arch). Esta sesión corre en una
+tercera máquina, una VM Debian 13 (trixie) / kernel 6.12.101 /
+GCC 14.2.0, **sin ninguna herramienta de build preinstalada** — ni
+siquiera `git` o `gcc` estaban presentes al empezar. Es, hasta ahora,
+la corrida más cercana a "clean room" de todas las registradas en
+esta serie.
+
+**Clon limpio, sin arrastrar nada de hp-15 ni de ningún checkout
+previo:** `gh repo clone jphonorato/msword` (origin `jphonorato/msword`,
+upstream `jmarshall23/msword` agregado automáticamente por `gh`).
+
+**Toolchain instalado desde cero vía `apt`:** `git`, `build-essential`,
+`cmake` (3.31.6), `ninja-build`, `wine`/`wine64-tools` (paquete
+`wine-devel` que nombra el README **no existe en Debian** — el
+equivalente correcto es `wine64-tools`, que sí provee `winegcc`,
+`wineg++`, `wrc`, `winebuild`; vale la pena que el README lo refleje),
+`qt6-base-dev`. `wineboot --init` con `WINEARCH=win64` crea el prefijo
+con un error no fatal (`failed to open
+L"C:\windows\syswow64\rundll32.exe"`) por ausencia de `wine32`/soporte
+multiarch i386 en esta máquina — `system.reg` y `drive_c` se generan
+igual y no bloquea nada de lo que sigue.
+
+**Contradice el "CI blocker" documentado en el README (`src/port/tools/host/`
+ausente en clon limpio):** `cmake --preset linux-winelib-debug` configuró
+sin errores a la primera, sin intervención manual. El `CMakeLists.txt`
+de `src/port/tools/host/` sí está trackeado en git — el `.gitignore`
+solo excluye el `build/` generado (`src/port/tools/host/build/`), no el
+directorio completo como el README da a entender. No se investigó por
+qué el blocker sí reproduce en CI (podría ser un problema del entorno
+de GitHub Actions específicamente, no de la fuente del repo) — queda
+como discrepancia sin resolver entre lo documentado y lo observado acá.
+
+**Build, ambos targets, 0 errores:**
+
+```
+cmake --build --preset linux-winelib-debug --target opus_original_engine
+# 337/337, solo warnings esperables de C K&R (PASCAL/NATIVE sin tipo,
+# macros redefinidas, punteros incompatibles)
+
+cmake --build --preset linux-winelib-debug --target WORD1
+# 127/127, 0 errores
+```
+
+Artefactos: `bin/WORD1.exe` (697 B, wrapper de Winelib) +
+`bin/WORD1.exe.so` (14.6 MB, ELF 64-bit LSB, 7040 símbolos exportados
+vía `nm -D`).
+
+**Arranque real, verificado con `xwininfo` y captura de pantalla
+(`xwd` + ImageMagick), no solo por ausencia de crash:** `./WORD1.exe`
+abre "Microsoft Word - Document1" (1280×739) con chrome completo —
+barra de menú (File/Edit/View/Insert/Format/Utilities/Window/Help),
+toolbar con iconos, selectores de estilo ("Normal") y fuente
+("Arial", 10 pt), regla, cursor de texto parpadeante, barra de
+estado. Sin heap corruption, sin timeout, sin intervención — coincide
+con el hallazgo del README de que el blocker de arranque no reproduce
+en Debian 13, ahora confirmado en una tercera máquina Debian 13
+distinta de las dos ya usadas.
+
+**Con esto, el hallazgo "no reproduce en Debian 13" deja de depender
+de una sola máquina/contenedor** — se sostiene en un entorno
+provisionado desde cero, sin ningún estado previo del proyecto.
+
+**No perseguido esta sesión:** por qué el CI blocker de
+`src/port/tools/host/` sí reproduce en GitHub Actions si el
+`CMakeLists.txt` está trackeado; instalar `wine32`/multiarch para
+resolver el warning de `wineboot`; correr `word1_startup_blocked` o
+cualquiera de los 9 tests de interacción en esta máquina; actualizar
+el nombre de paquete `wine-devel` → `wine64-tools` en el README de
+Requirements.
