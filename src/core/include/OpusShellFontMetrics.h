@@ -59,6 +59,14 @@ int OpusShellFontMetrics(const OpusFontKey *key, OpusFontMetrics *out);
 int OpusShellCharWidths(const OpusFontKey *key, int chFirst, int cch,
                          unsigned short *rgdxu);
 
+/*
+ * Win32 fallback for hosts with no QGuiApplication (WORD1). The port
+ * registers GetCharWidthA against the same LOGFONT LOADFONT selected.
+ */
+typedef int (*OpusShellCharWidthsFn)(const OpusFontKey *key, int chFirst,
+                                     int cch, unsigned short *rgdxu);
+void OpusShellSetCharWidthsFallback(OpusShellCharWidthsFn fn);
+
 #ifdef __cplusplus
 }
 #endif

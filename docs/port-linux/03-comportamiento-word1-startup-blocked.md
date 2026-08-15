@@ -225,6 +225,68 @@ Save As ya no están tapados por `vcInMessageBox`. Siguen
 bloqueados porque el proceso no sobrevive al primer layout. Verificar
 primero cuando About esté verde.
 
+### Fix round 2 (2026-08-15): H1 vs H2 del AV en `FInsertInPl`
+
+Phase 1, un cambio cada vez. El MessageBox de fuente sigue cerrado.
+
+**H1 (métricas):** `OpusShellCharWidths` devolvió 0 (sin `matFont`) y
+rellenó la tabla con un dummy constante 8. El AV **no desapareció**.
+Luego se midió con GDI (`CreateCompatibleDC` + `CreateFontIndirectA`
+mismo `LOGFONT` que `C_FGraphicsFcidToPlf`, `hps==0` → `lfHeight==0`,
+`GetCharWidthA`; confirmado `GDI ftc=2 ps=0 w32=3 wA=7`). El AV
+**sigue** en `FInsertInPl`. Los valores de la tabla no son la causa:
+oráculo Helv-10, dummy 8 y GDI Helv `lfHeight=0` mueren igual.
+
+El camino interactivo que sí abre About usa `fFallback` /
+`fFixedPitch=true` (`LOADFONT.C:397` no llena `hqrgdxp`). Eso no se
+puede forzar desde el puerto sin devolver -1 (`matFont` / MessageBox).
+
+**H2 (header PL / HpInPl):** confirmado. El `hpl` del crash **es**
+`vhpllbs` (`lbs=1`, `hsz=1428` = `cbPLBase + 8*sizeof(LBS)` con
+`sizeof(LBS)==176`). En la primera `FInsertInPl` el header ya es
+basura:
+
+```
+iMac=-1072622911 iMax=32726 cb=6 brgfoo=0 fExternal=-31497312
+i=-1072622912 base=(nil) dest=0xfffffffe80667080
+```
+
+`PL`: `cbPLBase=20`, `fExternal` @ 16. `PLLBS` no tiene `fExternal`
+(`rglbs` @ 16). `OpusPlData` trataba cualquier `fExternal!=0` como HQ
+→ dest salvaje. Las primeras `HpInPl` son **otros** PLs sanos
+(`cb=2`/`cb=136`); `vhpllbs` no se ve sano ni una vez.
+
+El smash **no** es un `bltbh` sobre los 20 bytes del header (un
+`memmove` vigilado no disparó). Tampoco un `FChngSizeHCb` de
+`vhpllbs`: al `HAllocateCw(1428)` `vhpllbs` aún es nil; no hay
+`chng` posterior sobre ese handle antes del AV.
+
+Clamp de `dest` en `HpInPl` evita el write salvaje y mueve el crash a
+`UnstackLbs` (camina `ilbsMac` basura) o `IpgdPldrFromWwDocCpIpgd`.
+No repara el header.
+
+**Ambas:** H1 no es “tabla Helv-10 ≠ GDI”. H2 es el mecanismo del AV
+(`HpInPl` sobre `vhpllbs` ya destrozado). El header se corrompe en
+el camino variable-pitch (`fFixedPitch=false`) antes de
+`C_PushLbs`; el puerto no ve el store. Sin editar Opus no hay sitio
+para restaurar `iMac` antes de `layout2.c:1384`.
+
+**ctest** (debian13, `DISPLAY=:59`, GDI + `fExternal==1` en
+`OpusPlData`):
+
+```
+opus_word1_about_test ***Failed  7.8 sec
+Help About process exit=0x0 mainWindow=0 responsive=0 stage=0
+Help About dialog did not appear
+CTEST_EXIT=8
+Exception 0xC0000005 FInsertInPl+0x1B6 C_PushLbs+0x296
+```
+
+**BLOCKED** en líneas Opus (no tocadas):
+`src/Opus/wordtech/layout2.c:1384` (`ilbs = (*vhpllbs)->ilbsMac`) y
+`1430` (`FInsertInPl`); o `LOADFONT.C:397` (único camino que no
+entra en layout variable-pitch).
+
 ---
 
 ## Cómo retomar

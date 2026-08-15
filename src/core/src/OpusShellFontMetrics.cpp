@@ -47,6 +47,7 @@
 
 #include <QCoreApplication>
 #include <QFont>
+#include <QGuiApplication>
 #include <QRawFont>
 #include <QString>
 #include <QThread>
@@ -79,7 +80,9 @@ int MulDivRound(int a, int b, int c) {
 }
 
 bool CanUseRawFont() {
-    QCoreApplication *app = QCoreApplication::instance();
+    /* QRawFont needs a QGuiApplication. A lone QCoreApplication (or
+       instance() on the wrong thread) is how WORD1 used to hang. */
+    auto *app = qobject_cast<QGuiApplication *>(QCoreApplication::instance());
     return app != nullptr && QThread::currentThread() == app->thread();
 }
 
@@ -172,7 +175,13 @@ void FillOracleWidths(const OracleRow *row, int chFirst, int cch,
     }
 }
 
+OpusShellCharWidthsFn g_char_widths_fallback;
+
 }  // namespace
+
+extern "C" void OpusShellSetCharWidthsFallback(OpusShellCharWidthsFn fn) {
+    g_char_widths_fallback = fn;
+}
 
 extern "C" int OpusShellFontMetrics(const OpusFontKey *key,
                                      OpusFontMetrics *out) {
@@ -238,6 +247,10 @@ extern "C" int OpusShellCharWidths(const OpusFontKey *key, int chFirst,
             const OracleRow *row =
                 era != nullptr ? FindOracleRow(era, PointSizeFor(key))
                                : nullptr;
+            if (g_char_widths_fallback != nullptr &&
+                g_char_widths_fallback(key, chFirst, cch, rgdxu) == 0) {
+                return 0;
+            }
             if (row != nullptr) {
                 FillOracleWidths(row, chFirst, cch, rgdxu);
                 return 0;

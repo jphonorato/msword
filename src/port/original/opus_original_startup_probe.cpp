@@ -48,6 +48,7 @@ extern "C" unsigned short Look1WListEntbl(unsigned short, char*, int,
 extern "C" int OpusX64FtcFromFontName(const char*);
 extern "C" int OpusX64HpsFromFontSize(const char*);
 extern "C" void OpusX64FontNameFromFtc(int, char*, int);
+#include "OpusShellFontMetrics.h"
 extern "C" void OpusRegisterOriginalDialogCallbacks(
     OpusOriginalListProc, OpusOriginalListProc, OpusOriginalListProc,
     OpusOriginalListProc, OpusFontValueProc, OpusFontValueProc,
@@ -448,6 +449,74 @@ bool CommandLineHasFlag(const wchar_t* command_line, const wchar_t* flag) {
 }
 }  // namespace
 
+/* Screen widths when WORD1 has no QGuiApplication. Recreates the same
+   LOGFONT C_FGraphicsFcidToPlf built (hps==0 → lfHeight==0) and asks GDI,
+   so the table matches the HFONT LOADFONT already selected. */
+extern "C" int OpusPortGdiCharWidths(const OpusFontKey *key, int chFirst,
+                                     int cch, unsigned short *rgdxu) {
+    if (key == nullptr || rgdxu == nullptr || chFirst < 0 || cch <= 0 ||
+        chFirst + cch > 256) {
+        return -1;
+    }
+    const char *face = nullptr;
+    switch (key->ftc) {
+        case 0: face = "Tms Rmn"; break;
+        case 1: face = "Symbol"; break;
+        case 2: face = "Helv"; break;
+        case 3: face = "Courier"; break;
+        default: return -1;
+    }
+    HDC hdc = CreateCompatibleDC(nullptr);
+    if (hdc == nullptr) {
+        return -1;
+    }
+    LOGFONTA lf = {};
+    if (key->ps > 0) {
+        int dpi = GetDeviceCaps(hdc, LOGPIXELSY);
+        if (dpi <= 0) {
+            dpi = 96;
+        }
+        lf.lfHeight = -MulDiv(key->ps / 2, dpi, 72);
+        if (key->ftc == 3) {
+            lf.lfHeight = -lf.lfHeight;
+        }
+    }
+    lf.lfWeight = (key->catr & 1) ? FW_BOLD : FW_NORMAL;
+    lf.lfItalic = (key->catr & 2) ? 1 : 0;
+    lf.lfCharSet = (key->ftc == 1) ? SYMBOL_CHARSET : ANSI_CHARSET;
+    lf.lfQuality = ANTIALIASED_QUALITY;
+    lstrcpynA(lf.lfFaceName, face, LF_FACESIZE);
+    HFONT hfont = CreateFontIndirectA(&lf);
+    if (hfont == nullptr) {
+        DeleteDC(hdc);
+        return -1;
+    }
+    HGDIOBJ old = SelectObject(hdc, hfont);
+    INT widths[256] = {};
+    if (!GetCharWidthA(hdc, chFirst, chFirst + cch - 1, widths)) {
+        for (int i = 0; i < cch; ++i) {
+            SIZE size = {};
+            char ch = static_cast<char>(chFirst + i);
+            widths[i] =
+                GetTextExtentPoint32A(hdc, &ch, 1, &size) ? size.cx : 0;
+        }
+    }
+    for (int i = 0; i < cch; ++i) {
+        int w = widths[i];
+        if (w < 1) {
+            w = 1;
+        }
+        if (w > 65535) {
+            w = 65535;
+        }
+        rgdxu[i] = static_cast<unsigned short>(w);
+    }
+    SelectObject(hdc, old);
+    DeleteObject(hfont);
+    DeleteDC(hdc);
+    return 0;
+}
+
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous,
                     PWSTR command_line, int show_command) {
     if ((command_line != nullptr &&
@@ -515,6 +584,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous,
        al principio de la función. */
     OpusInstallMemPassthrough();
 #endif
+    OpusShellSetCharWidthsFallback(OpusPortGdiCharWidths);
     ResetRibbonTrace();
 
     /* The native SDM shim owns the controls, while Microsoft's original

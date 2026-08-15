@@ -142,8 +142,20 @@ void OpusPlcClearAdjustment(void* pplcVoid)
 void* OpusPlData(void* pplVoid)
 {
 	struct PL* ppl = (struct PL*)pplVoid;
-	char* rgfoo = ((char*)ppl) + ppl->brgfoo;
-	if (ppl->fExternal)
+	int brgfoo;
+	char* rgfoo;
+
+	if (pplVoid == NULL)
+		return NULL;
+	brgfoo = ppl->brgfoo;
+	/* HplInit stores data at cbPLBase. A smashed header (or PLLBS
+	   overlay that wrote rglbs over fExternal) can leave brgfoo=0. */
+	if (brgfoo < (int)offset(PL, rgbHead) || brgfoo > 4096)
+		brgfoo = (int)offset(PL, rgbHead);
+	rgfoo = ((char*)ppl) + brgfoo;
+	/* PLLBS has rglbs at the same offset as PL.fExternal. Only the
+	   boolean 1 is a real external HQ; any other nonzero is payload. */
+	if (ppl->fExternal == 1)
 		return HpOfHq(*((HQ*)rgfoo));
 	return rgfoo;
 }
