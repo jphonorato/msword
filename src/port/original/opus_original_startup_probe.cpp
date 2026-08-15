@@ -425,11 +425,34 @@ extern "C" void OpusX64TraceRibbon(const char* stage, int message, int tmc,
     CloseHandle(file);
 }
 
+namespace {
+/* Manual wide search: winegcc uses 2-byte WCHAR (-fshort-wchar) but glibc
+   wcsstr/wcscmp operate on 4-byte wchar_t and misread real Win32 buffers.
+   Same pattern as wide_contains() in opus_word1_ui_test.cpp (§23). */
+bool CommandLineHasFlag(const wchar_t* command_line, const wchar_t* flag) {
+    if (command_line == nullptr || flag == nullptr || *flag == L'\0') {
+        return false;
+    }
+    for (const wchar_t* start = command_line; *start != L'\0'; ++start) {
+        const wchar_t* h = start;
+        const wchar_t* n = flag;
+        while (*h != L'\0' && *n != L'\0' && *h == *n) {
+            ++h;
+            ++n;
+        }
+        if (*n == L'\0') {
+            return true;
+        }
+    }
+    return false;
+}
+}  // namespace
+
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous,
                     PWSTR command_line, int show_command) {
     if ((command_line != nullptr &&
-         std::wcsstr(command_line, L"--self-test") != nullptr) ||
-        std::wcsstr(GetCommandLineW(), L"--self-test") != nullptr) {
+         CommandLineHasFlag(command_line, L"--self-test")) ||
+        CommandLineHasFlag(GetCommandLineW(), L"--self-test")) {
         /* Fase 4 smoke: same lookup ResolveCommandAddress uses
            (GetModuleHandleW(NULL) + GetProcAddress).  Requires the winebuild
            .spec exports on Winelib; on MSVC the /export: list from

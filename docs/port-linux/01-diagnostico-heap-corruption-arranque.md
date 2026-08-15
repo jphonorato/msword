@@ -3204,3 +3204,49 @@ resolver el warning de `wineboot`; correr `word1_startup_blocked` o
 cualquiera de los 9 tests de interacción en esta máquina; actualizar
 el nombre de paquete `wine-devel` → `wine64-tools` en el README de
 Requirements.
+
+### 29. "word1_port_smoke_test" no colgaba por falta de condición de éxito — colgaba porque std::wcsstr nunca detectaba --self-test
+
+Misma clase de bug que §23-24/27, sin auditar en
+`src/port/original/opus_original_startup_probe.cpp`. El fast path de
+`--self-test` en `wWinMain` (aprox. líneas 431-432) usaba
+`std::wcsstr(command_line, L"--self-test")` y
+`std::wcsstr(GetCommandLineW(), L"--self-test")`. Bajo winegcc,
+`wchar_t` es WCHAR de 2 bytes (`-fshort-wchar`), pero `std::wcsstr` de
+glibc opera sobre `wchar_t` nativo de 4 bytes: la búsqueda no encuentra
+el flag aunque esté en la línea de comandos real, `wWinMain` cae al
+arranque GUI completo (`GetMessage`), y el test se queda ~90 s hasta el
+timeout por defecto de ctest (el test **no** tiene `TIMEOUT` property).
+
+**Repro directo (contenedor debian13, DISPLAY=:59, build en
+`/home/pablo/build-debian13-verify`):**
+
+```
+# Antes del fix
+timeout 15 /usr/lib/wine/wine64 ./WORD1.exe.so --self-test
+# EXIT=124 ELAPSED=15  (timeout mata el proceso)
+# /tmp/word1_self_test.txt ausente — la rama self-test nunca corrió
+# (aparece stub DwmSetWindowAttribute → arranque GUI real)
+
+# Después del fix (helper CommandLineHasFlag, bucle manual 2-byte)
+timeout 15 /usr/lib/wine/wine64 ./WORD1.exe.so --self-test
+# EXIT=0 ELAPSED=0
+# /tmp/word1_self_test.txt:
+#   module=0x7f9c8ee80000 CmdHelp=0x7f9c8ef4007a CmdAbout=0x7f9c8ef4050a
+```
+
+**Fix:** `CommandLineHasFlag()` local (mismo patrón que `wide_contains()`
+en `opus_word1_ui_test.cpp` §23) sustituye las dos llamadas a
+`std::wcsstr`. Este archivo es Linux/Winelib-only en la práctica del
+probe; no se tocó `src/Opus/`.
+
+**ctest (Step 5):**
+
+```
+ctest --test-dir /home/pablo/build-debian13-verify -R word1_port_smoke_test --output-on-failure
+# 1/1 Test #10: word1_port_smoke_test ............   Passed    0.10 sec
+# CTEST_EXIT=0
+```
+
+Cierra el gap B del plan winelib-startup-blocked: el smoke deja de ser
+un timeout silencioso de ~90 s y pasa a ser un chequeo sub-segundo.
