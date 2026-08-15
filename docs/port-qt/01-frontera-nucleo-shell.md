@@ -1,16 +1,130 @@
 # Fase Qt-1 — Diseño de la frontera núcleo/shell
 
-**Estado:** diseño, sin implementar. Ninguna línea de port se escribe en esta
-fase; eso empieza en Qt-2.
+**Estado:** diseño cerrado; implementación Qt-2 en curso desde 2026-08-11/12.
+La línea original de este campo ("diseño, sin implementar") describía la fase
+en que se abrió el documento; se corrige aquí porque el resto del documento
+(§B3.5, §B4.4, §B5.1/§B5.2) ya registra implementación real que esa línea
+contradecía. Ver "Estado real de hoy" abajo antes que nada.
 **Insumo:** `docs/port-qt/00-inventario-win32.md`, en su versión posterior a la
 exclusión de comentarios y literales.
 **Decisiones de alcance cerradas:** fidelidad de paginación idéntica byte a
 byte contra el oráculo Winelib; `Opus/interp/` es núcleo; `OpusEtAl/` por
 veredicto individual (54 excluir, 4 diferir); `Opus/debug/` se porta.
-**API de frontera:** cuatro headers en `src/core/include/` —
-`OpusShellFontMetrics.h`, `OpusShellSpine.h` (solo declaración);
-`OpusShellConfig.h`, `OpusShellMemory.h` (declaración e implementación,
-ambas verificadas con enlace cross-toolchain real).
+**API de frontera:** cuatro headers en `src/core/include/`, los cuatro con
+implementación real hoy (ninguno quedó en "solo declaración"):
+`OpusShellConfig.h`/`OpusShellMemory.h` (§B5/§B3, verificadas con enlace
+cross-toolchain real y call sites migrados en `Opus/`), `OpusShellFontMetrics.h`
+(§B2, verificada con 2660 puntos de fidelidad), `OpusShellSpine.h` (§B4.4,
+solo los dos fragmentos con firma concreta — `OpusShellReportError`/
+`OpusShellAlert` —, no la inversión completa del bucle de mensajes, que sigue
+sin empezar).
+
+---
+
+## Estado real de hoy, para quien no va a leer 1900 líneas
+
+Añadido 2026-08-14 a partir de leer el código, no este documento — la
+pregunta que lo motivó fue "¿esto es un port a Qt de verdad, o son pruebas de
+humo?". Respuesta corta, en dos ejes que no se pueden fundir en un solo
+veredicto: como dependencia de runtime que `WORD1` ejecuta de verdad en
+cada arranque, sí — ya es Word sobre Qt (ver más abajo). Como arquitectura
+—quién es dueño de la ventana y el bucle de eventos—, no todavía: eso
+sigue siendo Win32/Wine de punta a punta. Y las pruebas: las de `src/core`
+no son de humo, las de arranque/interacción de `WORD1` (etiqueta
+`word1_startup_blocked`) sí lo son. Detalle verificable:
+
+### Lo que sí es real y está enlazado en el `WORD1` que se distribuye
+
+No son solo headers ni una biblioteca sin usar. `src/CMakeLists.txt` enlaza
+las `.a` de `src/core` directamente en el target `WORD1` (líneas ~214-218,
+280+), con call sites reales y comprometidos dentro de `Opus/` (árbol
+restringido) que las llaman:
+
+| Contrato | Backend Qt real | Call sites en `Opus/` | Commit |
+|---|---|---|---|
+| `OpusShellConfig` (§B5) | `QSettings` | 41, `OpusShellProfile*` en 12 archivos (p.ej. `quit.c`) | `e298420` |
+| `OpusShellMemory` (§B3) | malloc/realloc/free con contador de fijación | 3 en `catalog.c` (`HGrabFarMem`, `FAllocDMFarMem`, `FreeDMFarMem`); ~198 sitios `Global*` restantes sin migrar | `c4e9ff0`, `2a36b1a` |
+| `OpusShellSpine` (§B4.4) | `QMessageBox` / `QApplication::beep()` | 1, `wordtech/error.c:1630`; `editspec.c`/`undo.c` (`OpusShellAlert`) sin conectar | `ea5f908` |
+| `OpusShellFontMetrics`/`FontSubstitution` (§B2) | `QRawFont` | 1, `Opus/LOADFONT.C:187 C_LoadFcid`; sin verificación en ejecución contra `WORD1` real (§B2.7) | — |
+
+Las pruebas de `src/core` tampoco son de humo: `OpusShellConfig_test.cpp`
+verifica semántica documentada del Profile Win16 punto por punto (no solo
+"compila y sale 0"), y `OpusShellFontMetrics_fidelity_test.cpp` compara contra
+2660 mediciones capturadas del oráculo Winelib real (§B2.3) — 2660/2660
+coinciden.
+
+### Corregido el mismo día: "Word sobre Qt" es cierto en el eje de dependencia de runtime
+
+La primera versión de esta sección verificó código fuente (call sites,
+CMake) pero no el binario resultante, y de ahí sacó una conclusión
+demasiado plana. Verificado con `ldd bin/WORD1.exe.so`:
+
+```
+libQt6Widgets.so.6 => /usr/lib/libQt6Widgets.so.6
+libQt6Gui.so.6     => /usr/lib/libQt6Gui.so.6
+libQt6Core.so.6    => /usr/lib/libQt6Core.so.6
+libQt6DBus.so.6    => /usr/lib/libQt6DBus.so.6
+```
+
+No es un detalle cosmético: `WORD1.exe.so` no arranca sin estas
+bibliotecas presentes y en la versión correcta — el gotcha ya documentado
+en `CLAUDE.md` (Qt 6.11.1 del host vs 6.8.2 del contenedor Debian 13,
+`dlopen` fallando con `version 'Qt_6.11' not found`, enmascarado como un
+`ShellExecuteEx failed: File not found` engañoso) es la prueba de que esta
+dependencia es real y se resuelve en cada arranque, no un artefacto de
+prueba. En ese sentido concreto — Qt6 como dependencia de runtime que el
+binario ejecuta de verdad, tanto en el camino de arranque como en las
+llamadas de la tabla de arriba — **"esto es Word sobre Qt" es correcto, y
+la conclusión original de esta sección ("ninguno de los dos es Word
+corriendo sobre Qt todavía") sobregeneralizaba.**
+
+### El eje que sigue sin cerrarse: quién controla la ventana y el bucle de eventos
+
+Esto es un eje distinto y no debe colapsarse con el anterior. `WORD1.exe.so`
+sigue corriendo el bucle de mensajes Win32 completo (`GetMessage`/
+`DispatchMessage` vía Winelib) de punta a punta; ningún `QWidget` es parte
+de su interfaz visible; los cuatro contratos son puramente de backend
+(persistencia, memoria, medición de texto, un diálogo modal disparado
+desde dentro de ese bucle Win32, no al revés). Es el propio código el que
+lo dice, no una inferencia de este documento (`src/core/src/
+OpusShellSpine.cpp`):
+
+> "WORD1 real corre hoy con el loop de mensajes Win32 (GetMessage/
+> DispatchMessage), no con QApplication -- la inversión de control (paso 7
+> de la secuencia Qt-2) sigue sin hacerse."
+
+Sí existe un binario que corre bajo `QApplication::exec()` de verdad —
+`opus_qt_shell` (`src/core/src/opus_qt_shell_main.cpp`) —, pero su propio
+comentario de cabecera es explícito: *"Este NO es Word bajo Qt. No hay motor
+de documento, no hay wordtech/ conectado."* Es un molde que demuestra que el
+patrón de despacho de §B4.2 (`SendMessage` → llamada directa, `PostMessage` →
+`QMetaObject::invokeMethod` con `Qt::QueuedConnection`) funciona contra los
+contratos ya cerrados, para reutilizar el día que `wordtech/` se conecte de
+verdad — no una segunda implementación de Word.
+
+Y las pruebas que sí son de humo, con ese nombre en el propio proyecto, son
+otras: la etiqueta `word1_startup_blocked` (`word1_port_smoke_test` + los 8
+`opus_word1_ui_test`) exige que `WORD1` arranque y responda a interacción
+real vía Wine/Winelib — hoy siguen en 0/9 pasando de verdad (llegan a lógica
+de interacción, fallan con mensajes de nivel app; ver `README.md`, sección
+Tests). Esas son las pruebas de humo del proyecto, y no tienen relación con
+el trabajo de `src/core`.
+
+### En una frase
+
+Hay dos esfuerzos reales conviviendo en el mismo repo, y son ciertos a la
+vez sin contradecirse: el port Winelib sigue siendo, hoy, el único dueño
+del bucle de eventos y la ventana de `WORD1` — pero ese mismo `WORD1` ya
+**es** Word sobre Qt en el sentido literal de que no arranca ni corre sin
+Qt6, y ejecuta código Qt real (`QSettings`, un allocador, `QRawFont`,
+`QMessageBox`) en cada una de las llamadas de la tabla de arriba. Lo que
+falta para "Word sobre Qt" en el sentido arquitectónico completo —Qt
+dueño de la ventana y el bucle, no solo de un backend enlazado por
+debajo— es la inversión de control del paso 7, todavía sin tocar
+`Opus/wproc.c`. `opus_qt_shell` es un tercer artefacto, un demostrador
+aislado sin motor de documento, no una segunda implementación de Word.
+Ver "Preguntas abiertas" #4 para si esto cambia el argumento de separar
+repositorios.
 
 ---
 
@@ -1341,6 +1455,52 @@ Fase 1 de B3 (§B3.3), no buscada a propósito:**
    como añadir esa tabla de 4 entradas al lado núcleo del wrapper, no al
    header de frontera); o (b) el contrato cambia para recibir el nombre
    directamente. (a) no requiere tocar `OpusShellFontMetrics.h`.
+
+4. **¿Deberían el núcleo Qt (`src/core`) y el port Winelib vivir en
+   repositorios separados, para que el núcleo termine siendo una
+   aplicación Qt de verdad? Preguntada por el mantenedor 2026-08-14 — no
+   se separa por ahora:**
+
+   Hoy `src/core` no es una aplicación: son cinco bibliotecas estáticas
+   angostas (`opus_shell_config`/`memory`/`font_substitution`/
+   `font_metrics`/`spine`) cuya única razón de existir es enlazarse dentro
+   de `WORD1` (Winelib) y ser llamadas desde call sites dentro de `Opus/`
+   — árbol restringido de este mismo repo (ver "Estado real de hoy"
+   arriba). Separar ahora movería la mitad del acoplamiento — los headers
+   de contrato, el `ExternalProject_Add(opus_core_build ...)` de
+   `src/CMakeLists.txt` — a través de un límite de repositorio sin
+   eliminarlo: `Opus/` seguiría necesitando enlazar contra ese código en
+   cada build de `WORD1`, ahora vía submódulo o paquete instalado en vez
+   de un subdirectorio del mismo checkout. Y la estrategia de fidelidad de
+   §B2.3/§B2.5 depende de capturar comportamiento real del oráculo
+   Winelib (`docs/port-qt/scripts/fidelity/capture.py` →
+   `opus_shell_font_metrics_oracle_table.h`): la tabla ya capturada viaja
+   bien entre repos (es un header generado, no un binario), pero
+   regenerarla cuando cambie la versión de Wine exige tener el oráculo
+   Winelib al lado, en el mismo checkout o en uno hermano sincronizado a
+   mano.
+
+   La separación empieza a tener sentido el día que exista un ejecutable
+   Qt que ya no dependa de `Opus/`/Winelib para nada — es decir, cuando el
+   paso 7 de "Secuencia recomendada para Qt-2" deje de ser demostración
+   (`opus_qt_shell`, sin motor de documento) y pase a ser la migración
+   real de `Opus/wproc.c`. Antes de eso, separar repos no compra
+   independencia: solo cambia dónde vive el mismo acoplamiento, y agrega
+   fricción de versión cruzada (¿qué commit de `src/core` fija cada commit
+   de `WORD1`?) que hoy resuelve gratis un solo `git log` sobre un único
+   árbol.
+
+   No cerrado para siempre — reabrir cuando `opus_qt_shell` (o un sucesor)
+   tenga motor de documento propio y dependa de `Opus/` en cero sitios, no
+   antes.
+
+   **Addendum, mismo día:** el hallazgo de que `WORD1.exe.so` ya enlaza en
+   runtime contra `libQt6Widgets/Gui/Core/DBus.so.6` (ver "Estado real de
+   hoy" arriba) refuerza esta recomendación en vez de cambiarla — el
+   acoplamiento entre `src/core` y `WORD1` no es solo de build
+   (`ExternalProject_Add`) sino de carga en cada arranque del binario. Eso
+   es más razón, no menos, para no partirlo en dos repos mientras ese
+   enlace exista.
 
 ---
 

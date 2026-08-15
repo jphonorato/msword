@@ -20,5 +20,9 @@
       "Bash(nm -D /home/pablo/msword/bin/WORD1.exe.so)",
       "Bash(DISPLAY=:99 timeout 8 env WINEDEBUG=+gdi wine WORD1.exe.so)"
     ]
+  },
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": true,
+    "superpowers@superpowers-marketplace": true
   }
 }
