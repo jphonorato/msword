@@ -1,11 +1,11 @@
 # Terminar el port Winelib (word1_startup_blocked) Implementation Plan
 
-> **Status 2026-08-15 (paused, usage cap):** Tasks 1–2 done on
-> `fix/winelib-startup-blocked` (`09a4283`, `7de323f`). Task 3
-> mid-flight: font MessageBox root-caused and fixed (`134cddc`);
-> `opus_word1_about_test` now AVs in `FInsertInPl`/`C_PushLbs`. Resume
-> from `docs/port-linux/03-comportamiento-word1-startup-blocked.md`
-> “Estado al cortar” / “Cómo retomar”. Tasks 4–10 not started.
+> **Status 2026-08-15 (paused, usage cap):** Tasks 1–2 done
+> (`09a4283`, `7de323f`). Task 3 mid-flight: font MessageBox fixed
+> (`134cddc`); H1 rejected / `vhpllbs` already smashed at first
+> `FInsertInPl` (`5bebdd9`). About still AVs. Resume from
+> `docs/port-linux/03-comportamiento-word1-startup-blocked.md`
+> “Cómo retomar”. Tasks 4–10 not started.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

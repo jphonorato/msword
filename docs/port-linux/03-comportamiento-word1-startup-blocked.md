@@ -298,5 +298,9 @@ Rama `fix/winelib-startup-blocked` (no está en `main`). Plan:
 Build/test solo en debian13 contra `/home/pablo/build-debian13-verify`,
 `DISPLAY=:59`. No usar el `--preset` del host.
 
-Retomar en Task 3, Phase 1 del AV de `FInsertInPl` (arriba). Tasks
-1–2 están hechas y revisadas. Tasks 4–10 no se empezaron.
+Retomar en Task 3 **después** de Fix round 2 (HEAD incluye `5bebdd9`):
+H1 descartada; el header de `vhpllbs` ya es basura en la primera
+`FInsertInPl`. Buscar **quién escribe ese bloque entre `HplInit` y
+`C_PushLbs`** (no es grow, no es `bltbh` del header). Sin tocar
+`src/Opus/` salvo autorización. Tasks 1–2 hechas. Tasks 4–10 no
+empezadas.
