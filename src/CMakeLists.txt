@@ -1315,6 +1315,11 @@ if(OPUS_WINELIB_BUILD)
     # archivo no tendría contra qué enlazar (su contenido está además
     # guardado con #if defined(__GNUC__) && !defined(_MSC_VER)).
     list(APPEND WORD1_SOURCES port/original/opus_mem_passthrough.cpp)
+    # `_setjmp` en ABI System V. Sin esta TU winebuild resuelve el `_setjmp`
+    # indefinido (glibc expande setjmp() a él) contra el msvcrt PE de Wine,
+    # que es Microsoft-x64 y lee el jmp_buf de RCX en vez de RDI: escribía su
+    # _JUMP_BUFFER sobre punteros ajenos. Ver la cabecera del archivo.
+    list(APPEND WORD1_SOURCES port/original/opus_x64_setjmp.cpp)
 endif()
 # Under OPUS_WINELIB_BUILD, port/word1.rc is instead compiled by wrc into a
 # .res and linked in directly (Fase 4 of docs/port-linux/00-reconocimiento.md);

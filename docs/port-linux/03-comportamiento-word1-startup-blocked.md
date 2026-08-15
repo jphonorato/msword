@@ -287,6 +287,163 @@ Exception 0xC0000005 FInsertInPl+0x1B6 C_PushLbs+0x296
 `1430` (`FInsertInPl`); o `LOADFONT.C:397` (único camino que no
 entra en layout variable-pitch).
 
+### Fix round 3 (2026-08-15): `_setjmp` con ABI equivocada — RESUELTO
+
+`opus_word1_about_test` **pasa**. El AV no estaba en `FInsertInPl` ni en
+`HpInPl`: los dos eran víctimas. Quien destroza el header de `vhpllbs`
+es `setjmp`.
+
+**Evidencia (watchpoint de hardware, no printf).** En el contenedor
+debian13, `gdb -batch` sobre `/usr/lib/wine/wine64` (no sobre
+`/usr/bin/wine`, que es un script), con `set follow-fork-mode parent`
+para no seguir al `wineserver`, y `handle SIGSEGV nostop noprint pass`
+para que Wine convierta la falla en excepción Win32:
+
+1. Breakpoint en `layout.c:286` (justo después de
+   `vhpllbs = HplInit(sizeof(struct LBS), 8)`). El header está **sano**:
+   `iMac=0 iMax=8 cb=176 brgfoo=20 fExternal=0`, `data=0x7ffffe8117a0`.
+   Es decir, la hipótesis "ya nace destrozado" de la ronda 2 era falsa:
+   nace bien y lo rompen cuatro líneas más abajo.
+2. `watch -l *(int *)(data + 16)` (o sea `PL.fExternal`) y `continue`.
+   Dispara enseguida: `Old value = 0`, `New value = -31497312`, con
+   `#1 LbcFormatPage ... layout.c:290` — o sea `SetLayoutAbort()`.
+3. En el punto del disparo, `x/10i $pc-32` muestra el cuerpo del
+   callee, que es exactamente el `_setjmp` de MSVCRT x86-64:
+
+   ```
+   0x6fffffc2f8e8:  mov    %rdx,(%rcx)      ; buf->Frame
+   0x6fffffc2f8eb:  mov    %rbx,0x8(%rcx)   ; buf->Rbx
+   0x6fffffc2f8ef:  lea    0x8(%rsp),%rax
+   0x6fffffc2f8f4:  mov    %rax,0x10(%rcx)  ; buf->Rsp
+=> 0x6fffffc2f8f8:  mov    %rbp,0x18(%rcx)  ; buf->Rbp
+   ```
+
+   y los registros: `rdi=0x7ffff79122d8` (que **sí** es
+   `&venvLayout.nativeEnv`, el buffer correcto) frente a
+   `rcx=0x7ffffe8117a0` (que es `*vhpllbs`).
+
+**Causa raíz, en una frase:** `_setjmp` se resolvía contra el `msvcrt`
+PE de Wine, que es Microsoft-x64 y toma el `jmp_buf` en **RCX**,
+mientras que todo el código de Opus es System V y lo pasa en **RDI**;
+el import escribía su `_JUMP_BUFFER` de 256 bytes sobre el puntero
+rancio que quedara en RCX.
+
+En `LbcFormatPage` ese RCX rancio es `*vhpllbs`, el bloque que
+`HplInit` acababa de devolver nueve líneas antes, así que cada pasada
+de layout escribía estado de registros encima del `struct PL`:
+
+- `fExternal` (offset 16) recibía la mitad baja de RSP →
+  `0xfe1f63a0` = `-31497312`, que es justo el valor que la ronda 2
+  había registrado.
+- offsets 20..27 recibían `0x00007fff` + ceros → de ahí sale el
+  `hqple = 0x7fff00000000` del AV.
+
+El síntoma final (tras el clamp de `OpusPlData` de `5bebdd9`) ya no era
+`FInsertInPl` sino `FreeHpl` (`clsplc.c:465`): con `fExternal` distinto
+de cero toma el PL no-externo por externo, lee ese `hqple` basura de
+`rglbs[0]` y llama a `FreeHq` → AV de lectura en `OpusFreeH`
+(`opus_x64_heap.cpp:411`, `mov (%rax),%rax` con `rax=0x7fff00000000`).
+La cadena `LbcFormatPage → FreePhpl(&vhpllbs) → FreeHpl → OpusFreeH`
+quedó confirmada casando los retornos con el desensamblado
+(`FreeHpl+84` es exactamente el retorno del `call OpusFreeH` de la rama
+`FreeHq`, y el slot `rbp-8` de `FreePhpl` contiene `&vhpllbs`).
+
+Confirmación estática: `nm bin/WORD1.exe.so` mostraba
+`__imp__setjmp` y un thunk `t _setjmp` en la misma tabla de imports que
+`ShellExecuteA` / `AdjustWindowRect`. `_setjmp` era el **único** símbolo
+de CRT importado por error (los otros cuatro con pinta de CRT —
+`_lclose`, `_llseek`, `_lread`, `_lwrite` — son APIs Win16 legítimas de
+kernel32). `longjmp`, en cambio, sí resolvía a glibc
+(`longjmp@GLIBC_2.2.5`): el par estaba roto por la mitad.
+
+Llega ahí porque `Opus/lib/qsetjmp.h` (rama `OPUS_X64`) usa el
+`<setjmp.h>` del host y glibc expande `setjmp(env)` a `_setjmp(env)`.
+
+**Fix (todo fuera de árbol restringido):**
+`src/port/original/opus_x64_setjmp.cpp` define `_setjmp` en ABI System V
+como salto de cola a `__sigsetjmp(env, 0)` — que es literalmente lo que
+hace el `_setjmp` de glibc. Tiene que ser salto de cola: un wrapper en C
+dejaría un marco de pila que ya no existe cuando `longjmp` vuelve a él.
+Al quedar el símbolo definido, `winebuild` deja de generar el import de
+`msvcrt` (verificado: `nm` ahora da `T _setjmp` + `U
+__sigsetjmp@GLIBC_2.2.5`, sin `__imp__setjmp`). Se añade a
+`WORD1_SOURCES` dentro del bloque `if(OPUS_WINELIB_BUILD)` que ya
+existía, así que MSVC no lo ve.
+
+**Segundo cambio, necesario para que ctest lo *vea*.** Con el AV
+arreglado, `opus_word1_ui_test --about` termina en 2 s con código 0
+(diálogo `OpusSdmDialog` creado, botón en el id 1, responde, cierra
+limpio), pero ctest seguía dando `Timeout 20 s` sin imprimir nada. La
+causa es el §25 ya documentado: `CreateProcessW` devuelve un
+`PROCESS_INFORMATION` a cero para `WORD1.exe.so`, así que
+`hProcess == nullptr` y el `TerminateProcess` de cada salida es un
+no-op; WORD1 sobrevivía al harness reteniendo el pipe de stdout
+heredado y ctest esperaba. Mientras WORD1 se moría solo esto no se
+notaba. `opus_word1_ui_test.cpp` recupera ahora el PID real desde la
+ventana principal (`GetWindowThreadProcessId` + `OpenProcess`) cuando
+`hProcess` viene nulo; con eso todo el teardown y las esperas ya
+existentes funcionan sin tocarlas, y las búsquedas de ventana
+recuperan el filtro por PID exacto que el §26 prefiere.
+
+**ctest** (debian13, `/home/pablo/build-debian13-verify`, `DISPLAY=:59`):
+
+```
+1/1 Test #17: opus_word1_about_test ............   Passed    2.88 sec
+100% tests passed, 0 tests failed out of 1
+```
+
+Estable en 3 ejecuciones consecutivas (2.84 / 2.97 / 2.83 s).
+
+La etiqueta `word1_startup_blocked` pasa de **0/9** a **4/8** (sin contar
+`word1_port_smoke_test`, ver más abajo):
+
+```
+1/8 Test #11: opus_word1_ui_test ...................   Passed    0.37 sec
+2/8 Test #12: opus_word1_clipboard_shortcut_test ...   Passed    0.56 sec
+3/8 Test #13: opus_word1_typing_test ...............   Passed   11.24 sec
+4/8 Test #14: opus_word1_interaction_test ..........***Failed    0.91 sec
+5/8 Test #15: opus_word1_selection_test ............***Failed    1.96 sec
+6/8 Test #16: opus_word1_font_typing_test ..........***Failed    0.25 sec
+7/8 Test #17: opus_word1_about_test ................   Passed    1.35 sec
+8/8 Test #18: opus_word1_save_as_test ..............***Failed    6.39 sec
+50% tests passed, 4 tests failed out of 8
+```
+
+Los 4 que siguen fallando ya no mueren por el AV: fallan rápido y con
+mensaje propio. Son el material de las Tasks 4–5.
+
+Gating: 7/7 verdes (`opus_original_sttb_test`, `opus_original_plc_test`,
+`opus_sdm_cab_test`, `opus_original_command_test`,
+`opus_shell_memory_foreign_test`, `opus_shell_config_test`,
+`opus_shell_font_substitution_test`) más `opus_original_strtbl_test`.
+
+**Dos cosas pendientes, ninguna causada por este fix:**
+
+1. `opus_x64_runtime_test` (gating) **se cuelga** en el tip de la rama:
+   ejecutado directamente termina en `timeout 40` sin imprimir una sola
+   línea (`rc=124`). No lo provoca esta ronda — el binario de ayer
+   (05:46, anterior a `5bebdd9` y a este fix) se colgaba igual, y ni
+   `opus_x64_setjmp.cpp` ni el cambio del harness entran en ese target.
+   Reconstruirlo no lo arregla. Hay que investigarlo aparte.
+2. `word1_port_smoke_test` (`WORD1 --self-test`) no tiene propiedad
+   `TIMEOUT` en `CMakeLists.txt:1580`, a diferencia de sus 8 hermanos.
+   Mientras WORD1 se moría solo eso no se notaba; ahora que sobrevive,
+   un `ctest` completo se queda ahí hasta el default de 1500 s.
+   Recomendado (no hecho aquí, queda fuera del alcance de esta ronda):
+   añadirle `TIMEOUT 20` igual que a los demás.
+
+**Alcance real del bug.** `SetJmp` no se usa solo en layout: también en
+`GRSPEC.C`, `eldde.c`, `fieldpic.c`, `fltexp.c`, `ffread.c`,
+`mathapi.c`, `token.c`, `sort.c` e `interp/elinit.c`. Todos esos sitios
+llevaban escribiendo 256 bytes de estado de registros sobre punteros
+ajenos. Conviene revisar si otros fallos "inexplicables" del port
+desaparecen con esto antes de investigarlos por separado.
+
+**Nota para quien siga:** `opus_original_startup_probe` (target
+`EXCLUDE_FROM_ALL`, no entra en ctest) enlaza el mismo grafo y sigue
+sin el shim. Si se revive, hay que añadirle
+`port/original/opus_x64_setjmp.cpp` igual que a WORD1.
+
 ---
 
 ## Cómo retomar
@@ -298,9 +455,15 @@ Rama `fix/winelib-startup-blocked` (no está en `main`). Plan:
 Build/test solo en debian13 contra `/home/pablo/build-debian13-verify`,
 `DISPLAY=:59`. No usar el `--preset` del host.
 
-Retomar en Task 3 **después** de Fix round 2 (HEAD incluye `5bebdd9`):
-H1 descartada; el header de `vhpllbs` ya es basura en la primera
-`FInsertInPl`. Buscar **quién escribe ese bloque entre `HplInit` y
-`C_PushLbs`** (no es grow, no es `bltbh` del header). Sin tocar
-`src/Opus/` salvo autorización. Tasks 1–2 hechas. Tasks 4–10 no
-empezadas.
+Task 3 **cerrada** en Fix round 3: el AV era `_setjmp` con ABI
+Microsoft-x64 pisando `*vhpllbs`. `opus_word1_about_test` pasa y la
+etiqueta va 4/8. Tasks 1–2 hechas.
+
+Siguiente:
+
+- Tasks 4–5 sobre los 4 que aún fallan (`interaction`, `selection`,
+  `font-typing`, `save-as`). Ya fallan rápido y con mensaje propio;
+  empezar por leer ese mensaje, no por asumir el AV viejo.
+- Aparte y sin relación con Task 3: `opus_x64_runtime_test` (gating)
+  se cuelga sin imprimir nada, y `word1_port_smoke_test` no tiene
+  `TIMEOUT` (`CMakeLists.txt:1580`). Detalle en Fix round 3.

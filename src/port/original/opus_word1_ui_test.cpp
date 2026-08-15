@@ -712,6 +712,29 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
     if (main_window == nullptr) {
         return fail(process, 3, "WORD1 main window did not appear");
     }
+    // The same zeroed PROCESS_INFORMATION described above also leaves
+    // hProcess null, so the TerminateProcess in fail() and in every mode's
+    // exit path is a silent no-op: WORD1 outlives the harness, keeps the
+    // stdout pipe it inherited, and ctest reports Timeout even for a run the
+    // harness itself finished with 0. That stayed invisible while WORD1
+    // crashed on its own during startup. The window found just above belongs
+    // to the real process, so recover the PID from it and open a handle;
+    // every teardown and wait downstream then works unchanged, and the
+    // window searches regain the exact-PID filter they normally prefer.
+    if (process.hProcess == nullptr) {
+        DWORD window_process_id = 0;
+        GetWindowThreadProcessId(main_window, &window_process_id);
+        if (window_process_id != 0) {
+            const HANDLE recovered =
+                OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_INFORMATION |
+                                SYNCHRONIZE,
+                            FALSE, window_process_id);
+            if (recovered != nullptr) {
+                process.hProcess = recovered;
+                process.dwProcessId = window_process_id;
+            }
+        }
+    }
     if (save_as_mode) {
         Sleep(1000);
         if (!PostMessageW(main_window, kWmCommand, kFileSaveAs, 0)) {
