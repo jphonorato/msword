@@ -3250,3 +3250,86 @@ ctest --test-dir /home/pablo/build-debian13-verify -R word1_port_smoke_test --ou
 
 Cierra el gap B del plan winelib-startup-blocked: el smoke deja de ser
 un timeout silencioso de ~90 s y pasa a ser un chequeo sub-segundo.
+
+### 30. Cierre del audit de std::wstring/std::wcerr en opus_word1_ui_test.cpp — 4 sitios más (9 vía send_physical_text) sin crashear en las 4/4 corridas
+
+Cierra el gap A del plan winelib-startup-blocked (los sitios de
+`std::wstring`/`std::wcerr` que §23-24/§27 dejaron sin auditar en
+`src/port/original/opus_word1_ui_test.cpp`). Misma clase de bug que
+§23-24/§27/§29: `wchar_t` de 2 bytes bajo winegcc (`-fshort-wchar`)
+contra la maquinaria de glibc/`std::` pensada para `wchar_t` de 4
+bytes.
+
+**Grep previo (Step 1)** — hits vivos vs. comentarios:
+
+| Línea | Hit | Estado |
+|---|---|---|
+| 129 | `std::wcerr << L"window class='" ...` en `log_window_callback` | vivo |
+| 514 | `bool send_physical_text(const std::wstring& text)` | vivo (9 call sites con literales `L"..."`) |
+| 671/675 | comentarios sobre el fix de §24 | comentario |
+| 1445 | `const std::wstring sentence = ...` en `selection_mode` | vivo |
+| 1617 | `const std::wstring physical_text = ...` en `interaction_mode` | vivo |
+| 1865/1870 | comentarios sobre el fix de §27 | comentario |
+
+**Sitios corregidos:**
+
+1. **`send_physical_text`** — firma `const std::wstring&` → `const wchar_t*`;
+   bucle `for (character : text)` → índice acotado por `lstrlenW`.
+   Los 9 call sites con literales `L"..."` enlazan sin construir
+   `std::wstring` temporal.
+2. **`sentence` en `selection_mode`** — `const wchar_t* const` +
+   `lstrlenW` + bucle por índice (incluye el uso posterior
+   `sentence.size()` → `sentence_length`).
+3. **`physical_text` en `interaction_mode`** — `const wchar_t* const`;
+   el paso a `send_physical_text` y el cálculo de `expected_cp_after_typing`
+   (antes `physical_text.size()` + range-for contando `L'\r'`) pasan a
+   `lstrlenW` + bucle por índice.
+4. **`log_window_callback`** — `std::wcerr` con buffers `WCHAR` →
+   `WideCharToMultiByte(CP_ACP, ...)` a buffers `char[]` y
+   `std::cerr` (mismo patrón de diagnóstico estrecho del resto del
+   archivo).
+
+Grep post-fix: solo quedan menciones en comentarios deliberados
+(§24/§27 y la nota del callback).
+
+**Nota sobre el brief:** el plan decía que `physical_text` solo se
+pasaba a `send_physical_text`. En el código real también se usaba
+`.size()` y un range-for para contar `L'\r'` al calcular el CP
+esperado; esos usos se migraron al mismo patrón de puntero +
+`lstrlenW` (sin reintroducir `std::wstring`).
+
+**ctest (Step 6, contenedor debian13, DISPLAY=:59, build en
+`/home/pablo/build-debian13-verify`):**
+
+```
+1/9 Test #10: word1_port_smoke_test ................   Passed    0.10 sec
+2/9 Test #11: opus_word1_ui_test ...................***Timeout  20.02 sec
+File New dialog did not appear
+3/9 Test #12: opus_word1_clipboard_shortcut_test ...***Timeout  20.02 sec
+Ctrl+A did not execute Select All
+4/9 Test #13: opus_word1_typing_test ...............***Timeout  20.02 sec
+could not post a character to the document
+5/9 Test #14: opus_word1_interaction_test ..........***Timeout  25.02 sec
+could not prepare the native window move test
+6/9 Test #15: opus_word1_selection_test ............***Timeout  20.02 sec
+typing did not leave a canonical insertion selection
+7/9 Test #16: opus_word1_font_typing_test ..........***Timeout  20.00 sec
+font typing test could not find the ribbon controls
+8/9 Test #17: opus_word1_about_test ................***Timeout  20.01 sec
+Help About dialog did not appear
+9/9 Test #18: opus_word1_save_as_test ..............***Timeout  20.00 sec
+File Save As dialog did not appear
+# 11% tests passed, 8 tests failed out of 9
+# CTEST_EXIT=8
+# Label Time Summary: word1_startup_blocked = 165.21 sec*proc (9 tests)
+```
+
+Coincide con la tabla de §26/§27 (mensajes de comportamiento real;
+typing sigue en la familia 13/15 de §27: esta corrida `"could not
+post a character to the document"`). **Ningún crash** de la clase
+`malloc(): invalid size` / stack overflow. El smoke pasa (Task 1 /
+§29). Este task **no** corrige ninguno de los 8 fallos de
+comportamiento — solo quita el riesgo residual de wide-char en el
+arnés para que Tasks 3-10 puedan fiarse de los mensajes de fallo.
+
+Cierra el gap A del plan winelib-startup-blocked.

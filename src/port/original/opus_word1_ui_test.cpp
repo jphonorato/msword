@@ -126,9 +126,19 @@ BOOL CALLBACK log_window_callback(const HWND window, const LPARAM value) {
         GetClassNameW(window, class_name,
                       static_cast<int>(std::size(class_name)));
         GetWindowTextW(window, caption, static_cast<int>(std::size(caption)));
-        std::wcerr << L"window class='" << class_name << L"' caption='"
-                   << caption << L"' visible=" << IsWindowVisible(window)
-                   << L" enabled=" << IsWindowEnabled(window) << L'\n';
+        // Narrow before printing: std::wcerr / glibc wide I/O assume 4-byte
+        // wchar_t; these buffers are real 2-byte WCHAR under winegcc.
+        char class_name_ansi[256] = {};
+        char caption_ansi[1024] = {};
+        WideCharToMultiByte(CP_ACP, 0, class_name, -1, class_name_ansi,
+                            static_cast<int>(sizeof(class_name_ansi)), nullptr,
+                            nullptr);
+        WideCharToMultiByte(CP_ACP, 0, caption, -1, caption_ansi,
+                            static_cast<int>(sizeof(caption_ansi)), nullptr,
+                            nullptr);
+        std::cerr << "window class='" << class_name_ansi << "' caption='"
+                  << caption_ansi << "' visible=" << IsWindowVisible(window)
+                  << " enabled=" << IsWindowEnabled(window) << '\n';
     }
     return TRUE;
 }
@@ -511,8 +521,10 @@ bool send_control_shift_key(const WORD virtual_key) {
                      sizeof(INPUT)) == input.size();
 }
 
-bool send_physical_text(const std::wstring& text) {
-    for (const wchar_t character : text) {
+bool send_physical_text(const wchar_t* text) {
+    const int length = lstrlenW(text);
+    for (int index = 0; index < length; ++index) {
+        const wchar_t character = text[index];
         WORD virtual_key = 0;
         if (character >= L'a' && character <= L'z') {
             virtual_key = static_cast<WORD>(character - L'a' + L'A');
@@ -1442,8 +1454,10 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
         if (pane == nullptr) {
             return fail(process, 36, "selection test could not find OpusWwd");
         }
-        const std::wstring sentence = L"physical keyboard input line one";
-        for (const wchar_t character : sentence) {
+        const wchar_t* const sentence = L"physical keyboard input line one";
+        const int sentence_length = lstrlenW(sentence);
+        for (int index = 0; index < sentence_length; ++index) {
+            const wchar_t character = sentence[index];
             if (!post_keyboard_character(pane, character)) {
                 return fail(process, 37,
                             "selection test could not post its sentence");
@@ -1506,7 +1520,7 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
                   << " style=" << clicked_style << " xw=" << clicked_xw
                   << " double=" << clicked_double << " sk=" << clicked_sk
                   << '\n';
-        if (typed_first != static_cast<LRESULT>(sentence.size()) ||
+        if (typed_first != static_cast<LRESULT>(sentence_length) ||
             typed_lim != typed_first || typed_ins != 1) {
             return fail(process, 38,
                         "typing did not leave a canonical insertion selection");
@@ -1614,7 +1628,7 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
             return fail(process, 24,
                         "could not give real keyboard focus to the document");
         }
-        const std::wstring physical_text =
+        const wchar_t* const physical_text =
             L"physical keyboard input line one\rphysical keyboard input "
             L"line two\rphysical keyboard input line three";
         const LRESULT cp_before_typing =
@@ -1695,10 +1709,11 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
         }
         std::cerr << '\n';
         const std::size_t dark_pixels_after = count_dark_client_pixels(pane);
+        const int physical_text_length = lstrlenW(physical_text);
         LRESULT expected_cp_after_typing =
-            cp_before_typing + static_cast<LRESULT>(physical_text.size());
-        for (const wchar_t character : physical_text) {
-            if (character == L'\r') {
+            cp_before_typing + static_cast<LRESULT>(physical_text_length);
+        for (int index = 0; index < physical_text_length; ++index) {
+            if (physical_text[index] == L'\r') {
                 ++expected_cp_after_typing;
             }
         }
