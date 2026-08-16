@@ -494,6 +494,46 @@ sin el shim. Si se revive, hay que añadirle
 
 ---
 
+## 4. File > New: verificación bloqueada por entorno (no por código)
+
+**Estado:** sin determinar. Task 4 se lanzó para verificar si File > New
+comparte la causa raíz de Task 3 (hipótesis fuerte: sí — `opus_word1_ui_test`
+en modo base, el mismo test, ya había dado `Passed 1.82 s` dentro del run
+completo de Fix round 3). El intento de verificación de esta sesión no
+llegó a confirmarlo ni a refutarlo:
+
+```
+1/9 Test #10: word1_port_smoke_test .................   Passed    1.69 sec
+2/9 Test #11: opus_word1_ui_test ....................***Failed    9.57 sec
+
+WORD1 main window did not appear
+(Wine CreateWindow error 1400: Invalid window handle)
+```
+
+El fallo ocurre **antes** de llegar al comando File > New (línea ~1965 del
+arnés) — la segunda instancia de WORD1 nunca crea su ventana principal.
+Diagnóstico del implementador: síntoma de `explorer.exe`/wineserver en
+mal estado tras el primer proceso, no relacionado con el binario (símbolos
+`_setjmp`/`longjmp` verificados correctos).
+
+**Causa más probable, descubierta después de que Task 4 se cerrara BLOCKED:**
+durante esta misma sesión había **otra sesión** trabajando en paralelo
+sobre el mismo checkout y el mismo `~/build-debian13-verify` dentro de
+debian13 (confirmado con procesos en vivo: un `cmake --build --target
+WORD1` + `ctest -R opus_word1_ui_test` detached, `PPID 1`, que ninguno de
+los agentes de esta sesión lanzó). Dos wineserver/Wine-prefix compartidos
+recibiendo lanzamientos de WORD1 al mismo tiempo explica el síntoma
+("Wine state corruption between test runs") mejor que una regresión de
+código — y es coherente con que `opus_word1_ui_test` ya había pasado horas
+antes, en la misma rama, sin cambios de código de por medio. **No
+confirmado**, es la hipótesis más probable a re-verificar primero, en una
+ventana donde el build dir no esté en uso por nadie más.
+
+No hubo cambios de código ni commit para Task 4. Detalle completo:
+`.superpowers/sdd/2026-08-15-terminar-winelib/task-4-report.md`.
+
+---
+
 ## Cómo retomar
 
 Rama `fix/winelib-startup-blocked` (no está en `main`). Plan:
@@ -501,18 +541,42 @@ Rama `fix/winelib-startup-blocked` (no está en `main`). Plan:
 `.superpowers/sdd/2026-08-15-terminar-winelib/progress.md`.
 
 Build/test solo en debian13 contra `/home/pablo/build-debian13-verify`,
-`DISPLAY=:59`. No usar el `--preset` del host.
+`DISPLAY=:59`. No usar el `--preset` del host. **Este build dir es
+compartido con al menos otra sesión** (visto en vivo el 2026-08-15, ver
+§4 arriba) — antes de fiarse de un resultado de `ctest` rojo, confirmar
+que no hay otro proceso `cmake`/`ninja`/`ctest` corriendo ahí al mismo
+tiempo (`ps aux | grep -E 'cmake|ninja|ctest'` dentro del contenedor).
 
-Task 3 **cerrada** en Fix round 3 (+ cierre de revisión): el AV era
-`_setjmp` con ABI Microsoft-x64 pisando `*vhpllbs`. Las dos mitades del
-par (`_setjmp` y `longjmp`) están fijadas a System V por definición, con
-guard de build que lo verifica. `opus_word1_about_test` pasa y la
-etiqueta va 5/9. Tasks 1–2 hechas.
+Task 3 **cerrada** en Fix round 3 + cierre de revisión (ambas rondas de
+review, clean): el AV era `_setjmp` con ABI Microsoft-x64 pisando
+`*vhpllbs`. Las dos mitades del par (`_setjmp` y `longjmp`) están fijadas
+a System V por definición, con guard de build que lo verifica.
+`opus_word1_about_test` pasa; la etiqueta llegó a 5/9. Tasks 1–2 hechas.
+11 hallazgos menores quedaron diferidos a la revisión final de toda la
+rama (lista completa en el ledger SDD).
 
-Siguiente:
+Task 4 **sin determinar** (§4 arriba) — ni verificada ni refutada, por
+un fallo de arranque de la segunda instancia de WORD1 que probablemente
+es la sesión concurrente, no el código. **Primer paso al retomar:**
+re-lanzar `ctest -L word1_startup_blocked` en una ventana sin otra
+sesión activa en el mismo build dir; si `opus_word1_ui_test` vuelve a
+pasar, Task 4 es verify-only (documentar y cerrar sin cambio de código,
+tal como decía el brief). Si vuelve a fallar en el mismo punto
+(`CreateWindow` de la segunda instancia, no File > New en sí), es un
+bug de aislamiento del arnés/contenedor, no de Task 4.
 
-- Tasks 4–5 sobre los 4 que aún fallan (`interaction`, `selection`,
-  `font-typing`, `save-as`). Ya fallan rápido y con mensaje propio;
-  empezar por leer ese mensaje, no por asumir el AV viejo.
-- Aparte y sin relación con Task 3: `opus_x64_runtime_test` (gating)
-  se cuelga sin imprimir nada. Detalle en Fix round 3.
+Task 5 (Save As) **no empezada** — el único de los 4 tests que ya
+fallaba con mensaje propio (no el AV genérico) antes de esta sesión;
+candidato a causa raíz independiente, ver la nota del brief sobre
+`run_word95_common_file_dialog`.
+
+Tasks 6–10 **no empezadas**.
+
+Aparte y sin relación con Task 3/4: `opus_x64_runtime_test` (gating)
+se cuelga sin imprimir nada, confirmado pre-existente (binario de un
+día antes, sin símbolo `setjmp`, se cuelga igual). Sigue sin
+investigar.
+
+Sesión cerrada 2026-08-15 a pedido del usuario tras ~2 h de trabajo
+(no por límite de uso). Sin trabajo a medias sin commitear — árbol
+limpio en `25325c0`.
