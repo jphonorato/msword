@@ -534,6 +534,99 @@ No hubo cambios de código ni commit para Task 4. Detalle completo:
 
 ---
 
+## 5. Revisión independiente de Task 3 -- 4 hallazgos de fidelidad, corregidos y verificados en exia
+
+**Contexto:** antes de confiar en Task 3, se corrió `/code-review` (nivel
+`high`) contra los 9 commits de `fix/winelib-startup-blocked` sobre
+`main`. Encontró 4 problemas, los 4 en el mismo tema: la rama arregla el
+AV real de `_setjmp`, pero dos de sus workarounds de la era de
+investigación (antes de encontrar la causa raíz) y dos gaps del camino
+sin-`QGuiApplication` de `OpusShellFontMetrics` quedaban silenciando
+datos incorrectos en vez de fallar visible -- exactamente lo que el
+proyecto no se puede permitir dado el requisito duro de paginación
+byte-idéntica.
+
+**Los 4, con su causa raíz confirmada contra el código real (no solo el
+diff):**
+
+1. **`opus_original_startup_probe.cpp` -- `OpusPortGdiCharWidths`**
+   dejaba `lfHeight=0` (tamaño por defecto de Wine, indefinido) cuando
+   `hps<=0`, mientras `OpusShellFontMetrics` ya usaba 10pt
+   (`PixelSizeFor`/`PointSizeFor`, hpsDefault) para la *misma* petición
+   de fuente -- anchos y ascent/descent medidos a dos tamaños distintos.
+   El comentario original decía que esto "recreaba" el `LOGFONT` que
+   `C_FGraphicsFcidToPlf` real construye para `hps==0`; falso:
+   `Opus/LOADFONT.C:880` tiene `Assert( fcid.hps > 0 )` -- el Word real
+   nunca llega a esa función con `hps==0`. Se corrigió para usar el
+   mismo default de 10pt.
+
+2. **`opus_x64_layout.c` -- `OpusPlData`** clampeaba cualquier
+   `brgfoo` fuera de `[cbPLBase, 4096]` a `cbPLBase` en silencio. Es un
+   workaround de la sesión de investigación de Task 3 (mismo commit
+   `5bebdd9` que originó el AV), de cuando la causa raíz todavía no se
+   conocía. Con `_setjmp`/`longjmp` ya arreglados no debería dispararse
+   más -- se dejó el clamp pero se le añadió un `fprintf(stderr, ...)`
+   para que una recurrencia real sea visible.
+
+3. **`opus_asm_resn2_pl.cpp` -- `HpInPl`** devolvía el puntero al
+   elemento 0 (no `nullptr`) cuando `cb<=0` o `index<0` -- también del
+   mismo commit `5bebdd9`. El original (`Opus/asm/resn2.asm:1340`) no
+   tiene ningún fallback de release, solo un `Assert` de DEBUG; dar el
+   elemento 0 como si fuera válido hace que cualquier llamador (todos
+   tratan un retorno no-nulo como "índice válido") lea o escriba el
+   slot equivocado sin poder distinguirlo de un acceso real. Se
+   corrigió a `nullptr`.
+
+4. **`OpusShellFontMetrics.cpp`** -- el fallback de tabla oráculo
+   (usado cuando no hay `QGuiApplication`, el caso de arranque) ignoraba
+   `key->catr` (negrita/cursiva): la tabla
+   (`opus_shell_font_metrics_oracle_table.h`) solo tiene filas de peso
+   regular (28 filas = 4 nombres de época × 7 tamaños, nunca se capturó
+   negrita/cursiva), así que una petición en negrita/cursiva recibía en
+   silencio las métricas de peso regular. El llamador real
+   (`Opus/LOADFONT.C:442-448`) documenta explícitamente que `catr != 0`
+   debe fallar controlado -- ese contrato ya se cumplía en el camino
+   con `QGuiApplication`, pero no en este fallback. Se corrigió para
+   que el fallback de oráculo (ascenso/descenso y, si el GDI de
+   `OpusPortGdiCharWidths` también falla, anchos) se salte cuando
+   `catr != 0`, en vez de responder con datos de peso equivocado.
+
+**Verificado en exia (VPS, no el contenedor `debian13` de hp-15--
+hp-15 no estaba disponible esta sesión; exia es Debian 13 trixie con
+`wine`/`winegcc` igual de válido per `CLAUDE.md`):**
+
+- `ninja`/`cmake --build` de `opus_original_engine` y `WORD1`: 0
+  errores, mismos warnings preexistentes de siempre.
+- `ctest` completo (sin `opus_x64_runtime_test`, ver nota abajo): igual
+  que antes de estos 4 fixes -- sin regresión.
+- **Gotcha real encontrado en esta verificación, no relacionado con el
+  código:** la primera corrida de la etiqueta `word1_startup_blocked`
+  dio 0/9 con `free(): corrupted unsorted chunks` y `unknown test mode`
+  en todos -- el patrón de bug *original*, de antes de Tasks 1-2. Causa:
+  `build/tests/Debug/opus_word1_ui_test.exe.so` tenía fecha del 12 de
+  agosto -- de **antes** de que existieran los fixes de Tasks 1-3 en el
+  árbol. `cmake --build --target WORD1` no reconstruye el arnés de
+  test; hace falta `--target opus_word1_ui_test` aparte. Con el arnés
+  reconstruido: **4/9** (`word1_port_smoke_test`, `opus_word1_ui_test`
+  base, `opus_word1_clipboard_shortcut_test`, `opus_word1_about_test`),
+  coincide con los mismos 4 wins ya documentados en §1-4 arriba (la
+  quinta de "5/9" en `Cómo retomar` corresponde al mismo `ui_test` base
+  contado una sola vez ahí). Los 5 fallos restantes
+  (`--typing`, `--interaction`, `--selection`, `--font-typing`,
+  Save As) son exactamente el alcance sin empezar de Tasks 5-10 --
+  no regresiones de estos 4 fixes.
+- **`Xvfb` real necesario:** sin `DISPLAY`, Wine cae a `nodrv` y todo
+  falla con "Invalid window handle" antes de llegar a la lógica real.
+  Este VPS ya tenía un `Xvfb :99` corriendo desde el 12 de agosto
+  (otra sesión); se reusó en vez de levantar uno nuevo.
+- `opus_x64_runtime_test` (gating) sigue colgándose sin imprimir nada
+  -- confirmado también aquí, mismo síntoma que documentó la sesión de
+  Task 3 en debian13. Sigue sin investigar, sigue sin relación con
+  Task 3 ni con estos 4 fixes.
+
+4 commits nuevos sobre `16145b6`: uno por hallazgo, mismo formato de
+mensaje que el resto de la rama.
+
 ## Cómo retomar
 
 Rama `fix/winelib-startup-blocked` (no está en `main`). Plan:
@@ -580,3 +673,12 @@ investigar.
 Sesión cerrada 2026-08-15 a pedido del usuario tras ~2 h de trabajo
 (no por límite de uso). Sin trabajo a medias sin commitear — árbol
 limpio en `25325c0`.
+
+**Actualización 2026-08-19 (exia, revisión independiente de Task 3):**
+ver §5 arriba. 4 hallazgos de fidelidad corregidos y verificados, 4/9
+reproducido en un segundo entorno (exia, no debian13/hp-15). Árbol
+limpio en el 4º commit nuevo sobre `16145b6`. Task 4 sigue sin
+determinar -- no se tocó esta sesión (el `opus_word1_ui_test` base que
+pasó aquí es el mismo test de siempre, no una segunda instancia
+concurrente como necesita Task 4 para confirmar/refutar la hipótesis
+de contención de §4).
