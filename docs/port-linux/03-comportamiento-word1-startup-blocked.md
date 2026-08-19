@@ -676,15 +676,12 @@ a System V por definición, con guard de build que lo verifica.
 11 hallazgos menores quedaron diferidos a la revisión final de toda la
 rama (lista completa en el ledger SDD).
 
-Task 4 **sin determinar** (§4 arriba) — ni verificada ni refutada, por
-un fallo de arranque de la segunda instancia de WORD1 que probablemente
-es la sesión concurrente, no el código. **Primer paso al retomar:**
-re-lanzar `ctest -L word1_startup_blocked` en una ventana sin otra
-sesión activa en el mismo build dir; si `opus_word1_ui_test` vuelve a
-pasar, Task 4 es verify-only (documentar y cerrar sin cambio de código,
-tal como decía el brief). Si vuelve a fallar en el mismo punto
-(`CreateWindow` de la segunda instancia, no File > New en sí), es un
-bug de aislamiento del arnés/contenedor, no de Task 4.
+Task 4 **cerrada** 2026-08-19 en exia (§6 arriba) — verify-only,
+confirma la hipótesis de §4: `opus_word1_ui_test` (modo base, ejercita
+File > New) pasa limpio y aislado, sin ningún cambio de código. Mismo
+root cause que About (Task 3). El fallo de §4 fue el entorno
+compartido de esa sesión en debian13, no un bug independiente de
+File > New.
 
 Task 5 (Save As) **no empezada** — el único de los 4 tests que ya
 fallaba con mensaje propio (no el AV genérico) antes de esta sesión;
@@ -702,11 +699,12 @@ Sesión cerrada 2026-08-15 a pedido del usuario tras ~2 h de trabajo
 (no por límite de uso). Sin trabajo a medias sin commitear — árbol
 limpio en `25325c0`.
 
-**Actualización 2026-08-19 (exia, revisión independiente de Task 3):**
-ver §5 arriba. 4 hallazgos de fidelidad corregidos y verificados, 4/9
-reproducido en un segundo entorno (exia, no debian13/hp-15). Árbol
-limpio en el 4º commit nuevo sobre `16145b6`. Task 4 sigue sin
-determinar -- no se tocó esta sesión (el `opus_word1_ui_test` base que
-pasó aquí es el mismo test de siempre, no una segunda instancia
-concurrente como necesita Task 4 para confirmar/refutar la hipótesis
-de contención de §4).
+**Actualización 2026-08-19 (exia, revisión independiente de Task 3 +
+Task 4):** ver §5 y §6 arriba. 4 hallazgos de fidelidad corregidos y
+verificados (Task 3), Task 4 cerrada verify-only. 4/9 reproducido en
+un segundo entorno (exia, no debian13/hp-15). Árbol limpio, 6 commits
+nuevos sobre `16145b6`, pusheados a `origin/fix/winelib-startup-blocked`.
+
+Próximo paso al retomar: Task 5 (Save As), primer test de los
+restantes con mensaje propio en vez del AV genérico -- ver la nota de
+más abajo sobre `run_word95_common_file_dialog`.
