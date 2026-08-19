@@ -989,14 +989,98 @@ DISPLAY=:99 ctest -L word1_startup_blocked --output-on-failure
 
 Archivo: `src/port/original/opus_word1_ui_test.cpp` únicamente.
 
-Rama `fix/winelib-startup-blocked`. Task 6 **sin cerrar** -- retomar
-en §8: el bug 3 localizado (foco tras selección de ribbon) es el
-primer paso, junto con verificar si el mismo problema de foco afecta
-el size_combo (no llegó a probarse, el test falla antes en el
-font_combo). Task 7 (Ctrl+A / Select All) **cerrada** verify-only
-(§9), mismo patrón que Task 4. Task 8 (`--selection`) **cerrada**,
-arreglo real (§10). Task 9 (`--typing`) **cerrada**, arreglo real
-(§11), mismo patrón de foco que Task 8. Task 10 (`--interaction`,
-"dragging the caption did not move the window") no empezada.
-`opus_x64_runtime_test` (gating) sigue colgado, sin investigar,
-confirmado también en exia.
+## 12. `--interaction`: "dragging the caption did not move the WORD1 window" -- limitación de entorno confirmada, no bug del proyecto
+
+**Task 10, 2026-08-19 en exia -- último ítem del plan.** El plan (Step
+2) ya anticipaba esta posibilidad: "check whether this is a Wine/
+window-manager limitation similar in kind to the `CreateProcessW`
+zero-PID precedent (§25)". Lo es, confirmado con una réplica
+independiente, sin código del proyecto.
+
+**Descartado primero (ninguno de los dos era la causa):**
+- **Sin window manager:** `:99` (el Xvfb compartido de esta sesión) no
+  tenía ninguno corriendo. Se instaló `openbox` (via `apt`, con
+  autorización) y se levantó un Xvfb propio y aislado (`:77`, no
+  toca el `:99` compartido) -- mismo resultado exacto.
+- **Salto de cursor único en vez de arrastre incremental:**
+  `SetCursorPos` de una sola vez entre el down y el up podría no
+  disparar el umbral de arrastre (`SM_CXDRAG`/`SM_CYDRAG`) que el
+  loop de `SC_MOVE` de Wine espera. Se cambió a 8 pasos incrementales
+  con `Sleep(15)` entre cada uno -- mismo resultado exacto.
+
+**Confirmación decisiva:** una sonda standalone (`winegcc`, sin código
+de este proyecto) contra `wine notepad` -- el builtin de Wine, la
+misma referencia "conocida-buena" que ya usa `01-diagnostico-heap-
+corruption-arranque.md` en otros puntos -- con la *misma* secuencia
+exacta (`WM_NCHITTEST` confirma `HTCAPTION`, `SetCursorPos`+`SendInput`
+incremental, `MOUSEEVENTF_LEFTDOWN`/`LEFTUP`) bajo el mismo `:77`+
+`openbox`: **tampoco se mueve** (`before=0,0 after=0,0`, idéntico al
+síntoma de WORD1). Si ni siquiera notepad puede arrastrarse así en
+este entorno, no es un bug de WORD1 ni de `Opus/wproc.c` -- es una
+limitación de cómo Wine/este `winex11.drv` maneja el loop `SC_MOVE`
+frente a input sintetizado vía `SendInput`, en este entorno
+específico.
+
+Se revisó también si `Opus/wproc.c` intercepta `WM_NCLBUTTONDOWN` con
+lógica propia que pudiera estar interfiriendo -- no lo hace; la única
+mención de ese mensaje en ese archivo es una tabla de logging bajo
+`#ifdef RSH` (build de investigación, no activa aquí), no un handler
+real. Confirma que el mensaje cae directo a `DefWindowProc`, igual que
+en `notepad`.
+
+**Sin cambio de comportamiento -- se mantiene el arrastre incremental
+en el test** (más fiel a un arrastre real de usuario que el salto
+único original, aunque no fue la causa) y se agregó un diagnóstico
+(`before=`/`after=`/`caption_point=`) para que una futura sesión no
+tenga que re-derivar esto. Test sigue fallando, documentado como
+limitación de entorno, no bug -- mismo tratamiento que §25.
+
+**Verificado:**
+```
+DISPLAY=:99 ctest -L word1_startup_blocked --output-on-failure
+    7/9 -- sin regresión (--interaction seguía fallando antes y
+    después, por la razón ahora documentada, no una nueva)
+```
+
+Archivo: `src/port/original/opus_word1_ui_test.cpp` (arrastre
+incremental + diagnóstico). Dependencias del sistema instaladas esta
+sesión (`apt`, con autorización): `twm` (descartado, crashea sin
+`xfonts-base` que también se instaló), `openbox` (usado para la
+réplica).
+
+## Resumen
+
+Los 8 ítems de comportamiento de la lista original de §26 de
+`01-diagnostico-heap-corruption-arranque.md`, estado final tras esta
+sesión (2026-08-19, exia):
+
+1. `--about` -- **arreglado** (Task 3, AV de `_setjmp`/`longjmp` ABI)
+2. `--new` (File > New) -- **arreglado**, mismo root cause que #1
+   (Task 4, §6)
+3. `--save-as` -- **arreglado**, causa independiente: diálogo señuelo
+   sin conectar al real (Task 5, §7)
+4. `--font-typing` -- **parcial**: 2 de 3 bugs arreglados (nombres de
+   fuente, `union FCID` LP64); el foco tras selección de ribbon queda
+   localizado en `Opus/iconbar1.c`, sin arreglar, necesita
+   autorización para tocar árbol restringido (Task 6, §8)
+5. `--clipboard` (Ctrl+A) -- **arreglado**, mismo root cause que #1
+   (Task 7, §9)
+6. `--selection` -- **arreglado**, 3 bugs de arnés encadenados (Task
+   8, §10)
+7. `--typing` -- **arreglado**, mismo patrón de foco que #6 (Task 9,
+   §11)
+8. `--interaction` (arrastre de ventana) -- **limitación de entorno
+   confirmada, no bug** (Task 10, §12)
+
+**Etiqueta `word1_startup_blocked`: 7/9** (los 2 que faltan son el
+bug 4 sin cerrar de `--font-typing` y la limitación de entorno de
+`--interaction`, ambos ya explicados arriba, no misterios). El noveno
+test de la etiqueta era `word1_port_smoke_test`, que ya pasaba desde
+antes de esta sesión.
+
+Aparte de la lista de 8, sigue sin investigar: `opus_x64_runtime_test`
+(gating, cuelga sin imprimir nada, confirmado pre-existente y no
+relacionado con ningún fix de esta sesión).
+
+Rama `fix/winelib-startup-blocked`, no fusionada a `main`. Todo
+pusheado a `origin/fix/winelib-startup-blocked`.

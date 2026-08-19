@@ -1696,14 +1696,39 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
                         "WORD1 did not expose a draggable caption");
         }
         Sleep(100);
-        SetCursorPos(caption_point.x + 40, caption_point.y + 24);
+        /* A single SetCursorPos teleport from down to up may not clear
+           whatever drag threshold (SM_CXDRAG/SM_CYDRAG) or intermediate
+           WM_MOUSEMOVE count Wine's internal SC_MOVE loop expects before
+           it commits to a real move -- step through it like a real drag
+           instead of jumping straight to the end point. */
+        for (int step = 1; step <= 8; ++step) {
+            SetCursorPos(caption_point.x + step * 5,
+                        caption_point.y + step * 3);
+            Sleep(15);
+        }
         Sleep(100);
         send_mouse_button(MOUSEEVENTF_LEFTUP);
-        Sleep(250);
+        Sleep(500);
         RECT window_after_move{};
         if (!GetWindowRect(main_window, &window_after_move) ||
             (window_before_move.left == window_after_move.left &&
              window_before_move.top == window_after_move.top)) {
+            /* Confirmed environment limitation, not a WORD1 bug: this
+               exact SetCursorPos/SendInput drag sequence -- WM_NCHITTEST
+               correctly reports HTCAPTION -- also fails to move Wine's
+               own builtin notepad.exe under this same Xvfb+openbox
+               setup (standalone winegcc repro, no project code). Same
+               class of finding as the CreateProcessW zero-PID case
+               (docs/port-linux/01-diagnostico-heap-corruption-arranque.md
+               §25). Ruled out first: no window manager (retested under
+               real openbox, same result) and a single SetCursorPos
+               teleport instead of incremental movement (also same
+               result) -- neither was the cause. */
+            std::cerr << "before=" << window_before_move.left << ','
+                      << window_before_move.top << " after="
+                      << window_after_move.left << ','
+                      << window_after_move.top << " caption_point="
+                      << caption_point.x << ',' << caption_point.y << '\n';
             return fail(process, 32,
                         "dragging the caption did not move the WORD1 window");
         }
