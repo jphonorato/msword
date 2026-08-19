@@ -326,7 +326,20 @@ int main() {
         EndSdm();
         return 23;
     }
-    TestDltHeader modal_template{{8, 24, 206, 104}, 3, 0x8400,
+    /* hid was 3 (kIddOpen). TmcDoDlgDli special-cases kIddOpen/
+       kIddSaveAs (opus_sdm_runtime.cpp) to route straight into the
+       real GetOpenFileNameA/GetSaveFileNameA system dialog instead of
+       its own native-modal message loop -- added later than this
+       test, which only wanted *a* real hid to get native_modal=true
+       via create_dialog_host/materialize_*_template (ModalRuntimeProbe
+       checks no dialog-specific controls, any of the 7 real kIdd*
+       dialog kinds works structurally). Nothing in this headless test
+       drives the real file-picker (no Cancel click), so TmcDoDlgDli
+       hung forever in GetMessage waiting for input that never comes.
+       kIddAbout doesn't have this problem -- swapped to it; its own
+       real controls are harmless here since this probe doesn't check
+       them (contrast new_modal_template below, which does). */
+    TestDltHeader modal_template{{8, 24, 206, 104}, 44, 0x8400,
                                   reinterpret_cast<void*>(ModalRuntimeProbe),
                                   11, 4};
     auto* modal_template_pointer = &modal_template;
@@ -338,6 +351,12 @@ int main() {
         EndSdm();
         return 24;
     }
+    /* hid=2 (kIddNewDoc) is deliberate here, not a collision: unlike
+       kIddOpen/kIddSaveAs (see the comment above modal_template),
+       New Doc doesn't get routed to a real system dialog, and this
+       probe checks (new_modal_controls_present) that
+       materialize_new_template's real controls (0x0402-0x0405) exist
+       under this hid -- it needs the real New Doc template applied. */
     TestDltHeader new_modal_template{
         {20, 24, 127, 114}, 2, 0x8404,
         reinterpret_cast<void*>(NewModalRuntimeProbe), 9, 4};

@@ -3332,4 +3332,123 @@ post a character to the document"`). **Ningún crash** de la clase
 comportamiento — solo quita el riesgo residual de wide-char en el
 arnés para que Tasks 3-10 puedan fiarse de los mensajes de fallo.
 
+### 31. `opus_x64_runtime_test` (gating) -- no era un cuelgue de infraestructura, era una colisión de id con `kIddOpen` (2026-08-19)
+
+**Investigado a pedido explícito, en exia**, tras haber quedado
+documentado en 9 lugares distintos de este proyecto (§27 más abajo en
+este mismo archivo, y 5 secciones de
+`03-comportamiento-word1-startup-blocked.md`) como "gating, cuelga sin
+imprimir nada, pre-existente, sin relación con nada, sin investigar".
+Cada mención citaba la misma evidencia: `rc=124` bajo `timeout 40`,
+cero salida. Nadie lo había investigado más allá de reconstruir el
+binario.
+
+**Primer hallazgo, y el mismo patrón de esta sesión entera:** el
+binario en `build/tests/Debug/opus_x64_runtime_test.exe.so` tenía
+fecha del 13 de agosto -- reconstruirlo con
+`cmake --build --target opus_x64_runtime_test` y correrlo **sin**
+`DISPLAY` da `exit=20` en 2.7s, no un cuelgue (`return 20;` en
+`opus_x64_runtime_test.cpp:282`, `CreateWindowExA` devuelve `nullptr`
+por `nodrv_CreateWindow`, sin driver de pantalla -- comportamiento
+correcto y esperado sin `DISPLAY`).
+
+**El cuelgue real solo aparece con `DISPLAY` real** (`Xvfb :77` propio,
+aislado, con `openbox` -- no el `:99` compartido). Con eso,
+`CreateWindowExA` sí tiene éxito y la ejecución avanza más allá de
+`return 20`, hasta bloquearse de verdad (`rc=124`). **Esto es
+exactamente el entorno que usa CI** (`.github/workflows/build.yml:47-53`
+levanta `Xvfb :99` antes de todo `ctest`) -- el cuelgue reportado en
+9 sitios de este proyecto era real ahí, no un artefacto de máquina de
+desarrollo.
+
+**`gdb -p <pid> --batch -ex "thread apply all bt"`** (mismo patrón que
+§21/§25 de este archivo) confirma el hilo único parado en
+`NtUserGetMessage` -- el mismo reposo normal de `GetMessage()` que
+`CLAUDE.md` y este archivo ya documentan extensamente para WORD1
+mismo. No es un crash ni corrupción: algo está esperando un mensaje
+que nunca llega.
+
+**Causa raíz, en el código, no solo el síntoma:** dos plantillas de
+diálogo sintéticas en `opus_x64_runtime_test.cpp` reusan valores de
+`hid` que colisionan con las constantes reales de
+`opus_sdm_runtime.cpp`:
+
+```c
+constexpr Word kIddNewDoc = 2;
+constexpr Word kIddOpen = 3;
+constexpr Word kIddSaveAs = 4;
+```
+
+La primera plantilla (`modal_template`, probada con
+`ModalRuntimeProbe`) usaba `hid=3` -- exactamente `kIddOpen`.
+`TmcDoDlgDli` (`opus_sdm_runtime.cpp:2565`) tiene un caso especial que
+se evalúa **antes** que su propio loop de mensajes nativo:
+
+```cpp
+if (dialog->modal &&
+    (dialog->hid == kIddOpen || dialog->hid == kIddSaveAs)) {
+    const Tmc common_result = run_word95_common_file_dialog(*dialog);
+    ...
+```
+
+Con `hid==kIddOpen`, cualquier llamada a `TmcDoDlgDli` -- sin importar
+que el llamador solo quisiera *un* hid real cualquiera para activar
+`native_modal=true` vía `create_dialog_host`/`materialize_open_template`,
+no específicamente el diálogo de abrir archivo -- se desvía derecho a
+`run_word95_common_file_dialog`, que bloquea el hilo dentro de
+`GetOpenFileNameA`, el diálogo de archivo **real** de Win32/Wine. Nada
+en este arnés headless mueve ese diálogo (ningún clic en Cancelar, ningún
+Escape) -- se queda esperando input real para siempre. Este caso especial
+(§26 de `03-comportamiento-word1-startup-blocked.md` documenta cuándo se
+integró `run_word95_common_file_dialog`) es **más nuevo** que este test:
+`hid=3` funcionaba cuando se escribió el test, antes de que
+`kIddOpen`/`kIddSaveAs` tuvieran este atajo -- una regresión real, silenciosa,
+de una tarea que nunca tocó este archivo ni sabía que este test existía.
+
+La segunda plantilla (`new_modal_template`, probada con
+`NewModalRuntimeProbe`) usa `hid=2` (`kIddNewDoc`) -- **no** es una
+colisión, es intencional: el propio probe verifica
+(`new_modal_controls_present`) que los controles reales de
+`materialize_new_template` (`0x0402`-`0x0405`) existen bajo ese hid,
+así que necesita la plantilla real de New Doc aplicada. `kIddNewDoc`
+no tiene el atajo de `run_word95_common_file_dialog` (solo
+`kIddOpen`/`kIddSaveAs` lo tienen), así que nunca tuvo este problema.
+
+**Fix:** `modal_template` cambia su `hid` de `3` (`kIddOpen`) a `44`
+(`kIddAbout`) -- cualquiera de los otros 5 hid reales sin el atajo de
+archivo funcionaba, ya que `ModalRuntimeProbe` no verifica ningún
+control específico de diálogo (a diferencia de `new_modal_template`);
+se eligió About por ser el camino más verificado de toda esta sesión
+(Task 3 del plan de winelib). `new_modal_template` queda sin cambios.
+
+**Verificado:**
+```
+DISPLAY=:77 wine opus_x64_runtime_test.exe.so
+    exit=0   (antes: rc=124, cuelgue de 15s+ confirmado, cero salida)
+
+DISPLAY=:99 ctest --output-on-failure   (todo el CTestTestfile, no solo la etiqueta)
+    18/18... no, 16/18 -- los 2 fallos son los ya documentados y
+    esperados de --interaction y --font-typing (§12/§8 de
+    03-comportamiento). Los 9 tests gating, incluido
+    opus_x64_runtime_test, TODOS pasan por primera vez en este
+    proyecto.
+```
+
+Archivo: `src/port/original/opus_x64_runtime_test.cpp` únicamente --
+ningún cambio en `opus_sdm_runtime.cpp` ni en `Opus/`. El caso especial
+de `kIddOpen`/`kIddSaveAs` en `TmcDoDlgDli` se queda como está: es
+código de producción correcto (el port SÍ necesita que Open/Save As
+usen el diálogo real de Win32), el bug era enteramente del test
+reusando un id que un cambio posterior, no relacionado, volvió
+significativo.
+
+**Lección para releer antes de asumir "sin relación, pre-existente"
+en este proyecto:** dos veces en esta misma sesión (aquí, y antes con
+`opus_word1_ui_test.exe.so` en `docs/port-linux/03-comportamiento-
+word1-startup-blocked.md` §5) un "cuelgue pre-existente confirmado"
+resultó ser un binario de días atrás nunca reconstruido con
+`cmake --build --target <ese target específico>` -- `cmake --build
+--target WORD1` (o cualquier otro target) no reconstruye targets de
+test hermanos.
+
 Cierra el gap A del plan winelib-startup-blocked.
