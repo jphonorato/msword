@@ -194,8 +194,14 @@ extern "C" int OpusShellFontMetrics(const OpusFontKey *key,
     if (!rf.isValid()) {
         /* WORD1 has no QGuiApplication; do not construct one (it hangs
            or kills the Wine pump). A non-zero box still avoids matFont. */
+        /* key->catr == 0: the oracle table only has plain-weight rows
+           (opus_shell_font_metrics_oracle_table.h's capture never
+           measured bold/italic) -- a bold/italic request must fail
+           controlled here (Opus/LOADFONT.C:442-448's documented
+           contract for catr != 0), not silently answer with the wrong
+           weight's ascent/descent. */
         if (why != nullptr && std::strcmp(why, "no-gui-app") == 0 &&
-            key != nullptr) {
+            key != nullptr && key->catr == 0) {
             const char *era = EraNameFromFtc(key->ftc);
             const OracleRow *row =
                 era != nullptr ? FindOracleRow(era, PointSizeFor(key))
@@ -243,17 +249,26 @@ extern "C" int OpusShellCharWidths(const OpusFontKey *key, int chFirst,
            WM_COMMAND, including Help About. */
         if (why != nullptr && std::strcmp(why, "no-gui-app") == 0 &&
             key != nullptr) {
-            const char *era = EraNameFromFtc(key->ftc);
-            const OracleRow *row =
-                era != nullptr ? FindOracleRow(era, PointSizeFor(key))
-                               : nullptr;
+            /* g_char_widths_fallback (OpusPortGdiCharWidths) builds a
+               real LOGFONT with lfWeight/lfItalic from key->catr, so it
+               stays correct for bold/italic and is tried unconditionally.
+               The oracle table below has no bold/italic rows -- gate it
+               on catr == 0 so a synthesis request fails controlled
+               (Opus/LOADFONT.C:442-448's contract) instead of silently
+               answering with plain-weight widths. */
             if (g_char_widths_fallback != nullptr &&
                 g_char_widths_fallback(key, chFirst, cch, rgdxu) == 0) {
                 return 0;
             }
-            if (row != nullptr) {
-                FillOracleWidths(row, chFirst, cch, rgdxu);
-                return 0;
+            if (key->catr == 0) {
+                const char *era = EraNameFromFtc(key->ftc);
+                const OracleRow *row =
+                    era != nullptr ? FindOracleRow(era, PointSizeFor(key))
+                                   : nullptr;
+                if (row != nullptr) {
+                    FillOracleWidths(row, chFirst, cch, rgdxu);
+                    return 0;
+                }
             }
         }
         return -1;
