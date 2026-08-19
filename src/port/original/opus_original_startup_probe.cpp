@@ -449,9 +449,14 @@ bool CommandLineHasFlag(const wchar_t* command_line, const wchar_t* flag) {
 }
 }  // namespace
 
-/* Screen widths when WORD1 has no QGuiApplication. Recreates the same
-   LOGFONT C_FGraphicsFcidToPlf built (hps==0 → lfHeight==0) and asks GDI,
-   so the table matches the HFONT LOADFONT already selected. */
+/* Screen widths when WORD1 has no QGuiApplication. hps==0 never reaches
+   the real C_FGraphicsFcidToPlf (Opus/LOADFONT.C:880 asserts fcid.hps>0
+   there) -- on real Windows this branch never fires. Since it's the
+   port's own fallback path, match OpusShellFontMetrics's ascent/descent
+   default (PixelSizeFor/PointSizeFor, hpsDefault=10pt) instead of
+   leaving lfHeight==0 (Wine's undefined default size): otherwise widths
+   and ascent/descent for the same key would be measured at two
+   different font sizes. */
 extern "C" int OpusPortGdiCharWidths(const OpusFontKey *key, int chFirst,
                                      int cch, unsigned short *rgdxu) {
     if (key == nullptr || rgdxu == nullptr || chFirst < 0 || cch <= 0 ||
@@ -471,12 +476,17 @@ extern "C" int OpusPortGdiCharWidths(const OpusFontKey *key, int chFirst,
         return -1;
     }
     LOGFONTA lf = {};
-    if (key->ps > 0) {
+    {
         int dpi = GetDeviceCaps(hdc, LOGPIXELSY);
         if (dpi <= 0) {
             dpi = 96;
         }
-        lf.lfHeight = -MulDiv(key->ps / 2, dpi, 72);
+        int pt = key->ps / 2;
+        if (pt <= 0) {
+            pt = 10;  /* hpsDefault, matches OpusShellFontMetrics.cpp's
+                         PixelSizeFor/PointSizeFor fallback */
+        }
+        lf.lfHeight = -MulDiv(pt, dpi, 72);
         if (key->ftc == 3) {
             lf.lfHeight = -lf.lfHeight;
         }
