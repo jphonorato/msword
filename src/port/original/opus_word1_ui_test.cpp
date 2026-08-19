@@ -1512,6 +1512,17 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
         if (pane == nullptr) {
             return fail(process, 36, "selection test could not find OpusWwd");
         }
+        DWORD selection_ignored_process_id = 0;
+        const DWORD selection_thread_id = GetWindowThreadProcessId(
+            main_window, &selection_ignored_process_id);
+        /* Every other real-input (SetCursorPos/SendInput) block in this
+           file calls this first -- SendInput routes through the OS to
+           whichever window actually has focus/activation, unlike
+           SendMessageW/PostMessageW. Without it, the clicks below still
+           reach WORD1 (the sentence types fine via post_keyboard_character,
+           a WM_CHAR post) but resolve to cp=0 regardless of x, the same
+           symptom choose_combo_item_with_mouse's callers guard against. */
+        make_foreground_and_focus(main_window, pane, selection_thread_id);
         const wchar_t* const sentence = L"physical keyboard input line one";
         const int sentence_length = lstrlenW(sentence);
         for (int index = 0; index < sentence_length; ++index) {
@@ -1546,17 +1557,54 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
                   << SendMessageW(pane, kWmOpusX64QuerySelection, 66, 0)
                   << ','
                   << SendMessageW(pane, kWmOpusX64QuerySelection, 67, 0)
+                  << " line0ypTop=" << SendMessageW(
+                         pane, kWmOpusX64QuerySelection, 32, 0)
+                  << " line0dyp=" << SendMessageW(
+                         pane, kWmOpusX64QuerySelection, 33, 0)
                   << " mappings:";
-        for (int x = 10; x <= 250; x += 10) {
-            SendMessageW(pane, WM_LBUTTONDOWN, MK_LBUTTON,
-                         MAKELPARAM(x, 10));
-            SendMessageW(pane, WM_LBUTTONUP, 0, MAKELPARAM(x, 10));
-            std::cerr << ' ' << x << '=' << SendMessageW(
+        /* Real input (SetCursorPos + SendInput), not SendMessageW/
+           PostMessageW -- WwPaneMouse (Opus/wproc.c) needs the same real
+           focus/activation make_foreground_and_focus (above) provides for
+           every other real-input block in this file; without both, every
+           click here resolved to cp=0 regardless of x. */
+        int sentence_end_x = 250;
+        bool found_sentence_end_x = false;
+        for (int x = 10; x <= 450; x += 10) {
+            POINT probe{x, 10};
+            if (ClientToScreen(pane, &probe) && SetCursorPos(probe.x, probe.y)) {
+                send_mouse_button(MOUSEEVENTF_LEFTDOWN);
+                Sleep(20);
+                send_mouse_button(MOUSEEVENTF_LEFTUP);
+            }
+            const LRESULT mapped_cp = SendMessageW(
                 pane, kWmOpusX64QuerySelection, 0, 0);
+            std::cerr << ' ' << x << '=' << mapped_cp;
+            /* The left margin before the first character isn't a constant
+               this test can assume (measured ~185-190px here, not 0) --
+               find a real x past it instead of guessing one. First x that
+               reaches at least half the typed sentence is "near the end"
+               without needing to know the exact right margin too. */
+            if (!found_sentence_end_x &&
+                mapped_cp >= sentence_length / 2) {
+                sentence_end_x = x;
+                found_sentence_end_x = true;
+            }
+            Sleep(60);
         }
-        std::cerr << '\n';
-        PostMessageW(pane, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(250, 10));
-        PostMessageW(pane, WM_LBUTTONUP, 0, MAKELPARAM(250, 10));
+        std::cerr << " sentence_end_x=" << sentence_end_x << '\n';
+        /* The probe loop above is real SendInput clicks close together in
+           time and position; without a gap exceeding the system's
+           double-click interval, Wine/Win32 merges the next click into a
+           double-click (clicked_double below comes back nonzero) instead
+           of a fresh single click, which this assertion needs. */
+        Sleep(static_cast<DWORD>(GetDoubleClickTime()) + 150);
+        POINT sentence_end_click{sentence_end_x, 10};
+        if (ClientToScreen(pane, &sentence_end_click) &&
+            SetCursorPos(sentence_end_click.x, sentence_end_click.y)) {
+            send_mouse_button(MOUSEEVENTF_LEFTDOWN);
+            Sleep(20);
+            send_mouse_button(MOUSEEVENTF_LEFTUP);
+        }
         Sleep(500);
         const LRESULT clicked_first =
             SendMessageW(pane, kWmOpusX64QuerySelection, 0, 0);

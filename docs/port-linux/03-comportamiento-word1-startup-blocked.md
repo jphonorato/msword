@@ -881,28 +881,83 @@ Sesión cerrada 2026-08-15 a pedido del usuario tras ~2 h de trabajo
 (no por límite de uso). Sin trabajo a medias sin commitear — árbol
 limpio en `25325c0`.
 
-**Actualización 2026-08-19 (exia, revisión independiente de Task 3 +
-Task 4 + Task 5 + Task 6 parcial):** ver §5, §6, §7, §8 arriba. 4
-hallazgos de fidelidad corregidos y verificados (Task 3), Task 4
-cerrada verify-only, Task 5 (Save As) con causa raíz independiente
-real encontrada y arreglada (señuelo `OpusSdmDialog` sin conexión al
-diálogo real `GetSaveFileNameA`), Task 6 (`--font-typing`) con 2 de 3
-bugs reales arreglados (nombres de fuente Windows nunca enumerables;
-`union FCID` de 8 bytes en Linux por LP64) y un tercero localizado sin
-cerrar (el foco no vuelve al panel tras elegir fuente del ribbon --
-toca `Opus/iconbar1.c` restringido, necesita autorización). **5/9**
-en la etiqueta -- sin cambio numérico por Task 6 (sigue fallando, más
-adelante que antes) pero con progreso real y documentado. Reproducido
-en un segundo entorno (exia, no debian13/hp-15). Árbol limpio, 9
-commits nuevos sobre `16145b6`, pusheados a
-`origin/fix/winelib-startup-blocked`.
+**Actualización 2026-08-19 (exia, revisión independiente de Task 3 a
+Task 8):** ver §5-§10 arriba. 4 hallazgos de fidelidad corregidos y
+verificados (Task 3), Task 4 cerrada verify-only, Task 5 (Save As) con
+causa raíz independiente real encontrada y arreglada (señuelo
+`OpusSdmDialog` sin conexión al diálogo real `GetSaveFileNameA`),
+Task 6 (`--font-typing`) con 2 de 3 bugs reales arreglados (nombres de
+fuente Windows nunca enumerables; `union FCID` de 8 bytes en Linux por
+LP64) y un tercero localizado sin cerrar (el foco no vuelve al panel
+tras elegir fuente del ribbon -- toca `Opus/iconbar1.c` restringido,
+necesita autorización), Task 7 (Ctrl+A) cerrada verify-only, Task 8
+(`--selection`) con 3 bugs de arnés encadenados encontrados y
+arreglados (falta de foco real, mensajes sintéticos en vez de input
+real, constante de píxel obsoleta que asumía margen izquierdo cero).
+**6/9** en la etiqueta, subiendo de 5/9. Reproducido en un segundo
+entorno (exia, no debian13/hp-15). Árbol limpio, 10 commits nuevos
+sobre `16145b6`, pusheados a `origin/fix/winelib-startup-blocked`.
 
-Task 6 **sin cerrar** -- retomar en §8: el bug 3 localizado (foco tras
-selección de ribbon) es el primer paso, junto con verificar si el
-mismo problema de foco afecta el size_combo (no llegó a probarse, el
-test falla antes en el font_combo). Task 7 (Ctrl+A / Select All)
-**cerrada** verify-only (§9), mismo patrón que Task 4. Tasks 8-10 no
-empezadas: `--typing` ("typed text was not painted"), `--interaction`
-("dragging the caption did not move the window"), `--selection`
-("sentence-end click produced an invalid selection"). `opus_x64_runtime_test`
-(gating) sigue colgado, sin investigar, confirmado también en exia.
+## 10. `--selection`: "sentence-end click produced an invalid selection" -- 3 bugs de arnés encadenados, arreglados
+
+**Task 8, 2026-08-19 en exia.** El plan esperaba `"typing did not leave
+a canonical insertion selection"` (fail 38); esa parte ya pasaba (Task
+2 no la rompió). El fallo real, más adelante, era fail 39. **Los 3
+bugs son del arnés de test, no de WORD1** -- verificado con
+`kWmOpusX64QuerySelection` en cada paso antes de tocar nada.
+
+**Bug A -- clic sintético sin foco real:** `selection_mode` era el
+único bloque de este archivo que hacía clics posicionales
+(`WM_LBUTTONDOWN`/`UP` con coordenadas) sin llamar antes
+`make_foreground_and_focus` -- cada otro bloque con input real de este
+mismo archivo sí lo hace (grep confirma 9 sitios). Sin foco/activación
+real, cualquier clic (sintético o real) resolvía siempre a `cp=0` sin
+importar `x`. Fix: añadir la llamada, mismo patrón que el resto.
+
+**Bug B -- mensajes sintéticos en vez de input real:** incluso con
+foco, `SendMessageW(pane, WM_LBUTTONDOWN, ...)` entrega directo al
+window proc sin pasar por la cola de mensajes real -- se cambió a
+`SetCursorPos`+`SendInput` (`send_mouse_button`), el patrón ya probado
+en este mismo archivo para el caso idéntico "clic cerca del final de
+la oración" (`interaction_mode`, ~línea 1853).
+
+**Bug C -- constante de píxel obsoleta:** con A y B arreglados, el
+mapeo `x=10..250` reveló un margen izquierdo real de ~185-190px antes
+del primer carácter (`x=180` seguía en `cp=0`; recién en `x=190`
+`cp=1`) -- la constante hardcodeada `x=250` para "cerca del final de
+la oración" (32 caracteres, ~7px cada uno) solo alcanzaba `cp=12`, no
+los `>=15` que pide la aserción. Fix: en vez de adivinar un nuevo
+píxel fijo, el bucle de mapeo ahora extiende su rango (10-450) y
+guarda el primer `x` real que alcanza `cp >= sentence_length/2` --
+usado como blanco del clic final, sin asumir ningún margen.
+
+**Efecto secundario del Bug B, encontrado y arreglado en el camino:**
+el bucle de mapeo con `SendInput` real, 24 clics seguidos con solo
+20ms entre down/up, disparaba detección de doble-clic real de Wine/
+Win32 justo antes del clic final (`clicked_double=1` en vez de `0`,
+rompiendo esa aserción por separado). Fix: `Sleep(60)` entre cada
+probe del bucle, y `Sleep(GetDoubleClickTime()+150)` antes del clic
+final dedicado.
+
+**Verificado:**
+```
+DISPLAY=:99 ctest -R "^opus_word1_selection_test$" --output-on-failure
+    Passed    9.85 sec
+
+DISPLAY=:99 ctest -L word1_startup_blocked --output-on-failure
+    6/9 -- sin regresión en los demás
+```
+
+Archivo: `src/port/original/opus_word1_ui_test.cpp` únicamente --
+ningún cambio en `Opus/` ni `opus_sdm_runtime.cpp` para esta tarea.
+
+Rama `fix/winelib-startup-blocked`. Task 6 **sin cerrar** -- retomar
+en §8: el bug 3 localizado (foco tras selección de ribbon) es el
+primer paso, junto con verificar si el mismo problema de foco afecta
+el size_combo (no llegó a probarse, el test falla antes en el
+font_combo). Task 7 (Ctrl+A / Select All) **cerrada** verify-only
+(§9), mismo patrón que Task 4. Task 8 (`--selection`) **cerrada**,
+arreglo real (§10). Tasks 9-10 no empezadas: `--typing` ("typed text
+was not painted"), `--interaction` ("dragging the caption did not
+move the window"). `opus_x64_runtime_test` (gating) sigue colgado,
+sin investigar, confirmado también en exia.
