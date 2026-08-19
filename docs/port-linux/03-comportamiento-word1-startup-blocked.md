@@ -627,7 +627,35 @@ hp-15 no estaba disponible esta sesión; exia es Debian 13 trixie con
 4 commits nuevos sobre `16145b6`: uno por hallazgo, mismo formato de
 mensaje que el resto de la rama.
 
-## Cómo retomar
+## 6. File > New: confirmado -- verify-only, cierra §4
+
+**Task 4 retomada 2026-08-19 en exia.** El plan (Task 4, Step 1) pedía
+correr `opus_word1_ui_test` (modo base) aislado: si pasa sin ningún
+cambio de código, Task 4 es verify-only.
+
+```
+ctest -R "^opus_word1_ui_test$" --output-on-failure
+    Start 11: opus_word1_ui_test
+1/1 Test #11: opus_word1_ui_test ...............   Passed    3.63 sec
+100% tests passed, 0 tests failed out of 1
+```
+
+El modo base del arnés (`opus_word1_ui_test.cpp:1964-1995`) manda
+`WM_COMMAND`/`kFileNew` (id 1813), confirma que el diálogo File New
+aparece, que sus controles coinciden con el contrato SDM, lo acepta,
+espera a que cierre y confirma que `Document2` se creó -- exactamente
+el flujo que §4 dejó sin determinar. Pasa limpio, sin ningún cambio de
+código en esta sesión.
+
+**Confirma la hipótesis de §4** ("la causa más probable... contención
+del build dir compartido, no una regresión de código", no confirmada
+en su momento): mismo root cause que About (Task 3, `_setjmp`/`longjmp`
+ABI), sin bug independiente de File > New. La corrida de §4 falló por
+el entorno compartido de debian13/hp-15 en esa sesión, no por el
+código -- aquí, en exia, sin contención, pasa a la primera.
+
+Sin cambios de código para esta sección -- commit de documentación
+solamente.
 
 Rama `fix/winelib-startup-blocked` (no está en `main`). Plan:
 `docs/superpowers/plans/2026-08-15-terminar-winelib.md`. Ledger SDD:
