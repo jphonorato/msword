@@ -1973,13 +1973,27 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
         DWORD ignored_process_id = 0;
         const DWORD thread_id =
             GetWindowThreadProcessId(main_window, &ignored_process_id);
-        GUITHREADINFO gui{};
-        gui.cbSize = sizeof(gui);
-        if (!GetGUIThreadInfo(thread_id, &gui) || gui.hwndFocus == nullptr) {
+        /* Every other interactive mode in this file finds OpusWwd
+           explicitly and calls make_foreground_and_focus on it before
+           relying on focus state (see Task 8's fix, opus_selection_mode
+           above) -- typing_mode instead trusted whatever GetGUIThreadInfo
+           reported as already focused, which is only reliably the
+           document pane by accident of window-creation order. If some
+           other window has it, WM_CHAR posts below still succeed (Win32
+           happily queues them) but land nowhere visible, matching this
+           test's actual failure: reaches the paint check, never the
+           focus/posting ones. */
+        const HWND pane = find_descendant_by_class(main_window, L"OpusWwd");
+        if (pane == nullptr) {
             return fail(process, 13, "active document pane has no focus");
         }
-        const std::size_t dark_pixels_before =
-            count_dark_client_pixels(gui.hwndFocus);
+        make_foreground_and_focus(main_window, pane, thread_id);
+        GUITHREADINFO gui{};
+        gui.cbSize = sizeof(gui);
+        if (!GetGUIThreadInfo(thread_id, &gui) || gui.hwndFocus != pane) {
+            return fail(process, 13, "active document pane has no focus");
+        }
+        const std::size_t dark_pixels_before = count_dark_client_pixels(pane);
         // Cross the original 32-byte quick-insert boundary and fill enough
         // display lines to exercise idle normalization and the SCC-above PLC.
         //

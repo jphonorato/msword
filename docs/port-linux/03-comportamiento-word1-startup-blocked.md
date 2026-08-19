@@ -882,7 +882,7 @@ Sesión cerrada 2026-08-15 a pedido del usuario tras ~2 h de trabajo
 limpio en `25325c0`.
 
 **Actualización 2026-08-19 (exia, revisión independiente de Task 3 a
-Task 8):** ver §5-§10 arriba. 4 hallazgos de fidelidad corregidos y
+Task 9):** ver §5-§11 arriba. 4 hallazgos de fidelidad corregidos y
 verificados (Task 3), Task 4 cerrada verify-only, Task 5 (Save As) con
 causa raíz independiente real encontrada y arreglada (señuelo
 `OpusSdmDialog` sin conexión al diálogo real `GetSaveFileNameA`),
@@ -893,10 +893,12 @@ tras elegir fuente del ribbon -- toca `Opus/iconbar1.c` restringido,
 necesita autorización), Task 7 (Ctrl+A) cerrada verify-only, Task 8
 (`--selection`) con 3 bugs de arnés encadenados encontrados y
 arreglados (falta de foco real, mensajes sintéticos en vez de input
-real, constante de píxel obsoleta que asumía margen izquierdo cero).
-**6/9** en la etiqueta, subiendo de 5/9. Reproducido en un segundo
-entorno (exia, no debian13/hp-15). Árbol limpio, 10 commits nuevos
-sobre `16145b6`, pusheados a `origin/fix/winelib-startup-blocked`.
+real, constante de píxel obsoleta que asumía margen izquierdo cero),
+Task 9 (`--typing`) con el mismo bug de foco real que Task 8, arreglado
+igual. **7/9** en la etiqueta, subiendo de 5/9 al empezar esta sesión.
+Reproducido en un segundo entorno (exia, no debian13/hp-15). Árbol
+limpio, 11 commits nuevos sobre `16145b6`, pusheados a
+`origin/fix/winelib-startup-blocked`.
 
 ## 10. `--selection`: "sentence-end click produced an invalid selection" -- 3 bugs de arnés encadenados, arreglados
 
@@ -951,13 +953,50 @@ DISPLAY=:99 ctest -L word1_startup_blocked --output-on-failure
 Archivo: `src/port/original/opus_word1_ui_test.cpp` únicamente --
 ningún cambio en `Opus/` ni `opus_sdm_runtime.cpp` para esta tarea.
 
+## 11. `--typing`: "typed text was not painted in the document pane" -- mismo patrón que Task 8, arreglado
+
+**Task 9, 2026-08-19 en exia.** El plan esperaba salidas 13/15 con
+variabilidad entre corridas (§27 de `01-diagnostico...`); esta sesión
+el fallo real ya llegaba consistentemente hasta el último check, fail
+16, sin variar entre corridas -- Task 2's fix del crash movió el punto
+de fallo más allá de donde el plan lo dejó.
+
+**Causa raíz:** `typing_mode` era el único modo interactivo de este
+archivo que **nunca** buscaba explícitamente el panel `OpusWwd` ni
+llamaba `make_foreground_and_focus` -- confiaba ciegamente en lo que
+`GetGUIThreadInfo` reportara como ya enfocado al arrancar. El check de
+`fail(13)` solo verificaba `hwndFocus != nullptr`, nunca que fuera
+*el panel correcto*. Si otra ventana tenía el foco por accidente del
+orden de creación, los `WM_CHAR` posteados con
+`post_keyboard_character` se encolaban sin error (`fail(15)` nunca
+dispara) pero no llegaban a ningún sitio visible -- exactamente el
+síntoma: el test llega hasta el último check (`fail(16)`, conteo de
+píxeles oscuros) y falla ahí, nunca antes.
+
+**Fix:** buscar `OpusWwd` explícitamente y llamar
+`make_foreground_and_focus` antes de postear, mismo patrón que Task 8
+(§10) estableció como el requerido para todo bloque de este archivo
+que depende del foco real.
+
+**Verificado:**
+```
+DISPLAY=:99 ctest -R "^opus_word1_typing_test$" --output-on-failure
+    Passed   14.78 sec
+
+DISPLAY=:99 ctest -L word1_startup_blocked --output-on-failure
+    7/9 -- sin regresión en los demás
+```
+
+Archivo: `src/port/original/opus_word1_ui_test.cpp` únicamente.
+
 Rama `fix/winelib-startup-blocked`. Task 6 **sin cerrar** -- retomar
 en §8: el bug 3 localizado (foco tras selección de ribbon) es el
 primer paso, junto con verificar si el mismo problema de foco afecta
 el size_combo (no llegó a probarse, el test falla antes en el
 font_combo). Task 7 (Ctrl+A / Select All) **cerrada** verify-only
 (§9), mismo patrón que Task 4. Task 8 (`--selection`) **cerrada**,
-arreglo real (§10). Tasks 9-10 no empezadas: `--typing` ("typed text
-was not painted"), `--interaction` ("dragging the caption did not
-move the window"). `opus_x64_runtime_test` (gating) sigue colgado,
-sin investigar, confirmado también en exia.
+arreglo real (§10). Task 9 (`--typing`) **cerrada**, arreglo real
+(§11), mismo patrón de foco que Task 8. Task 10 (`--interaction`,
+"dragging the caption did not move the window") no empezada.
+`opus_x64_runtime_test` (gating) sigue colgado, sin investigar,
+confirmado también en exia.
