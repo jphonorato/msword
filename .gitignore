@@ -47,6 +47,9 @@ src/port/tools/build/
 # Claude Code worktrees (EnterWorktree scratch checkouts)
 .claude/worktrees/
 
+# Claude Code local session settings (per-machine permissions, not shared)
+.claude/settings.local.json
+
 # IDE / Editor
 .vscode/
 .idea/

@@ -129,6 +129,28 @@ struct Win95SaveAlias {
 Win95SaveAlias g_win95_save_alias;
 std::unordered_map<std::string, std::string> g_win95_saved_aliases;
 
+/* GetOpenFileNameA/GetSaveFileNameA (run_word95_common_file_dialog) block
+   the calling thread in their own message loop; the real dialog is a
+   separate #32770 window, not the decoy "OpusSdmDialog" window that
+   create_dialog_host also creates (hidden, WS_POPUP without WS_VISIBLE)
+   for kIddOpen/kIddSaveAs. Set from the OFN_ENABLEHOOK hook below on
+   WM_INITDIALOG, cleared once the blocking call returns -- lets a
+   Cancel/OK click on the decoy's controls (handle_dialog_command) reach
+   the real dialog it stands in for. */
+HWND g_active_win95_file_dialog = nullptr;
+
+UINT_PTR CALLBACK win95_file_dialog_hook(const HWND hook_window,
+                                         const UINT message, WPARAM,
+                                         LPARAM) {
+    if (message == WM_INITDIALOG) {
+        /* OFN_EXPLORER hooks receive messages for the child dialog; the
+           real Open/Save As window is its parent (documented Win32
+           behavior for OFN_ENABLEHOOK + OFN_EXPLORER). */
+        g_active_win95_file_dialog = GetParent(hook_window);
+    }
+    return 0;
+}
+
 struct Win95AliasCleanup {
     ~Win95AliasCleanup() {
         if (g_win95_save_alias.created &&
@@ -2090,7 +2112,25 @@ void handle_dialog_command(const Hdlg handle, const WPARAM w_param,
                     tmc == kTmcOpenCatalog) ||
                    (dialog->hid == kIddNewDoc &&
                     tmc == kTmcSummary)) {
-            finish_native_dialog(*dialog, tmc);
+            if ((dialog->hid == kIddOpen || dialog->hid == kIddSaveAs) &&
+                (tmc == kTmcOk || tmc == kTmcCancel) &&
+                g_active_win95_file_dialog != nullptr &&
+                IsWindow(g_active_win95_file_dialog)) {
+                /* This dialog delegates to the real, separate
+                   GetOpenFileNameA/GetSaveFileNameA window
+                   (run_word95_common_file_dialog) -- finishing the decoy
+                   directly only sets internal state, it doesn't reach
+                   the blocking call. IDOK/IDCANCEL match kTmcOk/
+                   kTmcCancel by the same Windows convention this dialog
+                   already relies on (create_native_control's ids).
+                   Forwarding lets run_word95_common_file_dialog's own
+                   loop finish the dialog exactly once, the same as a
+                   real user clicking the visible dialog's own button. */
+                PostMessageA(g_active_win95_file_dialog, WM_COMMAND,
+                             MAKEWPARAM(tmc, BN_CLICKED), 0);
+            } else {
+                finish_native_dialog(*dialog, tmc);
+            }
         } else {
             const Word new_value = found == dialog->controls.end()
                                        ? 0
@@ -2168,8 +2208,10 @@ Tmc run_word95_common_file_dialog(DialogState& dialog) {
             nullptr : dialog.current_directory.c_str();
         file_dialog.lpstrTitle = opening ? "Open" : "Save As";
         file_dialog.lpstrDefExt = default_extension.c_str();
+        file_dialog.lpfnHook = win95_file_dialog_hook;
         file_dialog.Flags = OFN_EXPLORER | OFN_ENABLESIZING |
-            OFN_LONGNAMES | OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST;
+            OFN_LONGNAMES | OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST |
+            OFN_ENABLEHOOK;
         if (opening) {
             file_dialog.Flags |= OFN_FILEMUSTEXIST;
             if (dialog.controls[kTmcOpenReadOnly].value != 0) {
@@ -2182,6 +2224,7 @@ Tmc run_word95_common_file_dialog(DialogState& dialog) {
 
         const BOOL accepted = opening ?
             GetOpenFileNameA(&file_dialog) : GetSaveFileNameA(&file_dialog);
+        g_active_win95_file_dialog = nullptr;
         if (!accepted) {
             if (CommDlgExtendedError() != 0) {
                 MessageBoxA(owner,

@@ -657,6 +657,78 @@ código -- aquí, en exia, sin contención, pasa a la primera.
 Sin cambios de código para esta sección -- commit de documentación
 solamente.
 
+## 7. Save As: "File Save As dialog did not cancel cleanly" -- causa raíz independiente, arreglada
+
+**Task 5, 2026-08-19 en exia.** A diferencia de Task 4, esta **no**
+comparte causa raíz con Task 3 -- verify-only dio un fallo real, con
+mensaje propio:
+
+```
+ctest -R "^opus_word1_save_as_test$" --output-on-failure
+    File Save As dialog did not cancel cleanly
+```
+
+**Causa raíz, confirmada leyendo el código real (no solo el síntoma):**
+`create_dialog_host` (`opus_sdm_runtime.cpp:336`) crea, para
+`kIddOpen`/`kIddSaveAs`, una ventana `WS_POPUP` de clase
+`"OpusSdmDialog"` **sin `WS_VISIBLE`** -- un señuelo que
+`materialize_save_as_template` puebla con controles reales (incluido
+el botón Cancel, id 2). Pero `TmcDoDlgDli` (`opus_sdm_runtime.cpp:2522`)
+nunca usa esa ventana para Open/Save As: para esos dos `hid` llama
+directo a `run_word95_common_file_dialog`, que bloquea el hilo dentro
+de `GetSaveFileNameA`/`GetOpenFileNameA` -- el diálogo real y visible
+es una ventana completamente distinta (`#32770`, el común de Windows/
+Wine), no el señuelo.
+
+El arnés de test (razonablemente, seguiendo la misma convención de
+clase que usan *todos los demás* diálogos SDM) busca `"OpusSdmDialog"`
++ `"Save As"` -- encuentra el señuelo (existe, aunque oculto:
+`EnumWindows` no filtra por visibilidad y nada en `find_window_callback`
+lo hace tampoco), le manda `WM_COMMAND` id=2 al botón Cancel del
+señuelo. `handle_dialog_command` lo recibe (la bomba de mensajes de
+`GetSaveFileNameA` despacha *todos* los mensajes del hilo, no solo los
+de su propia ventana) y llama `finish_native_dialog`, que marca
+`dialog.dying=true` y hace `ShowWindow(SW_HIDE)` -- pero nada de eso
+llega al diálogo real, que sigue bloqueado esperando su propio Cancel.
+`wait_for_window_to_close` espera a que la ventana señuelo *desaparezca*
+(`find_process_window` devuelve null), pero `DestroyWindow` del señuelo
+solo ocurre en `TmcDoDlgDli` **después** de que
+`run_word95_common_file_dialog` retorne -- que nunca pasa. Timeout a
+los 5000 ms.
+
+No es un bug compartido con Task 3, y no es un bug del arnés tampoco
+(apuntar al señuelo es lo correcto dado que ningún otro diálogo de este
+código tiene esta arquitectura de dos ventanas) -- es un hueco real:
+nada conecta el señuelo con el diálogo real que reemplaza.
+
+**Fix:** un hook `OFN_ENABLEHOOK`/`lpfnHook` en el `OPENFILENAMEA` de
+`run_word95_common_file_dialog` captura el HWND real del diálogo
+(`GetParent()` del hook, el patrón documentado para diálogos
+`OFN_EXPLORER`) en `WM_INITDIALOG`, guardado en un global
+(`g_active_win95_file_dialog`, limpiado apenas retorna la llamada
+bloqueante). `handle_dialog_command`, para `kIddOpen`/`kIddSaveAs` con
+`tmc == kTmcOk || tmc == kTmcCancel`, ahora reenvía el clic del señuelo
+al diálogo real (`PostMessageA(..., WM_COMMAND, MAKEWPARAM(tmc,
+BN_CLICKED), 0)` -- `IDOK`/`IDCANCEL` coinciden con `kTmcOk`/`kTmcCancel`
+por la misma convención de Windows que ya usa este archivo) en vez de
+llamar `finish_native_dialog` directo -- así es
+`run_word95_common_file_dialog` el que termina el diálogo exactamente
+una vez, igual que si un usuario real hubiera hecho clic en la ventana
+visible.
+
+**Verificado:**
+```
+ctest -R "^opus_word1_save_as_test$" --output-on-failure
+    Passed    4.79 sec
+
+ctest -L word1_startup_blocked --output-on-failure
+    5/9 (antes 4/9) -- Save As nuevo, sin regresión en los demás
+```
+
+Archivos: `src/port/original/opus_sdm_runtime.cpp` (global +
+hook + wiring `lpfnHook`/`OFN_ENABLEHOOK` + reenvío en
+`handle_dialog_command`).
+
 Rama `fix/winelib-startup-blocked` (no está en `main`). Plan:
 `docs/superpowers/plans/2026-08-15-terminar-winelib.md`. Ledger SDD:
 `.superpowers/sdd/2026-08-15-terminar-winelib/progress.md`.
@@ -700,11 +772,18 @@ Sesión cerrada 2026-08-15 a pedido del usuario tras ~2 h de trabajo
 limpio en `25325c0`.
 
 **Actualización 2026-08-19 (exia, revisión independiente de Task 3 +
-Task 4):** ver §5 y §6 arriba. 4 hallazgos de fidelidad corregidos y
-verificados (Task 3), Task 4 cerrada verify-only. 4/9 reproducido en
-un segundo entorno (exia, no debian13/hp-15). Árbol limpio, 6 commits
-nuevos sobre `16145b6`, pusheados a `origin/fix/winelib-startup-blocked`.
+Task 4 + Task 5):** ver §5, §6, §7 arriba. 4 hallazgos de fidelidad
+corregidos y verificados (Task 3), Task 4 cerrada verify-only, Task 5
+(Save As) con causa raíz independiente real encontrada y arreglada
+(señuelo `OpusSdmDialog` sin conexión al diálogo real
+`GetSaveFileNameA`). **5/9** en la etiqueta, reproducido en un segundo
+entorno (exia, no debian13/hp-15). Árbol limpio, 8 commits nuevos sobre
+`16145b6`, pusheados a `origin/fix/winelib-startup-blocked`.
 
-Próximo paso al retomar: Task 5 (Save As), primer test de los
-restantes con mensaje propio en vez del AV genérico -- ver la nota de
-más abajo sobre `run_word95_common_file_dialog`.
+Tasks 6-10 siguen sin empezar: `--font-typing` (ribbon, "today's
+original bug report" del plan -- necesita un display real, no Xvfb,
+ver la nota del Step 1 de Task 6 más abajo), `--typing` ("typed text
+was not painted"), `--interaction` ("dragging the caption did not move
+the window"), `--selection` ("sentence-end click produced an invalid
+selection"). `opus_x64_runtime_test` (gating) sigue colgado, sin
+investigar, confirmado también en exia.
