@@ -729,6 +729,116 @@ Archivos: `src/port/original/opus_sdm_runtime.cpp` (global +
 hook + wiring `lpfnHook`/`OFN_ENABLEHOOK` + reenvío en
 `handle_dialog_command`).
 
+## 8. `--font-typing`: dos bugs reales encontrados y arreglados, uno localizado y sin cerrar
+
+**Task 6, 2026-08-19 en exia.** El plan (Step 1) anticipaba que este test
+necesitaba un display real, no Xvfb, para la parte visual ("black popup").
+Esta sesión avanzó sin eso -- el fallo real resultó ser de datos y de
+lógica de foco, no de render -- pero **no cierra** Task 6 del todo: un
+tercer problema queda localizado sin arreglar.
+
+**Bug 1 -- nombres de fuente Windows nunca enumerables (arreglado):**
+`installed_windows_fonts()` (opus_sdm_runtime.cpp) enumera con
+`EnumFontFamiliesExA` -- nombres de familia reales, no alias de Windows.
+El test buscaba literales `"Courier New"`/`"Arial"` con
+`CB_FINDSTRINGEXACT`, que nunca aparecen en una pila de fuentes Linux.
+Confirmado con una sonda standalone (`EnumFontFamiliesExA` vía winegcc)
+en dos entornos independientes: exia enumera FreeMono, FreeSans,
+FreeSerif, la familia Liberation, Noto, Unifont, WenQuanYi e IPA; una
+sesión anterior en debian13 vio la familia Liberation, DejaVu, Tahoma,
+MS Sans Serif, Symbol y Wingdings -- cero nombres de alias Windows en
+ninguno de los dos. `installed_windows_fonts()` está bien: es fiel al
+Word real, que tampoco hardcodeaba nombres, enumeraba lo instalado.
+Arreglo: los literales del test pasan a `"Liberation Sans"`/
+`"Liberation Mono"` (los únicos dos nombres que ambos entornos
+comparten; `fonts-liberation` es paquete base común en Debian). Sin
+dependencia nueva -- se consideró instalar fuentes MS reales via
+`winetricks corefonts` y se descartó (licenciamiento, no está en
+ningún otro sitio de este port).
+
+**Bug 2 -- `union FCID` de 8 bytes en Linux, no 4 (arreglado, LP64 real):**
+Con el Bug 1 arreglado el test llegó a un segundo fallo, uno que ya
+existía pero nunca se había alcanzado: `"the packed font identifier is
+not 32 bits"`. Causa: `Opus/fontwin.h`, `union FCID` tiene
+`long lFcid;` -- en Win16/Win32/Win64 `long` siempre fue 4 bytes (Win64
+mantiene el modelo LLP64), pero en Linux x86-64 (LP64) `long` es 8
+bytes. Los otros dos miembros del union (WORD+WORD, y la estructura de
+bitfields `unsigned int`) ya eran de 4 bytes en todas las plataformas
+-- solo `long lFcid` duplicaba el tamaño del union completo aquí. Fix
+guardado en `Opus/fontwin.h` (`#if defined(__GNUC__) && !defined(_MSC_VER)`,
+mismo patrón que el guard de `wordwin.h`/`splshare.h`): `int lFcid`
+bajo GCC/Linux, `long lFcid` sin cambios bajo MSVC. Verificado que
+`.lFcid` solo se usa como asignación de patrón de bits completo
+(`= fcidNil`, `= 0L`, `= pchr->l`) en los 3 sitios de uso reales -- nunca
+se compara como valor ancho, así que el cambio de tipo es seguro.
+
+**Bug 3 -- el foco no vuelve al panel del documento tras elegir fuente
+del ribbon (localizado, NO arreglado -- toca `Opus/` restringido):**
+Con los Bugs 1-2 arreglados, el test abre el combo (el clic simulado
+por sí solo no lo hacía -- se añadió un `CB_SHOWDROPDOWN` explícito
+tras el clic, que sí lo abre) y elige el ítem, pero
+`wait_for_focus(pane, 1500ms)` nunca ve el foco Win32 real
+(`GetGUIThreadInfo().hwndFocus`) volver al panel `OpusWwd`.
+
+El trace ya existente `OpusX64TraceRibbon` (activo siempre, escribe a
+`build/WORD1-ribbon.txt` -- no necesita instrumentación nueva) muestra
+la cadena completa corriendo sin errores lógicos: `CBN_SELENDOK` →
+`commit_ribbon_list_selection` → `kDlmKillItemFocus` (ok) →
+`kDlmKillDialogFocus` (ok, aplica la fuente: `original-applied ...
+tmc=5`) → `kDlmDialogClick`. Esta última invoca `FDlgIb` (el handler
+original, `Opus/iconbar1.c:412`, caso `dlmDlgClick`) con el comentario
+explícito "SDM gets the focus, send it back to the pane" y una llamada
+real `SetFocus(hwwdCur == hNil ? NULL : (*hwwdCur)->hwnd)` -- pero el
+trace confirma que devuelve `fFalse` (normal para este caso, no es un
+error: `dlmDlgDblClick` arriba también retorna `fFalse` siempre). El
+`bool focus_result` de `commit_ribbon_list_selection` solo alimenta el
+trace, no cambia ningún flujo -- así que el `SetFocus` real sí debería
+ejecutarse (`vidf.fIBDlgMode` ya está en `fFalse` para ese punto, puesto
+por `dlmKillDlgFocus` un paso antes, así que la rama `if
+(!vidf.fIBDlgMode)` sí entra). Por qué el foco Win32 real no se queda
+en `pane` después de esa llamada -- no investigado más allá de esto:
+candidatos sin descartar son que `hwwdCur` no apunte al mismo HWND que
+`pane`, o que algo dentro del cierre del combo de Wine (limpieza
+interna tras `CB_SHOWDROPDOWN`+clic simulado) le devuelva el foco a sí
+mismo justo después.
+
+Esto toca `Opus/iconbar1.c` (árbol restringido) -- necesita autorización
+explícita antes de tocar código ahí, per `CLAUDE.md`. Diagnóstico
+completo, sin cambio de código en `Opus/` esta sesión.
+
+**Verificado:**
+```
+DISPLAY=:99 ctest -R "^opus_word1_font_typing_test$" --output-on-failure
+    font combo select stages: foreground=1 chose_item=1 regained_focus=0
+    font typing test could not mouse-select the font
+    (avanzó de fail(47) "could not find controls" -> fail(49) "could
+    not mouse-select the font", con fallo 47 intermedio de "not 32
+    bits" ya cerrado en el camino)
+
+DISPLAY=:99 ctest -L word1_startup_blocked --output-on-failure
+    5/9 -- sin regresión en los demás
+```
+
+Archivos: `src/port/original/opus_word1_ui_test.cpp` (literales de
+fuente, `CB_SHOWDROPDOWN`, diagnóstico de las 3 etapas del clic de
+combo), `Opus/fontwin.h` (guard LP64 de `union FCID`).
+
+## 9. `--clipboard`: "Ctrl+A did not execute Select All" -- confirmado, verify-only, cierra Task 7
+
+**Task 7, 2026-08-19 en exia.** El plan (Step 1) pedía correr
+`opus_word1_clipboard_shortcut_test` aislado como primer paso. Igual
+que Task 4, ya venía pasando en cada corrida completa de la etiqueta
+de esta sesión -- se verificó aislado para confirmarlo formalmente:
+
+```
+ctest -R "^opus_word1_clipboard_shortcut_test$" --output-on-failure
+    Passed    3.61 sec
+```
+
+Mismo patrón que Task 4 (File > New): comparte causa raíz con Task 3
+(`_setjmp`/`longjmp` ABI). Sin cambios de código -- commit de
+documentación solamente.
+
 Rama `fix/winelib-startup-blocked` (no está en `main`). Plan:
 `docs/superpowers/plans/2026-08-15-terminar-winelib.md`. Ledger SDD:
 `.superpowers/sdd/2026-08-15-terminar-winelib/progress.md`.
@@ -772,18 +882,27 @@ Sesión cerrada 2026-08-15 a pedido del usuario tras ~2 h de trabajo
 limpio en `25325c0`.
 
 **Actualización 2026-08-19 (exia, revisión independiente de Task 3 +
-Task 4 + Task 5):** ver §5, §6, §7 arriba. 4 hallazgos de fidelidad
-corregidos y verificados (Task 3), Task 4 cerrada verify-only, Task 5
-(Save As) con causa raíz independiente real encontrada y arreglada
-(señuelo `OpusSdmDialog` sin conexión al diálogo real
-`GetSaveFileNameA`). **5/9** en la etiqueta, reproducido en un segundo
-entorno (exia, no debian13/hp-15). Árbol limpio, 8 commits nuevos sobre
-`16145b6`, pusheados a `origin/fix/winelib-startup-blocked`.
+Task 4 + Task 5 + Task 6 parcial):** ver §5, §6, §7, §8 arriba. 4
+hallazgos de fidelidad corregidos y verificados (Task 3), Task 4
+cerrada verify-only, Task 5 (Save As) con causa raíz independiente
+real encontrada y arreglada (señuelo `OpusSdmDialog` sin conexión al
+diálogo real `GetSaveFileNameA`), Task 6 (`--font-typing`) con 2 de 3
+bugs reales arreglados (nombres de fuente Windows nunca enumerables;
+`union FCID` de 8 bytes en Linux por LP64) y un tercero localizado sin
+cerrar (el foco no vuelve al panel tras elegir fuente del ribbon --
+toca `Opus/iconbar1.c` restringido, necesita autorización). **5/9**
+en la etiqueta -- sin cambio numérico por Task 6 (sigue fallando, más
+adelante que antes) pero con progreso real y documentado. Reproducido
+en un segundo entorno (exia, no debian13/hp-15). Árbol limpio, 9
+commits nuevos sobre `16145b6`, pusheados a
+`origin/fix/winelib-startup-blocked`.
 
-Tasks 6-10 siguen sin empezar: `--font-typing` (ribbon, "today's
-original bug report" del plan -- necesita un display real, no Xvfb,
-ver la nota del Step 1 de Task 6 más abajo), `--typing` ("typed text
-was not painted"), `--interaction` ("dragging the caption did not move
-the window"), `--selection` ("sentence-end click produced an invalid
-selection"). `opus_x64_runtime_test` (gating) sigue colgado, sin
-investigar, confirmado también en exia.
+Task 6 **sin cerrar** -- retomar en §8: el bug 3 localizado (foco tras
+selección de ribbon) es el primer paso, junto con verificar si el
+mismo problema de foco afecta el size_combo (no llegó a probarse, el
+test falla antes en el font_combo). Task 7 (Ctrl+A / Select All)
+**cerrada** verify-only (§9), mismo patrón que Task 4. Tasks 8-10 no
+empezadas: `--typing` ("typed text was not painted"), `--interaction`
+("dragging the caption did not move the window"), `--selection`
+("sentence-end click produced an invalid selection"). `opus_x64_runtime_test`
+(gating) sigue colgado, sin investigar, confirmado también en exia.

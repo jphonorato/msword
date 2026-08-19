@@ -8,6 +8,9 @@ out/
 cmake_build/
 _build/
 
+# CTest-generated (wherever ctest runs from)
+Testing/
+
 # Ninja / compiled objects
 *.o
 *.obj

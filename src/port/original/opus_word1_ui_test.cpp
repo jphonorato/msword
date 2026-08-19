@@ -556,6 +556,7 @@ bool choose_combo_item_with_mouse(const HWND combo, const LRESULT index) {
     RECT combo_rectangle{};
     if (combo == nullptr || index < 0 ||
         !GetWindowRect(combo, &combo_rectangle)) {
+        std::cerr << "choose_combo_item_with_mouse: bad combo/index\n";
         return false;
     }
 
@@ -566,17 +567,29 @@ bool choose_combo_item_with_mouse(const HWND combo, const LRESULT index) {
     if (!SetCursorPos(arrow.x, arrow.y) ||
         !send_mouse_button(MOUSEEVENTF_LEFTDOWN) ||
         !send_mouse_button(MOUSEEVENTF_LEFTUP)) {
+        std::cerr << "choose_combo_item_with_mouse: could not click the "
+                     "dropdown arrow\n";
         return false;
     }
+    Sleep(250);
+    SendMessageW(combo, CB_SHOWDROPDOWN, TRUE, 0);
     Sleep(250);
 
     COMBOBOXINFO info{};
     info.cbSize = sizeof(info);
     RECT list_rectangle{};
     const LRESULT item_height = SendMessageW(combo, CB_GETITEMHEIGHT, 0, 0);
-    if (!GetComboBoxInfo(combo, &info) || info.hwndList == nullptr ||
-        item_height <= 0 || !IsWindowVisible(info.hwndList) ||
+    const BOOL got_info = GetComboBoxInfo(combo, &info);
+    const BOOL list_visible =
+        got_info && info.hwndList != nullptr && IsWindowVisible(info.hwndList);
+    if (!got_info || info.hwndList == nullptr ||
+        item_height <= 0 || !list_visible ||
         !GetWindowRect(info.hwndList, &list_rectangle)) {
+        std::cerr << "choose_combo_item_with_mouse: dropdown popup did not "
+                     "open -- got_info=" << got_info
+                  << " hwndList=" << info.hwndList
+                  << " item_height=" << item_height
+                  << " list_visible=" << list_visible << '\n';
         return false;
     }
 
@@ -863,11 +876,25 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
         HWND size_combo = nullptr;
         LRESULT font_index = CB_ERR;
         LRESULT size_index = CB_ERR;
+        /* installed_windows_fonts() (opus_sdm_runtime.cpp) enumerates via
+           EnumFontFamiliesExA -- real installed font family names, not
+           Windows aliases. "Courier New"/"Arial" never appear on a Linux
+           font stack (confirmed empirically on two independent dev
+           environments: this VPS enumerates FreeMono, FreeSans, FreeSerif,
+           the Liberation family, Noto, Unifont, WenQuanYi and IPA fonts;
+           an earlier debian13 session saw the Liberation family, DejaVu,
+           Tahoma, MS Sans Serif, Symbol and Wingdings -- zero
+           Windows-alias names in either). "Liberation Sans" and
+           "Liberation Mono" are the only two names both lists share, and
+           Debian's fonts-liberation is a common baseline package -- the
+           most portable real choice. This is a data fix, not a rendering
+           one: CB_FINDSTRINGEXACT queries the combo's string list
+           directly, no display needed. */
         for (const HWND combo : combos) {
             if (font_combo == nullptr) {
                 font_index = SendMessageW(
                     combo, CB_FINDSTRINGEXACT, static_cast<WPARAM>(-1),
-                    reinterpret_cast<LPARAM>(L"Courier New"));
+                    reinterpret_cast<LPARAM>(L"Liberation Sans"));
                 if (font_index != CB_ERR) {
                     font_combo = combo;
                 }
@@ -887,7 +914,7 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
         }
         const LRESULT second_font_index = SendMessageW(
             font_combo, CB_FINDSTRINGEXACT, static_cast<WPARAM>(-1),
-            reinterpret_cast<LPARAM>(L"Arial"));
+            reinterpret_cast<LPARAM>(L"Liberation Mono"));
         const LRESULT second_size_index = SendMessageW(
             size_combo, CB_FINDSTRINGEXACT, static_cast<WPARAM>(-1),
             reinterpret_cast<LPARAM>(L"36"));
@@ -915,9 +942,17 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
             return fail(process, 47,
                         "the packed font identifier is not 32 bits");
         }
-        if (!make_foreground_and_focus(main_window, pane, thread_id) ||
-            !choose_combo_item_with_mouse(font_combo, font_index) ||
-            !wait_for_focus(process.hProcess, thread_id, pane, 1500)) {
+        const bool got_foreground =
+            make_foreground_and_focus(main_window, pane, thread_id);
+        const bool chose_item =
+            got_foreground && choose_combo_item_with_mouse(font_combo, font_index);
+        const bool regained_focus =
+            chose_item &&
+            wait_for_focus(process.hProcess, thread_id, pane, 1500);
+        if (!got_foreground || !chose_item || !regained_focus) {
+            std::cerr << "font combo select stages: foreground="
+                      << got_foreground << " chose_item=" << chose_item
+                      << " regained_focus=" << regained_focus << '\n';
             return fail(process, 49,
                         "font typing test could not mouse-select the font");
         }

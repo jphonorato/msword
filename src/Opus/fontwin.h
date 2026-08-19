@@ -67,9 +67,25 @@ struct FFN
 /* a compressed CHP, made document-independent by mapping ftc's
 	to ibstFont's; fFixedPitch is an added 'hint' for requesting
 	screen fonts based on what we got back from the printer */
-union FCID 
-		{ 
+union FCID
+		{
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		/* long is 8 bytes on Linux x86-64 (LP64) but was always 4 bytes on
+		   Win16/Win32/Win64 (Win64 keeps the LLP64 model, long stays 4).
+		   This union exists specifically to pack a CHP into exactly 32
+		   bits (see the comment above) -- the other two members (WORD+
+		   WORD, and the bitfield struct of unsigned int bitfields) are
+		   already 4 bytes on every target, so long alone was silently
+		   doubling sizeof(union FCID) here. A caller depends on the
+		   width directly: WM_OPUS_X64_QUERY_SELECTION case 58
+		   (Opus/wproc.c) returns sizeof(union FCID) and
+		   opus_word1_ui_test.cpp asserts it's 4. int is 4 bytes on every
+		   relevant target, matching Win32/Win64's int width too. MSVC
+		   keeps long, already correct there. */
+		int lFcid;
+#else
 		long lFcid;
+#endif
 		struct
 				{
 				WORD    wProps;
