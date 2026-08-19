@@ -4,6 +4,7 @@ DEBUGASSERTSZ
 #include "doc.h"
 #include "file.h"
 #include "disp.h"
+#include <stdio.h>
 
 #include "opus_x64_layout.h"
 
@@ -149,9 +150,20 @@ void* OpusPlData(void* pplVoid)
 		return NULL;
 	brgfoo = ppl->brgfoo;
 	/* HplInit stores data at cbPLBase. A smashed header (or PLLBS
-	   overlay that wrote rglbs over fExternal) can leave brgfoo=0. */
+	   overlay that wrote rglbs over fExternal) can leave brgfoo out of
+	   range. Task 3 (opus_x64_setjmp.cpp) fixed the one known cause of
+	   this kind of smash; this clamp is now a last-resort guard, not
+	   the expected path -- log every time it fires so a real recurrence
+	   (or a legitimate PL whose header is bigger than this heuristic
+	   expects) is visible instead of silently mispaginating. */
 	if (brgfoo < (int)offset(PL, rgbHead) || brgfoo > 4096)
+		{
+		fprintf(stderr,
+			"OpusPlData: brgfoo=%d out of range [%d,4096], PL header "
+			"likely corrupted; falling back to cbPLBase\n",
+			brgfoo, (int)offset(PL, rgbHead));
 		brgfoo = (int)offset(PL, rgbHead);
+		}
 	rgfoo = ((char*)ppl) + brgfoo;
 	/* PLLBS has rglbs at the same offset as PL.fExternal. Only the
 	   boolean 1 is a real external HQ; any other nonzero is payload. */
