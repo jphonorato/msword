@@ -827,6 +827,80 @@ allá de clase+caption esta sesión. Sigue sin arreglar, sigue tocando
 `Opus/iconbar1.c` (restringido) -- este hallazgo solo corrige el
 diagnóstico previo, no lo cierra.
 
+**Segunda actualización 2026-08-20 (exia): la hipótesis `CBRollUp` tenía
+razón después de todo -- cerrado, arreglado en `opus_sdm_runtime.cpp`, no
+en `Opus/iconbar1.c`.** El párrafo anterior se equivocó de granularidad de
+traza. `wait_for_focus_traced` mide desde un *proceso externo* con poll de
+10ms -- demasiado grueso para ver una ventana de foco que dura microsegundos
+dentro del mismo hilo. Se instrumentó en cambio `FDlgIb` mismo
+(`Opus/iconbar1.c`, autorizado para esta sesión): dos llamadas a
+`OpusX64TraceRibbon` alrededor del `SetFocus(hwwdCur->hwnd)` real,
+`dlgclick-before`/`dlgclick-after`, leyendo `GetFocus()` de forma síncrona
+en el mismo hilo. Resultado, en `build/WORD1-ribbon.txt`:
+
+```
+commit-end   msg=14 ...
+dlgclick-before msg=18 tmc=0 a=<hwwdCur> b=65770 sel=65750,0 ins=0
+dlgclick-after  msg=18 tmc=0 a=65770 b=0 sel=0,0 ins=0
+```
+
+`b=65770` = `0x100EA` = `pane`. **`dlgclick-after` confirma que
+`SetFocus(hwwdCur->hwnd)` sí funciona** -- `GetFocus()` es `pane` en el
+instante en que `dlmDlgClick` retorna. `Opus/iconbar1.c` está limpio, no
+tiene ningún bug: hace exactamente lo que el Word 1.1a original hacía.
+Algo *después* de que toda la cadena SDM termina (`commit-end` es el
+último evento de esta traza) deshace ese foco antes de que
+`wait_for_focus_traced` (10ms más tarde) llegue a verlo -- exactamente la
+hipótesis original de `CBRollUp()`: Wine oculta el popup del listbox
+*después* de que `CBN_SELENDOK` retorna, y ocultar una ventana con foco
+reasigna el foco como efecto secundario.
+
+Arreglo real, en la capa de puerto sin restringir
+(`src/port/original/opus_sdm_runtime.cpp`, no `Opus/`): `commit_ribbon_
+list_selection` ya reenviaba `CBN_SELENDOK` a través de un mensaje
+pospuesto propio (`kWmCommitRibbonSelection`) para esquivar el cierre no
+confiable del combo nativo. Se agregó un segundo mensaje pospuesto,
+`kWmReassertPaneFocus`, que repite exactamente la misma llamada que ya
+funciona (`invoke_dialog_proc(dialog, kDlmDialogClick, tmc)`, el mismo
+`FDlgIb` de siempre) -- primero vía `PostMessageW` inmediato (insuficiente:
+la traza mostró que ese reintento también aterriza en `pane` y también se
+deshace después), luego vía `SetTimer(..., 50)` de un solo disparo
+(`WM_TIMER` → mata el timer → repite la llamada). El segundo intento, con
+50ms reales de por medio para que la cola de mensajes drene lo que sea que
+esté robando el foco, **se queda**. Verificado con la misma traza síncrona:
+`reassert-focus ... b=65770` (pane), y esta vez `wait_for_focus_traced`
+(el poll externo de 10ms) también lo confirma:
+
+```
+[focus-trace] t+1ms hwndFocus=0x100ea class=OpusWwd caption='' (== pane)
+```
+
+Task 6 Bug 3 **cerrado**. El test avanza más allá del chequeo de foco, a
+un fallo distinto y nuevo: `"newly typed text did not retain the ribbon
+font"` -- el texto recién tecleado no conserva la fuente elegida en el
+ribbon. No es una regresión (antes el test nunca llegaba tan lejos); es
+un cuarto bug real, sin investigar todavía. Etiqueta
+`word1_startup_blocked` sigue en 7/9 (mismos dos conocidos: este nuevo
+fallo de fuente en `--font-typing`, y `--interaction` sin cambios), pero
+el bug real detrás de uno de los dos cambió.
+
+**Verificado:**
+```
+DISPLAY=:99 ctest -R "^opus_word1_font_typing_test$" --output-on-failure
+    [focus-trace] t+1ms hwndFocus=0x100ea class=OpusWwd caption='' (== pane)
+    font properties=20,0 applied=3,48 inserted=20,0 lineHeight=16
+        formatted=16 formatter=0,16
+    newly typed text did not retain the ribbon font
+
+DISPLAY=:99 ctest -L word1_startup_blocked --output-on-failure
+    7/9 -- sin regresión en los demás
+```
+
+Archivos: `Opus/iconbar1.c` (traza `dlgclick-before`/`dlgclick-after`,
+autorizado), `src/port/original/opus_sdm_runtime.cpp` (el arreglo real:
+`kWmReassertPaneFocus`, `kReassertPaneFocusTimerId`,
+`DialogState::pending_reassert_tmc`).
+
 **Verificado:**
 ```
 DISPLAY=:99 ctest -R "^opus_word1_font_typing_test$" --output-on-failure
@@ -1080,10 +1154,12 @@ sesión (2026-08-19, exia):
    (Task 4, §6)
 3. `--save-as` -- **arreglado**, causa independiente: diálogo señuelo
    sin conectar al real (Task 5, §7)
-4. `--font-typing` -- **parcial**: 2 de 3 bugs arreglados (nombres de
-   fuente, `union FCID` LP64); el foco tras selección de ribbon queda
-   localizado en `Opus/iconbar1.c`, sin arreglar, necesita
-   autorización para tocar árbol restringido (Task 6, §8)
+4. `--font-typing` -- **parcial**: 3 de 4 bugs arreglados (nombres de
+   fuente, `union FCID` LP64, foco tras selección de ribbon -- este
+   último arreglado 2026-08-20 en `opus_sdm_runtime.cpp`, no en
+   `Opus/iconbar1.c`, ver actualización en §8); el test ahora avanza a
+   un cuarto bug distinto, texto nuevo no conserva la fuente del
+   ribbon, sin investigar (Task 6, §8)
 5. `--clipboard` (Ctrl+A) -- **arreglado**, mismo root cause que #1
    (Task 7, §9)
 6. `--selection` -- **arreglado**, 3 bugs de arnés encadenados (Task

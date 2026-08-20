@@ -97,6 +97,7 @@ struct DialogState {
     bool modal = false;
     bool native_modal = false;
     bool commands_active = false;
+    Tmc pending_reassert_tmc = 0;
     std::string caption;
     std::string current_directory;
     std::string file_pattern;
@@ -229,6 +230,17 @@ constexpr Word kDlmSetDialogFocus = 0x000d;
 constexpr Word kDlmKillDialogFocus = 0x000e;
 constexpr Word kDlmDialogClick = 0x0012;
 constexpr UINT kWmCommitRibbonSelection = WM_APP + 0x352;
+/* Task 6 Bug 3 (docs/port-linux/03-comportamiento-word1-startup-blocked.md
+   §8): commit_ribbon_list_selection's own kDlmDialogClick call already puts
+   real Win32 focus on the document pane -- confirmed by tracing GetFocus()
+   synchronously right after that call returns. It doesn't hold: Wine's
+   CBRollUp (dlls/user32/combo.c) sends CBN_SELENDOK, then -- after this
+   whole posted-message chain has run and returned -- hides the still-open
+   listbox popup, which reassigns focus as a side effect. Re-post the exact
+   same focus-restoring call one tick later so it's the last write, after
+   that hide has already happened. */
+constexpr UINT kWmReassertPaneFocus = WM_APP + 0x353;
+constexpr UINT_PTR kReassertPaneFocusTimerId = 0x4f435031u; /* "OCP1" */
 constexpr Word kIddNewDoc = 2;
 constexpr Word kIddOpen = 3;
 constexpr Word kIddSaveAs = 4;
@@ -1815,6 +1827,16 @@ void commit_ribbon_list_selection(DialogState& dialog, const Tmc tmc) {
         invoke_dialog_proc(dialog, kDlmDialogClick, tmc);
     OpusX64TraceRibbon("commit-end", kDlmKillDialogFocus, tmc,
                        item_result, dialog_result, focus_result, 0, 0);
+    /* See kWmReassertPaneFocus above: this call already worked (focus_result
+       reflects it), but something later in the queue undoes it moments
+       later -- confirmed by tracing GetFocus() again from a same-tick
+       PostMessageW reassert: it also lands on the pane and also gets
+       undone. A plain repost only jumps the queue by one message, which
+       isn't enough if the thief is itself a later posted/hardware-input
+       message (e.g. a WM_ACTIVATE trailing the original click). A short
+       one-shot timer gives the queue more real time to drain first. */
+    dialog.pending_reassert_tmc = tmc;
+    SetTimer(dialog.window, kReassertPaneFocusTimerId, 50, nullptr);
 }
 
 std::string selected_list_text(const ControlState& control_state) {
@@ -2344,6 +2366,22 @@ LRESULT CALLBACK native_dialog_window_proc(const HWND window,
                     *dialog, static_cast<Tmc>(w_param));
             }
             return 0;
+        case WM_TIMER:
+            if (w_param == kReassertPaneFocusTimerId) {
+                KillTimer(window, kReassertPaneFocusTimerId);
+                if (auto* dialog = find_dialog(handle); dialog != nullptr) {
+                    const Tmc tmc = dialog->pending_reassert_tmc;
+                    const bool focus_result =
+                        invoke_dialog_proc(*dialog, kDlmDialogClick, tmc);
+                    OpusX64TraceRibbon(
+                        "reassert-focus", kDlmDialogClick, tmc, focus_result,
+                        static_cast<int>(
+                            reinterpret_cast<std::uintptr_t>(GetFocus())),
+                        0, 0, 0);
+                    return 0;
+                }
+            }
+            return DefWindowProcA(window, message, w_param, l_param);
         case WM_CLOSE:
             if (auto* dialog = find_dialog(handle); dialog != nullptr) {
                 finish_native_dialog(*dialog, kTmcCancel);

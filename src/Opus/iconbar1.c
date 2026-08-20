@@ -414,10 +414,26 @@ WORD wOld, wNew, wParam;
 #ifdef DBGIB
 		CommSz(SzShared("Iconbar refusing focus.\r\n"));
 #endif /* DBGIB */
+#ifdef OPUS_X64
+		{
+		extern void OpusX64TraceRibbon();
+		OpusX64TraceRibbon("dlgclick-before", dlm, (int)vidf.fIBDlgMode,
+				(int)(long)hwwdCur,
+				hwwdCur == hNil ? 0 : (int)(long)(*hwwdCur)->hwnd,
+				(long)GetFocus(), 0L, 0);
+		}
+#endif
 		if (!vidf.fIBDlgMode)
 			SetFocus(hwwdCur == hNil ? NULL : (*hwwdCur)->hwnd);
 		else
 			TermCurIBDlg(fFalse); /* "escape" without applying */
+#ifdef OPUS_X64
+		{
+		extern void OpusX64TraceRibbon();
+		OpusX64TraceRibbon("dlgclick-after", dlm, (int)vidf.fIBDlgMode,
+				(int)(long)GetFocus(), 0, 0L, 0L, 0);
+		}
+#endif
 		fRet = fFalse;
 		goto LRet;
 
