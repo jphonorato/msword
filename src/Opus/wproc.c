@@ -554,8 +554,20 @@ int    cmdShow;
                 }
 				/* idle if there are not messages ready */
 			else  if (PeekMessage((LPMSG)&vmsgLast, NULL, NULL, NULL, PM_REMOVE))
+				{
 				/* we have a message */
 				fHaveMsg = fTrue;
+#ifdef OPUS_X64
+				if (vmsgLast.message == WM_CHAR || vmsgLast.message == WM_KEYDOWN
+						|| vmsgLast.message == WM_KEYUP || vmsgLast.message == WM_SYSKEYDOWN)
+					{
+					extern void OpusX64TraceRibbon();
+					OpusX64TraceRibbon("mainloop-msg", vmsgLast.message,
+							(int)vmsgLast.wParam, vidf.fIBDlgMode,
+							(int)(long)vmsgLast.hwnd, 0L, 0L, 0);
+					}
+#endif
+				}
 
 			else
 				{
@@ -2451,6 +2463,14 @@ LPMSG lpmsg;
 	wm = lpmsg->message;
 	kc = lpmsg->wParam;	/* key code or char */
 
+#ifdef OPUS_X64
+	if (wm == WM_CHAR || wm == WM_KEYDOWN)
+		{
+		extern void OpusX64TraceRibbon();
+		OpusX64TraceRibbon("iskeymsg", wm, kc, vfInsertMode,
+				(int)(long)lpmsg->hwnd, 0L, 0L, 0);
+		}
+#endif
 
 #ifdef COMING_SOON_TO_A_WORD_PROCESSOR_NEAR_YOU
 

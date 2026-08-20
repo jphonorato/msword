@@ -2373,11 +2373,25 @@ LRESULT CALLBACK native_dialog_window_proc(const HWND window,
                     const Tmc tmc = dialog->pending_reassert_tmc;
                     const bool focus_result =
                         invoke_dialog_proc(*dialog, kDlmDialogClick, tmc);
+                    /* TEMP diagnostic: SetFocus() above updates Wine's
+                       internal Win32 focus bookkeeping (GetFocus() already
+                       confirms this), but real hardware input (SendInput,
+                       as used by an actual keyboard) is routed by X11-level
+                       focus, which a closing combo popup may still hold.
+                       Force the real top-level window back to the
+                       foreground too, to test whether that's what SendInput
+                       needs. */
+                    const HWND focused_now = GetFocus();
+                    const HWND root = GetAncestor(focused_now, GA_ROOT);
+                    const bool foreground_result =
+                        root != nullptr && SetForegroundWindow(root) != 0;
                     OpusX64TraceRibbon(
                         "reassert-focus", kDlmDialogClick, tmc, focus_result,
                         static_cast<int>(
-                            reinterpret_cast<std::uintptr_t>(GetFocus())),
-                        0, 0, 0);
+                            reinterpret_cast<std::uintptr_t>(focused_now)),
+                        static_cast<long>(
+                            reinterpret_cast<std::uintptr_t>(root)),
+                        static_cast<long>(foreground_result), 0);
                     return 0;
                 }
             }

@@ -1041,6 +1041,119 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
             SendMessageW(pane, kWmOpusX64QuerySelection, 50, 0);
         const LRESULT cp_before =
             SendMessageW(pane, kWmOpusX64QuerySelection, 0, 0);
+        {
+            GUITHREADINFO gui{};
+            gui.cbSize = sizeof(gui);
+            GetGUIThreadInfo(thread_id, &gui);
+            wchar_t class_name[64] = {};
+            GetClassNameW(gui.hwndFocus, class_name,
+                          static_cast<int>(std::size(class_name)));
+            char class_name_ansi[128] = {};
+            WideCharToMultiByte(CP_ACP, 0, class_name, -1, class_name_ansi,
+                                static_cast<int>(sizeof(class_name_ansi)),
+                                nullptr, nullptr);
+            std::cerr << "  [pre-type] hwndFocus=" << gui.hwndFocus
+                      << " class=" << class_name_ansi
+                      << " (== pane)=" << (gui.hwndFocus == pane)
+                      << " foreground=" << GetForegroundWindow()
+                      << " (== main_window)="
+                      << (GetForegroundWindow() == main_window)
+                      << " paneEnabled=" << IsWindowEnabled(pane)
+                      << " mainEnabled=" << IsWindowEnabled(main_window)
+                      << " active=" << gui.hwndActive
+                      << " capture=" << gui.hwndCapture
+                      << " menuOwner=" << gui.hwndMenuOwner
+                      << " moveSize=" << gui.hwndMoveSize
+                      << " flags=" << gui.flags << '\n';
+        }
+        /* TEMP diagnostic: every focus/foreground/active fix attempt so far
+           has left this test's outcome byte-identical, which rules out
+           focus bookkeeping. Enumerate this thread's actual top-level
+           windows (EnumThreadWindows walks Z-order) to check for a leftover
+           combo dropdown popup still visible/topmost over the pane's screen
+           rect -- that would eat real hardware input regardless of what any
+           focus API reports, since XTest delivers to whatever's physically
+           there. */
+        {
+            struct EnumCtx {
+                HWND pane;
+            } enum_ctx{pane};
+            EnumThreadWindows(
+                thread_id,
+                [](HWND hwnd, LPARAM lparam) WINAPI -> BOOL {
+                    auto* ctx = reinterpret_cast<EnumCtx*>(lparam);
+                    wchar_t class_name[64] = {};
+                    GetClassNameW(hwnd, class_name,
+                                  static_cast<int>(std::size(class_name)));
+                    char class_ansi[128] = {};
+                    WideCharToMultiByte(CP_ACP, 0, class_name, -1, class_ansi,
+                                        static_cast<int>(sizeof(class_ansi)),
+                                        nullptr, nullptr);
+                    RECT rect{};
+                    GetWindowRect(hwnd, &rect);
+                    wchar_t title[128] = {};
+                    GetWindowTextW(hwnd, title,
+                                    static_cast<int>(std::size(title)));
+                    char title_ansi[128] = {};
+                    WideCharToMultiByte(CP_ACP, 0, title, -1, title_ansi,
+                                        static_cast<int>(sizeof(title_ansi)),
+                                        nullptr, nullptr);
+                    std::cerr << "  [enum-window] hwnd=" << hwnd
+                              << " class=" << class_ansi
+                              << " title='" << title_ansi << "'"
+                              << " visible=" << IsWindowVisible(hwnd)
+                              << " rect=" << rect.left << ',' << rect.top
+                              << ',' << rect.right << ',' << rect.bottom
+                              << " (== pane)=" << (hwnd == ctx->pane) << '\n';
+                    if (lstrcmpW(class_name, L"#32770") == 0 &&
+                        IsWindowVisible(hwnd)) {
+                        EnumChildWindows(
+                            hwnd,
+                            [](HWND child, LPARAM) WINAPI -> BOOL {
+                                wchar_t child_class[64] = {};
+                                GetClassNameW(
+                                    child, child_class,
+                                    static_cast<int>(std::size(child_class)));
+                                char child_class_ansi[128] = {};
+                                WideCharToMultiByte(
+                                    CP_ACP, 0, child_class, -1,
+                                    child_class_ansi,
+                                    static_cast<int>(sizeof(child_class_ansi)),
+                                    nullptr, nullptr);
+                                wchar_t child_text[256] = {};
+                                GetWindowTextW(
+                                    child, child_text,
+                                    static_cast<int>(std::size(child_text)));
+                                char child_text_ansi[256] = {};
+                                WideCharToMultiByte(
+                                    CP_ACP, 0, child_text, -1, child_text_ansi,
+                                    static_cast<int>(sizeof(child_text_ansi)),
+                                    nullptr, nullptr);
+                                std::cerr
+                                    << "    [dialog-child] hwnd=" << child
+                                    << " class=" << child_class_ansi
+                                    << " id=" << GetDlgCtrlID(child)
+                                    << " text='" << child_text_ansi << "'\n";
+                                return TRUE;
+                            },
+                            0);
+                    }
+                    return TRUE;
+                },
+                reinterpret_cast<LPARAM>(&enum_ctx));
+        }
+        /* TEMP diagnostic: caret_mode's physical-typing block (below, ~1868)
+           calls make_foreground_and_focus(main_window, pane, thread_id)
+           immediately before send_physical_text and passes; this block only
+           polled focus state via wait_for_focus_traced above and trusted
+           Opus's own SetFocus chain. make_foreground_and_focus additionally
+           does AttachThreadInput(this test process's thread, WORD1's
+           thread) around its SetForegroundWindow/SetFocus calls -- try
+           whether that's the missing piece for SendInput delivery
+           specifically (a cross-process concern GetFocus()/
+           GetGUIThreadInfo() polling can't surface, since those read
+           WORD1's own per-thread state correctly regardless). */
+        make_foreground_and_focus(main_window, pane, thread_id);
         if (!send_physical_text(L"fonttest") || !send_virtual_key(VK_RIGHT)) {
             return fail(process, 52,
                         "font typing test could not type and commit text");

@@ -918,6 +918,472 @@ Archivos: `src/port/original/opus_word1_ui_test.cpp` (literales de
 fuente, `CB_SHOWDROPDOWN`, diagnóstico de las 3 etapas del clic de
 combo), `Opus/fontwin.h` (guard LP64 de `union FCID`).
 
+**Tercera actualización 2026-08-20 (exia): "no conserva la fuente" era
+diagnóstico engañoso -- el texto nunca se tecleó. Causa raíz real
+encontrada: `idle.c:503` precarga la fuente con `selCur.chp.hps == 0`,
+`CreateFontIndirect` falla, y el diálogo real de error resultante se
+traga el teclado. Sesión cerrada sin arreglo -- se retoma en Debian 13
+(LXQt).**
+
+El "cuarto bug" del párrafo anterior resultó ser una lectura
+equivocada. Con foco confirmado correcto en `pane`
+(`[pre-type] hwndFocus=... (== pane)=1`), se trazó `FIsKeyMessage`
+(`Opus/wproc.c:2450`) y el `PeekMessage` del loop principal
+(`OpusOriginalWinMain`, `Opus/wproc.c:~556`): **cero** mensajes
+`WM_CHAR`/`WM_KEYDOWN` llegan a ninguno de los dos durante todo
+`--font-typing`, pese a que `send_physical_text` (SendInput real, no
+`PostMessageW`) reporta éxito. Prueba diferencial decisiva: el mismo
+trace, corrido contra `opus_word1_typing_test` (tecleo simple, sin
+ribbon), sí ve cada tecla (`iskeymsg`/`mainloop-msg` para cada
+`WM_KEYDOWN`/`WM_KEYUP`/`WM_CHAR`, valores `tmc` deletreando
+"ORIGINAL"). La app permanece "responsive"
+(`window_is_responsive`/`WM_NULL` responde) durante toda la falla --
+no es un cuelgue real.
+
+**Teorías de foco descartadas, todas verificadas empíricamente, ninguna
+cambió el síntoma un solo bit (`applied=3,48 inserted=20,0` idéntico
+en cada intento):**
+
+- `SetTimer`-reassert de Task 6 Bug 3 (arriba) desactivado
+  temporalmente -- el test simplemente vuelve a fallar el chequeo de
+  foco original (`regained_focus=0`), sin siquiera llegar al tecleo:
+  confirma que ese fix sigue siendo necesario, pero no es la causa de
+  esto.
+- `SetForegroundWindow(GetAncestor(pane, GA_ROOT))` agregado junto al
+  reassert de foco (`opus_sdm_runtime.cpp`, diagnóstico, sigue en el
+  árbol sin commitear) -- `foreground_result=1`, `root` resuelve
+  correctamente a `main_window`. Sin cambio.
+- Cursor real (`SetCursorPos`) movido al centro de `pane` justo antes
+  de teclear -- por si este Xvfb (sin gestor de ventanas) enrutara
+  input real por posición del puntero (`XGetInputFocus` devuelve
+  `PointerRoot` fijo durante todo el test, confirmado con una sonda
+  standalone en C/Xlib). Sin cambio.
+- `make_foreground_and_focus(main_window, pane, thread_id)` (el mismo
+  helper que sí usa con éxito el bloque `caret_mode`, con su
+  `AttachThreadInput` cruzado entre el proceso de test y el hilo de
+  WORD1) llamado explícitamente antes de `send_physical_text`. Sin
+  cambio -- y de paso se confirmó que `caret_mode`/`--caret` no está
+  registrado como ctest (`src/CMakeLists.txt` solo registra 8 modos),
+  así que ese patrón nunca estuvo realmente probado en este entorno,
+  no era la referencia sólida que parecía.
+- `IsWindowEnabled`, `GetActiveWindow`, captura de mouse
+  (`GUITHREADINFO.hwndCapture`) -- todos correctos (`paneEnabled=1
+  mainEnabled=1 active=main_window capture=0`).
+
+**Causa real: `EnumThreadWindows` sobre el hilo de WORD1 en el momento
+`[pre-type]` muestra una ventana visible extra, clase `#32770`
+(diálogo estándar de Windows), título `"Microsoft Word"`, con hijos
+`Static id=65535 text='Low memory: cannot display requested font'` +
+`Button id=1 text='OK'`.** Ese diálogo real -- no ficticio, no un
+efecto de foco -- corre su propio loop de mensajes modal desde que se
+crea; por eso ni `FIsKeyMessage` ni el `PeekMessage` del loop principal
+ven un solo mensaje después: el hilo está parado dentro del loop del
+diálogo, no en el de Opus. Explica también por qué la app sigue
+"responsive" (el loop del diálogo también atiende `WM_NULL`) y por qué
+ningún arreglo de foco cambió nada -- el foco nunca fue el problema.
+
+Rastreado hasta el origen exacto (2 puntos de traza nuevos en
+`Opus/LOADFONT.C`, autorizados como continuación de esta misma
+investigación):
+
+```
+idle.c:503   LoadFont(&selCur.chp, fFalse)   /* "preload new font in
+                                                 Idle, avoid delay
+                                                 when typing commences" */
+  -> C_LoadFcid -> FGraphicsFcidToPlf:
+       lf.lfHeight = NMultDiv(fcid.hps * (czaPoint/2), vfli.dysInch, czaInch)
+       trace: fcid.hps=0  vfli.dysInch=96 (DPI normal, no es la causa)
+       lf.lfHeight=0
+  -> CreateFontIndirect(&lf) devuelve NULL (GetLastError=5,
+     ERROR_ACCESS_DENIED)
+  -> SetErrorMat(matFont)  (LOADFONT.C:330, camino LSystemFontErr)
+  -> idle.c / ReportPendingAlerts(): case matFont ->
+     ErrorEid(eidCantRealizeFont, ...) -> el MessageBox real de arriba
+```
+
+`selCur.chp.hps` **debería** ser 48 (24pt, la talla recién elegida en
+el ribbon -- confirmado por separado con
+`SendMessageW(pane, kWmOpusX64QuerySelection, 50, 0)` justo antes de
+teclear) pero en el momento en que corre el preload de `idle.c:503`
+lee `0`. **No cerrado -- pendiente identificar la carrera exacta.**
+`vrf.fPreloadSelFont` se marca `fTrue` en dos sitios
+(`Opus/cmdcore.c:510`, `Opus/dlglook1.c:781`) y se consume una sola vez
+por tick de idle (`Opus/idle.c:488-505`, usa `selCur.chp` tal cual,
+sin resolver `hps==0` a un valor real primero). Candidato más probable
+sin confirmar: el preload dispara y consume la marca justo después de
+elegir la FUENTE (ribbon combo 1), con `selCur.chp.hps` todavía en su
+valor original de documento (0, ver `initial_hps=0` en el trace de
+arriba) -- antes de que la selección de TALLA (ribbon combo 2) llegue
+a escribir 48 ahí. Verificar: en qué tick exacto de idle corre esto
+respecto a los dos `combo-select` del trace de ribbon, y si `hps==0`
+es en sí un estado legítimo (placeholder "heredar de estilo") que
+otros caminos resuelven antes de tocar GDI y este no.
+
+**Diagnóstico dejado en el árbol, sin commitear** (continuidad para la
+sesión en Debian 13/LXQt -- todo bajo `#ifdef OPUS_X64`, guardado,
+no afecta MSVC):
+
+- `Opus/LOADFONT.C` -- traza `lfheight-calc` (entrada a
+  `FGraphicsFcidToPlf`, imprime `fcid.hps`/`vfli.dysInch`/
+  `lf.lfHeight`), `matfont-set` (fallo de `CreateFontIndirect`),
+  `screenfail` (fallo de `OurSelectObject` en el DC de pantalla --
+  no se disparó esta sesión, el fallo real fue siempre
+  `CreateFontIndirect`).
+- `Opus/wproc.c` -- traza en `FIsKeyMessage` (entrada,
+  `WM_CHAR`/`WM_KEYDOWN`) y en el `PeekMessage` del loop principal de
+  `OpusOriginalWinMain` (mismo filtro).
+- `Opus/iconbar3.c` -- traza de entrada/salida de `IBDlgLoop()`
+  (descartó la hipótesis de que el loop se quedaba atascado ahí).
+- `Opus/rulerdrw.c` -- traza alrededor de `FGetCharState` en
+  `UpdateRibbon` (descartó que ahí se corrompiera `selCur.chp`).
+- `Opus/wordtech/insert.c` -- traza en `InsertLoopCh` justo después de
+  `GetSelCurChp` (cero hits durante `--font-typing`, confirmando que
+  esa rutina nunca corre -- consistente con el diálogo bloqueante).
+- `src/port/original/opus_sdm_runtime.cpp` -- `SetForegroundWindow`
+  especulativo junto al reassert de foco de Task 6 (no ayudó, inerte,
+  se puede revertir cuando se retome).
+- `src/port/original/opus_word1_ui_test.cpp` -- diagnóstico
+  `[pre-type]` (foco/enabled/active/capture), `[enum-window]`/
+  `[dialog-child]` (el que encontró el diálogo real), llamada a
+  `make_foreground_and_focus` antes de teclear (no ayudó, inerte).
+
+Nada de esto se commiteó esta sesión -- queda como `M` en
+`git status` en `src/Opus/{LOADFONT.C,iconbar3.c,rulerdrw.c,wproc.c,
+wordtech/insert.c}` y `src/port/original/{opus_sdm_runtime.cpp,
+opus_word1_ui_test.cpp}`. `git status` también muestra `M` en
+`Opus/{ddeclnt.c,etcmd.c,filecvt.c,raremsg.c,spelcore.c}` -- eso es
+contenido de una migración `OpusMem*` de otra sesión en paralelo (mas
+un fix mío de "takeover" sobre una etiqueta `LError` colgante en
+`etcmd.c`/`spelcore.c` que dejaba esos dos archivos sin compilar); no
+tocar esos cinco al continuar salvo que sea la misma sesión que los
+dejó así.
+
+**Próximo paso concreto al retomar:** trazar el orden exacto entre
+(a) el momento en que `Opus/dlglook1.c:781`/`Opus/cmdcore.c:510` ponen
+`vrf.fPreloadSelFont = fTrue` tras cada selección de ribbon, y (b) el
+tick de idle que lo consume en `Opus/idle.c:503` -- lo más probable es
+que el preload dispare tras la selección de FUENTE, antes de que la de
+TALLA llegue a escribir `selCur.chp.hps`, y que el arreglo real sea
+usar un hps ya resuelto (o posponer el preload hasta que ambas
+selecciones se hayan aplicado) en vez de tocar `Opus/idle.c` a ciegas.
+Una vez cerrado esto, falta además verificar que el nombre visible del
+diálogo `"Low memory: cannot display requested font"` no es en sí un
+mensaje legítimo de Word 1.1a bajo otras circunstancias (`eidCantRealizeFont`,
+`Opus/wordtech/error.c:933`) -- aquí es un falso positivo de una
+llamada de precarga con datos a medio actualizar, no una condición
+real de memoria.
+
+**Cuarta actualización 2026-08-20 (debian-VM, rama
+`investigate/font-typing-idle-preload`): la teoría de la carrera `hps`
+queda descartada con evidencia directa -- cinco hipótesis probadas y
+descartadas, causa raíz real aún sin localizar.** Esta sesión tenía
+como objetivo *confirmar* la teoría de la "Tercera actualización" de
+arriba y arreglarla en `idle.c`. El arreglo propuesto (`&&
+selCur.chp.hps != 0` en el guard de `idle.c:503`) se implementó,
+compiló y se corrió contra el test real -- y no cambió el síntoma ni
+un bit. Investigar por qué llevó a descartar la teoría entera con
+trazas directas, no lectura de código.
+
+**Entorno de esta sesión:** máquina nueva (`debian-VM`, Debian 13
+trixie, KVM), sin toolchain previo -- se instaló `cmake`/`ninja`/
+`wine`(10.0~repack-6)/`wine64-tools`/`qt6-base-dev`/`Xvfb` vía `apt`, se
+inicializó el prefix de Wine (`wineboot --init`), y se resolvió el
+bloqueo de Configure documentado en el README (`src/port/tools/host/`
+gitignored) con un `CMakeLists.txt` ya preparado para esa carpeta.
+Build limpio de `opus_original_engine`/`WORD1`/`opus_word1_ui_test`,
+0 errores. Repro estable de `opus_word1_font_typing_test ***Failed`
+igual que en exia.
+
+**Hipótesis 1 -- carrera `hps` en `idle.c:503` (la de la sesión
+anterior): descartada.** Se instrumentó un trace nuevo
+(`idle-preload-check`) justo al entrar al bloque de preload de
+`Opus/idle.c:488`, antes de cualquier guard. **Cero apariciones en
+todo el test.** El bloque de preload de `idle.c` nunca se alcanza
+durante `--font-typing` -- ni con el guard puesto ni sin él. La
+atribución de la sesión anterior a `idle.c:503` nunca se trazó
+directamente; se infirió leyendo código (`vrf.fPreloadSelFont` /
+`DoLooks`). El guard con `hps != 0` se implementó, compiló, corrió, y
+el diálogo de error siguió apareciendo idéntico.
+
+**La llamada real que falla:** instrumentando el return address de
+`C_LoadFont` (`__builtin_return_address(0)`) se confirmó que la
+llamada que sí truena viene de otro lado, no de `LoadFont(pchp,
+fFalse)`. El sitio real, confirmado por `nm`/lectura de código, es
+`Opus/disp1.c`'s `LoadFcidFull(pchr->fcid)` -- llamado una vez por
+carácter durante el repintado del panel del documento (dos sitios,
+disp1.c:832 y disp1.c:1698), usando el `fcid` cacheado en cada
+`CHR`, no `selCur.chp`. Con el documento vacío en `[pre-type]`, esto
+repinta el carácter de fin de párrafo con el `fcid` que sea que tenga
+en ese momento.
+
+**Hipótesis 2 -- `hps==0` es la causa: descartada con datos, no
+lectura.** Se añadió un trace (`fcid-identity`) al entrar a
+`C_FGraphicsFcidToPlf` (`Opus/LOADFONT.C`), antes del `Assert(fcid.hps
+> 0)`, mostrando `ibstFont`/`wProps`/`hps`/`kul` en cada llamada,
+éxito o fallo:
+
+```
+fcid-identity msg=2(ibstFont) hps=0   -> "Helv"             -> OK
+fcid-identity msg=4(ibstFont) hps=0   -> "Liberation Sans"  -> matfont-set (falla)
+```
+
+`hps` es **idéntico** (0) en ambos casos -- uno pasa, el otro falla.
+El único que cambia es qué fuente (`ibstFont`) se pide. `hps==0` no es
+la causa; es incidental.
+
+**Hipótesis 3 -- charset corrupto (`lfCharSet=255`, `OEM_CHARSET`):
+real pero insuficiente por sí sola.** Añadiendo el nombre real de la
+fuente al trace (pasando `pffn->szFfn` como `stage` de
+`OpusX64TraceRibbon`), se confirmó `lfCharSet=255` para "Liberation
+Sans" contra `lfCharSet=0` para "Helv". Sondas standalone
+(`EnumFontFamiliesExA` y el `EnumFontsA` legacy que usa
+`Opus/SYSCHG.C:FontNameEnum`, ambas contra un DC de pantalla) **nunca**
+devuelven 255 para esa fuente -- los valores reales enumerados son 0,
+238, 204, 161, 162, 177, 186, 163. `FontNameEnum` copia fielmente
+`lplf->lfCharSet` (línea ~775: `ChsPffn(pffn) = lplf->lfCharSet;`),
+así que el 255 no es un bug de copia -- viene de que `FillHsttbPaf`
+enumera contra `vpri.hdc` (el DC de **impresora**, no pantalla), y
+este prefix de Wine no tenía ninguna impresora configurada
+(`wine control printers` vacío, `lpstat` "No se han añadido
+destinos.", `GetDefaultPrinterA` devolvía error 2).
+
+Arreglo aplicado en `Opus/LOADFONT.C` (`C_FGraphicsFcidToPlf`, antes
+de `bltbyte(...lfFaceName...)`): si `plf->lfCharSet == OEM_CHARSET`,
+usar `DEFAULT_CHARSET` en su lugar (guardado bajo `OPUS_X64`). Este
+fix es correcto y se queda -- `OEM_CHARSET` sin impresora real es un
+valor sin sentido, no algo que Opus debería propagar a
+`CreateFontIndirect` -- pero **no arregla el test solo**: con el
+charset ya saneado (confirmado por trace, `lfCharSet=1`),
+`CreateFontIndirect` **sigue fallando** para "Liberation Sans".
+
+**Efecto secundario explorado: agregar una impresora real cambia el
+síntoma pero no lo arregla.** Se configuró una cola CUPS dummy
+(`GenericPS`, PPD genérico PostScript, `device-uri file:///dev/null`)
+para darle a Wine una impresora real -- confirmado con una sonda
+standalone (`GetDefaultPrinterA`/`EnumPrintersA`) que Wine la veía en
+vivo. Con impresora presente, `vfli.fFormatAsPrint` activa el camino
+de dos dispositivos en `C_LoadFont` (`LOADFONT.C:121-135`): una
+petición de fuente de impresora *además* de la de pantalla. El
+charset de pantalla salió limpio (163, un valor real de la
+enumeración), pero la petición del **lado impresora** trajo su propio
+dato corrupto (`lfHeight=-5`, `fcid.wProps=1920` -- un valor de
+bitfield sin sentido) y también falló. Esto es un bug distinto,
+dormido, en un subsistema distinto (formato para impresión, no
+tecleo/ribbon) -- fuera de alcance de este ítem. **La impresora
+`GenericPS` se quitó** (`sudo lpadmin -x GenericPS`, confirmado con la
+misma sonda que Wine ya no ve ninguna impresora) -- no queda cambio de
+entorno persistente. Sin la impresora, el camino vuelve a ser de un
+solo dispositivo (pantalla), el mismo que protege el fix de charset de
+arriba.
+
+**Hipótesis 4 -- caché de fuentes (`PfceLruGet`, desalojo de slot LRU):
+descartada.** `ifceMax` = 32 (`Opus/fontwin.h:11`) -- nada cerca de
+agotarse con 2 fuentes distintas pedidas. Se instrumentaron ambos
+puntos de retorno de `PfceLruGet` (`Opus/LOADFONT.C:1037`): slot libre
+encontrado sin desalojo (`pfce-free-slot`) vs. desalojo de LRU
+(`pfce-evicted-slot`). Resultado: "Helv" recibe el slot 0 libre;
+"Liberation Sans" recibe el slot 1 libre. **Ningún desalojo ocurre.**
+La caché está sana.
+
+**Hipótesis 5 -- `GetLastError()` real (183, `ERROR_ALREADY_EXISTS`):
+descartada -- era ruido, no señal.** El `183` apareció idéntico en
+tres estados de código/entorno distintos a lo largo de la sesión, lo
+cual parecía significativo -- pero GDI no garantiza fijar un error
+fresco en cada llamada. Se añadió `SetLastError(0)` justo antes del
+`CreateFontIndirect` que falla (`Opus/LOADFONT.C:333`). Resultado:
+`GetLastError()` da **0** después de la falla. El `183` que se venía
+seteando era remanente de alguna llamada anterior en el mismo tick,
+no algo que `CreateFontIndirect` haya fijado. Esta pista quedó
+inválida desde el principio.
+
+**Hipótesis 6 -- buffer de `szFfn` demasiado chico para nombres largos
+(Win16-legacy, ≤7 chars): descartada.** `struct FFN` (`fontwin.h:39`)
+tiene `CHAR szFfn[]` -- flexible, no un tamaño fijo chico. `LF_FACESIZE`
+está definido correctamente en `Opus/lib/qwindows.h:1235` como `32`
+(el valor Win32 real, no un valor Win16 heredado más chico). El buffer
+de staging en `FontNameEnum` (`Opus/SYSCHG.C`), `CHAR rgbFfn[cbFfnLast]`
+con `cbFfnLast = offset(FFN,szFfn) + LF_FACESIZE + 1`, tiene margen de
+sobra para "Liberation Sans\0" (16 bytes de 33 disponibles). No se
+llegó a revisar el *storage* permanente en `vhsttbFont`
+(`IbstAddStToSttb`/`FChangeStInSttb`, `Opus/SYSCHG.C:~789`) -- ese es
+un candidato real para una próxima sesión, distinto de lo que se
+descartó acá.
+
+**Estado al cortar: seis hipótesis descartadas con evidencia directa
+(trazas y sondas standalone, no lectura de código sola). Causa raíz de
+por qué `CreateFontIndirect` devuelve `NULL` para "Liberation Sans"
+(segunda fuente distinta pedida, cualquier `hps`, charset ya válido,
+slot de caché sano, sin error GDI fijado) sigue sin localizar.**
+Patrón que sí se sostiene en todas las corridas: la *primera* fuente
+distinta pedida (`Helv`) siempre funciona; la *segunda* (`Liberation
+Sans`) siempre falla -- pero el mecanismo detrás de ese patrón no está
+identificado.
+
+**Candidatos no explorados para la próxima sesión:**
+- `IbstAddStToSttb`/`FChangeStInSttb` (`Opus/SYSCHG.C`): el storage
+  permanente en `vhsttbFont`, distinto del buffer de staging ya
+  descartado en la Hipótesis 6.
+- Diferencia entre `pffn->fGraphics`/`fRaster` para "Helv" vs.
+  "Liberation Sans" -- se notó (sin confirmar del todo) que
+  `fGraphics` probablemente da `fFalse` para "Liberation Sans" via la
+  enumeración de impresora (`fty & DEVICE_FONTTYPE` puesto), algo que
+  el guard de charset de arriba tuvo que dejar de usar como condición
+  porque nunca disparaba.
+- Instrumentar el propio `lf` completo (`LOGFONT`) justo antes de
+  `CreateFontIndirect` -- se comparó `lfHeight`/`lfWeight`/`lfCharSet`
+  pero no `lfPitchAndFamily`, `lfQuality`, ni el contenido final de
+  `lfFaceName` byte a byte.
+
+**Archivos modificados esta sesión (sin commitear):**
+- `src/Opus/idle.c`: el guard `hps != 0` **se revirtió** (la condición
+  original queda intacta) porque nunca se ejecuta y su justificación
+  quedó descartada; se dejó el trace `idle-preload-check` (prueba de
+  que el bloque nunca se alcanza) y un comentario apuntando a esta
+  sección.
+- `src/Opus/LOADFONT.C`: el fix real que se queda (`OEM_CHARSET` ->
+  `DEFAULT_CHARSET` en `C_FGraphicsFcidToPlf`, sin condicionar a
+  `fGraphics`) + trazas nuevas (`loadfont-caller` con return address,
+  `fcid-identity`, nombre real de fuente como `stage`,
+  `pfce-free-slot`/`pfce-evicted-slot`, `SetLastError(0)` antes de
+  `CreateFontIndirect`). Todo guardado bajo `#ifdef OPUS_X64`, no toca
+  MSVC.
+
+**Cambio de entorno completamente revertido:** la impresora CUPS
+`GenericPS` que se probó para la Hipótesis 3 se quitó; confirmado con
+sonda standalone que Wine ya no ve ninguna impresora. No queda drift
+de entorno.
+
+**Quinta actualización 2026-08-20 (exia): tres hipótesis más
+descartadas, un bug real distinto encontrado y arreglado (no relacionado
+con la falla), y confirmación decisiva de que la causa NO es una
+limitación de Wine.** Continuación directa de la sesión anterior (pull
+de `6417213`), revisando los dos candidatos que quedaron anotados sin
+explorar.
+
+**Hipótesis 7 -- `pffn->fGraphics`/`fty` (candidato anotado, no un
+mecanismo nuevo): descartada como explicación, ya estaba confirmada en
+el código.** El comentario ya presente en `Opus/LOADFONT.C` (líneas
+~996-999, agregado en la sesión anterior) confirma que `fGraphics` da
+`fFalse` para "Liberation Sans" por la misma enumeración contra
+`vpri.hdc` que corrompió el charset -- mismo origen ya identificado, no
+un mecanismo distinto. `fGraphics` solo se guarda en `pfce->fGraphics`/
+`vfli.fGraphics` (grep confirmado: sin ningún `if` que dependa de él
+antes de `CreateFontIndirect`), así que no puede ser la causa de que la
+llamada falle.
+
+**Hipótesis 8 -- `lfPitchAndFamily` corrupto (`FF_DONTCARE=0` vs.
+`FF_SWISS=32` de "Helv"): real, pero no causal -- descartada
+empíricamente, no por lectura.** Un trace del `LOGFONT` completo justo
+antes de `CreateFontIndirect` (todos los campos no revisados antes:
+`lfPitchAndFamily`, `lfQuality`, `lfOutPrecision`, `lfClipPrecision`,
+`lfWidth`, `lfEscapement`) mostró que **todo es idéntico entre "Helv" y
+"Liberation Sans" excepto `lfPitchAndFamily`**: 32 (`FF_SWISS`) contra 0
+(`FF_DONTCARE`) -- mismo origen que la Hipótesis 3/7 (`pffn->ffid`
+corrupto por la misma enumeración sin impresora). Se forzó
+`lfPitchAndFamily` a `FF_SWISS` para "Liberation Sans" como prueba
+empírica directa (no como arreglo definitivo) -- **mismo fallo
+idéntico**, `CreateFontIndirect` sigue devolviendo `NULL`. Revertido.
+`FF_DONTCARE` es un valor legítimo y común en Windows real; no es la
+causa.
+
+**Bug real encontrado (no causal para esta falla, arreglado de todos
+modos): lectura fuera de límites en `bltbyte(pffn->szFfn,
+plf->lfFaceName, LF_FACESIZE)`.** `struct FFN.szFfn` es un flexible
+array member (`CHAR szFfn[]; /* Variable length */`, `Opus/fontwin.h`),
+almacenado en la STTB (`IbstAddStToSttb`/`FInsStInSttb1`,
+`Opus/wordtech/sttb.c`) con tamaño exacto Pascal-string (`CbSzOfPffn`),
+nunca 32 bytes. El `bltbyte` original copiaba 32 bytes fijos sin
+importar el tamaño real asignado -- lectura fuera de límites genuina
+para cualquier nombre de fuente más corto de 31 caracteres (es decir,
+prácticamente todos). Confirmado con un dump hexadecimal de
+`lf.lfFaceName[16..31]` para ambas fuentes: para "Helv" (entrada
+sembrada al arranque, junto a otras entradas cortas válidas en memoria)
+el byte de posición 15 es un carácter real ('e') seguido de más
+contenido no-nulo -- el over-read cae en datos de OTRA entrada válida
+adyacente. Para "Liberation Sans" (15 caracteres, agregada en runtime)
+el byte 15 es correctamente `\0` (el nombre termina bien), pero el byte
+16 es `0xFF` seguido de ceros -- **el over-read cae en memoria genuina
+fuera de la entrada real.** En ambos casos, sin embargo, el terminador
+nulo real cae en la posición correcta (4 para "Helv", 15 para
+"Liberation Sans") -- y GDI/`CreateFontIndirect`, igual que `%s`, deja
+de leer en el primer `\0`. **Esto descarta la hipótesis de corrupción
+de nombre como causa de esta falla específica** -- el nombre que
+`CreateFontIndirect` realmente ve es correcto en ambos casos -- pero
+sigue siendo un bug real (comportamiento indefinido, lectura de heap
+sin inicializar) que se arregló de todos modos: `Opus/LOADFONT.C`
+ahora hace `SetBytes(plf->lfFaceName, 0, LF_FACESIZE)` seguido de un
+`bltbyte` acotado a `CbSzOfPffn(pffn)` bytes reales (guardado bajo
+`#if defined(__GNUC__) && !defined(_MSC_VER)`, MSVC sigue con el
+`bltbyte` de 32 bytes original sin cambios).
+
+**Confirmación decisiva: no es una limitación de Wine para estos
+parámetros.** Con cada campo de `LOGFONT` inspeccionable ya descartado
+o idéntico, y el nombre confirmado correcto hasta su `\0`, se armó una
+sonda standalone (`winegcc`, sin código de este proyecto -- mismo
+patrón que la "Confirmación decisiva" de §12/`--interaction`) que
+llama `CreateFontIndirectA` con el `LOGFONT` **byte por byte idéntico**
+al que falla dentro de WORD1 (`lfFaceName="Liberation Sans"`,
+`lfHeight=0`, `lfWeight=400`, `lfCharSet=1`, `lfQuality=4`,
+`lfPitchAndFamily=0` y también probado con `32`, resto en cero).
+**Ambas variantes tienen éxito** (`hfont` no nulo, `GetLastError=0`) en
+un proceso limpio, mismo binario de Wine, mismo prefix. Esto descarta
+por completo que sea una limitación de Wine para esta combinación de
+parámetros -- el mismo `CreateFontIndirectA` con los mismos datos
+funciona perfecto fuera de WORD1. La causa está genuinamente en algo
+del estado de proceso/GDI de WORD1 en ese momento, no en los datos que
+se piden.
+
+**Hipótesis de agotamiento de handles GDI: descartada, sin necesidad de
+medir vía `GetGuiResources`.** Se intentó medir el conteo de objetos
+GDI del proceso WORD1 desde el arnés de test (`GetGuiResources(hProcess,
+GR_GDIOBJECTS)`) -- esta build de Wine lo tiene sin implementar,
+siempre devuelve 0. Señal inútil, descartada como método. Pero un
+conteo más simple resultó decisivo: el trace `loadfont-caller`
+(`__builtin_return_address` de cada llamada a `C_LoadFont`) aparece
+**35 veces** en toda la corrida del test, pero `fcid-identity` (el
+único punto que de verdad llega a `C_FGraphicsFcidToPlf`/
+`CreateFontIndirect`, tras pasar los CASE 1-3 de caché de
+`C_LoadFcid`) aparece solo **2 veces** -- las otras 33 son *cache
+hits*, nunca llegan a pedir una fuente nueva a GDI. Con solo 2
+creaciones reales de fuente en toda la corrida, un límite de 10.000
+handles por proceso (el límite clásico de Windows) queda
+completamente fuera de alcance. Descartado sin ambigüedad.
+
+**Estado al cortar (segunda vez): nueve hipótesis descartadas en total
+con evidencia directa** (las seis de la actualización anterior + estas
+tres). La causa de por qué `CreateFontIndirect` devuelve `NULL`
+específicamente para la segunda fuente distinta pedida, con datos
+confirmados correctos en cada campo inspeccionable, sigue sin
+localizar -- y ya no hay ningún candidato más a nivel de datos/estado
+de aplicación que revisar por trazas o sondas standalone. Lo único que
+queda, si se retoma, es bajar un nivel: adjuntar `gdb` al proceso
+WORD1 real (no una sonda standalone limpia) y poner un breakpoint
+dentro de la implementación de `CreateFontIndirect` de Wine mismo
+(`dlls/gdi32` o `dlls/win32u`, según versión) para ver en qué paso
+interno diverge esa segunda llamada respecto a la primera -- una
+herramienta bastante más pesada que trazas de aplicación o sondas
+standalone, y no intentada todavía.
+
+**Archivos modificados esta ronda (sin commitear al momento de
+escribir esto):**
+- `src/Opus/LOADFONT.C`: el arreglo real que se queda (bltbyte
+  acotado + `SetBytes` de cero para `lfFaceName`, guardado GNUC-only,
+  MSVC sin cambios) -- corrige un bug genuino de comportamiento
+  indefinido, no relacionado con la falla de este test. Trace de
+  `fcid-identity` (ya existente) se mantiene tal cual.
+- `src/port/original/opus_word1_ui_test.cpp`: sin cambio neto (se
+  agregó y luego se quitó el chequeo de `GetGuiResources`, que resultó
+  no implementado en este Wine).
+
+**Verificado, sin regresión:**
+```
+DISPLAY=:99 ctest --test-dir out/linux-winelib-debug -L word1_startup_blocked
+    7/9 -- mismos dos fallos conocidos (--interaction, --font-typing)
+
+DISPLAY=:99 ctest --test-dir out/linux-winelib-debug -LE word1_startup_blocked
+    9/9 -- gating sin cambios
+```
+
 ## 9. `--clipboard`: "Ctrl+A did not execute Select All" -- confirmado, verify-only, cierra Task 7
 
 **Task 7, 2026-08-19 en exia.** El plan (Step 1) pedía correr
@@ -1157,9 +1623,22 @@ sesión (2026-08-19, exia):
 4. `--font-typing` -- **parcial**: 3 de 4 bugs arreglados (nombres de
    fuente, `union FCID` LP64, foco tras selección de ribbon -- este
    último arreglado 2026-08-20 en `opus_sdm_runtime.cpp`, no en
-   `Opus/iconbar1.c`, ver actualización en §8); el test ahora avanza a
-   un cuarto bug distinto, texto nuevo no conserva la fuente del
-   ribbon, sin investigar (Task 6, §8)
+   `Opus/iconbar1.c`, ver actualización en §8); el cuarto bug sigue sin
+   arreglar. Diagnóstico engañoso descartado dos veces: "no conserva la
+   fuente" (el tecleo nunca llega a Opus) y luego la teoría de carrera
+   `idle.c:503`/`selCur.chp.hps==0` de la "Tercera actualización"
+   -- **descartada con trazas directas** en la "Cuarta actualización"
+   (debian-VM): el bloque de preload de `idle.c` nunca se alcanza
+   durante el test. `CreateFontIndirect` falla realmente en
+   `Opus/disp1.c`'s `LoadFcidFull` (repintado de documento, no
+   preload), para la segunda fuente distinta pedida en el proceso,
+   con `hps` idéntico al de la primera (que sí funciona). Seis
+   hipótesis descartadas con evidencia (carrera `hps`, charset
+   `OEM_CHARSET`, caché de fuentes, `GetLastError` remanente, buffer
+   `szFfn`); un fix real y menor se queda (charset saneado en
+   `LOADFONT.C`) pero no cierra el test solo. Causa raíz real aún sin
+   localizar -- ver "Cuarta actualización" en §8 para candidatos no
+   explorados
 5. `--clipboard` (Ctrl+A) -- **arreglado**, mismo root cause que #1
    (Task 7, §9)
 6. `--selection` -- **arreglado**, 3 bugs de arnés encadenados (Task

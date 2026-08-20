@@ -1088,9 +1088,24 @@ BOOL fOK;
 IBDlgLoop()
 {
 	FTME ftme;
-	while (vidf.fIBDlgMode && 
+#ifdef OPUS_X64
+	{
+	extern void OpusX64TraceRibbon();
+	OpusX64TraceRibbon("ibdlgloop-enter", 0, 0, 0, 0, 0L, 0L, 0);
+	}
+#endif
+	while (vidf.fIBDlgMode &&
 			GetMessage((LPMSG) & vmsgLast, (HWND)NULL, 0, 0))
 		{
+#ifdef OPUS_X64
+		if (vmsgLast.message == WM_CHAR || vmsgLast.message == WM_KEYDOWN)
+			{
+			extern void OpusX64TraceRibbon();
+			OpusX64TraceRibbon("ibdlgloop-key", vmsgLast.message,
+					(int)vmsgLast.wParam, 0, (int)(long)vmsgLast.hwnd,
+					0L, 0L, 0);
+			}
+#endif
 		if (vmerr.hrgwEmerg1 == hNil)
 			{
 
@@ -1175,6 +1190,12 @@ IBDlgLoop()
 		else  if (ftme == ftmeError)
 			TermCurIBDlg(fFalse);
 		}
+#ifdef OPUS_X64
+	{
+	extern void OpusX64TraceRibbon();
+	OpusX64TraceRibbon("ibdlgloop-exit", 0, (int)vidf.fIBDlgMode, 0, 0, 0L, 0L, 0);
+	}
+#endif
 }
 
 

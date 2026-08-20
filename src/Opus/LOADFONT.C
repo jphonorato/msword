@@ -70,6 +70,15 @@ int fWidthsOnly;
 	union FCID fcid;
 	struct DOD *pdod;
 
+#ifdef OPUS_X64
+	{
+	extern void OpusX64TraceRibbon();
+	void *retaddr = __builtin_return_address(0);
+	OpusX64TraceRibbon("loadfont-caller", pchp->ftc, pchp->hps,
+			fWidthsOnly, 0, (long)(unsigned long long)retaddr, 0L, 0);
+	}
+#endif
+
 	Assert( vfli.doc != docNil );
 	Assert( pchp != NULL);
 
@@ -321,12 +330,35 @@ LValidateFce:
 
 /* Call Windows to request the font */
 
+#ifdef OPUS_X64
+	SetLastError(0);	/* so a NULL return's GetLastError() is fresh, not
+				   leftover from something earlier this tick */
+	/* Full-LOGFONT dump right before the call: prior traces only checked
+	   lfHeight/lfWeight/lfCharSet -- comparing every remaining field
+	   (pitch/family, quality, precision flags, facename bytes) between
+	   the succeeding "Helv" call and the failing "Liberation Sans" one,
+	   since the charset fix alone (Opus/LOADFONT.C, FGraphicsFcidToPlf)
+	   didn't clear the test. */
+	{
+	extern void OpusX64TraceRibbon();
+	OpusX64TraceRibbon(lf.lfFaceName, lf.lfPitchAndFamily, lf.lfQuality,
+			lf.lfOutPrecision, lf.lfClipPrecision, (long)lf.lfWidth,
+			(long)lf.lfEscapement, fcid.ibstFont);
+	}
+#endif
 	if ((pfce->hfont = CreateFontIndirect( (LPLOGFONT)&lf )) == NULL)
 		{
 #ifdef DFONT
 		CommSzSz(SzFrame("Failed to create logical font!"),szEmpty);
 #endif
 LSystemFontErr:
+#ifdef OPUS_X64
+		{
+		extern void OpusX64TraceRibbon();
+		OpusX64TraceRibbon("matfont-set", fcid.ibstFont, fcid.wProps,
+				lf.lfHeight, (int)GetLastError(), 0L, 0L, 0);
+		}
+#endif
 		SetErrorMat(matFont);
 		fFallback = fTrue;
 LSystemFont:
@@ -769,8 +801,17 @@ HDC *phdc;
 					{
 /* could not select in the font: revert back to the system font */
 LScreenFail:
-#ifdef DFONT		  
+#ifdef DFONT
 					CommSzSz(SzFrame("Failed to select screen font"),szEmpty);
+#endif
+#ifdef OPUS_X64
+					{
+					extern void OpusX64TraceRibbon();
+					OpusX64TraceRibbon("screenfail",
+							(int)(long)vsci.hdcScratch, (int)(long)*phfont,
+							(int)(long)hfontSystem, (int)GetLastError(),
+							0L, 0L, 0);
+					}
 #endif
 					SetErrorMat(matFont);
 					if (*phfont != hfontSystem)
@@ -877,10 +918,26 @@ int fPrinterFont;
 
 /* Scale the request into device units */
 
+#ifdef OPUS_X64
+	{
+	extern void OpusX64TraceRibbon();
+	OpusX64TraceRibbon("fcid-identity", fcid.ibstFont, fcid.wProps,
+			fcid.hps, fcid.kul, (long)(unsigned long long)__builtin_return_address(0),
+			0L, 0);
+	}
+#endif
 	Assert( fcid.hps > 0 );
 	plf->lfHeight = NMultDiv( fcid.hps * (czaPoint / 2),
 			fPrinterFont ? vfli.dyuInch : vfli.dysInch,
 			czaInch );
+#ifdef OPUS_X64
+	{
+	extern void OpusX64TraceRibbon();
+	OpusX64TraceRibbon("lfheight-calc", fcid.hps, czaPoint,
+			plf->lfHeight, fPrinterFont, (long)vfli.dysInch,
+			(long)vfli.dyuInch, 0);
+	}
+#endif
 
 /* (BL) *** HACK ***   ***  ACK *** **** GAG ****  *** BARF ***
 		The Windows courier font has interesting non-international pixels
@@ -918,8 +975,8 @@ int fPrinterFont;
 /* bits 0-1: pitch request
 	bits 4-6: font family */
 	plf->lfPitchAndFamily = (pffn->ffid & maskFfFfid) | fcid.prq;
-	Assert( (plf->lfPitchAndFamily & maskPrqLF) == FIXED_PITCH || 
-			(plf->lfPitchAndFamily & maskPrqLF) == VARIABLE_PITCH || 
+	Assert( (plf->lfPitchAndFamily & maskPrqLF) == FIXED_PITCH ||
+			(plf->lfPitchAndFamily & maskPrqLF) == VARIABLE_PITCH ||
 			(plf->lfPitchAndFamily & maskPrqLF) == DEFAULT_PITCH );
 
 /* Set Bold, Italic, StrikeOut, Underline */
@@ -934,7 +991,69 @@ int fPrinterFont;
 		plf->lfUnderline = 1;
 
 	plf->lfCharSet = ChsPffn(pffn);
+#ifdef OPUS_X64
+	/* In a printer-less Wine prefix (no printer configured), Opus's own
+	   font-table build (Opus/SYSCHG.C:FontNameEnum) enumerates against the
+	   printer DC (vpri.hdc) and can come back with a garbage OEM_CHARSET
+	   (255) for what is really a normal graphics/TrueType font -- confirmed
+	   with standalone EnumFontsA/EnumFontFamiliesExA probes against a real
+	   screen DC, which never report 255 for the same font. Handing that raw
+	   255 to CreateFontIndirect makes it fail outright (GetLastError=183)
+	   instead of falling back, which SetErrorMat(matFont) turns into a real
+	   "cannot display requested font" alert -- and that dialog's own modal
+	   message loop then swallows every later keystroke. A real device/
+	   printer font legitimately reporting OEM_CHARSET isn't affected: no
+	   printer exists here to produce one, so on a graphics font this can
+	   only be the printer-less-enumeration artifact, not a genuine request.
+	   (Confirmed: pffn->fGraphics reads fFalse here too -- the same
+	   printer-DC enumeration that produced the bad charset also
+	   misclassifies this scalable font as DEVICE_FONTTYPE, so gating on
+	   fGraphics would just make this never fire. Not conditioning on it.)
+	   Treat it as "no usable charset" and fall back to the safe default
+	   rather than letting it kill font realization. */
+	if (plf->lfCharSet == OEM_CHARSET)
+		plf->lfCharSet = DEFAULT_CHARSET;
+#endif
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	/* struct FFN's szFfn is a flexible array member ("Variable length" --
+	   see Opus/fontwin.h) allocated in the STTB via
+	   IbstAddStToSttb/FInsStInSttb1 sized exactly to the font name's own
+	   Pascal length (CbSzOfPffn(pffn) bytes) -- never LF_FACESIZE (32).
+	   bltbyte(..., LF_FACESIZE) always read a hardcoded 32 bytes from it
+	   regardless of that real allocation size: a genuine out-of-bounds
+	   heap read for every font name shorter than 31 characters (i.e.
+	   virtually all of them). Confirmed via a byte-dump trace
+	   (2026-08-20): harmless for names followed in memory by another
+	   short valid entry with an early NUL (the name still reads back
+	   correctly, GDI stops at its own NUL same as us), but still
+	   undefined behavior regardless of whether any single font name
+	   happens to survive it -- copy only the real length and zero the
+	   rest of the destination instead. (Investigated as a candidate
+	   root cause for the CreateFontIndirect NULL-return bug in
+	   docs/port-linux/03-comportamiento-word1-startup-blocked.md Task 6
+	   Bug 4 -- ruled out as the cause there: the NUL still lands
+	   correctly within the over-read for every font tried, so GDI never
+	   actually sees the garbage. Fixed here anyway as a real,
+	   independent correctness issue.) */
+	{
+	int cchReal = CbSzOfPffn(pffn);
+	if (cchReal < 0)
+		cchReal = 0;
+	else  if (cchReal > LF_FACESIZE - 1)
+		cchReal = LF_FACESIZE - 1;
+	SetBytes(plf->lfFaceName, 0, LF_FACESIZE);
+	bltbyte(pffn->szFfn, plf->lfFaceName, cchReal);
+	}
+#else
 	bltbyte( pffn->szFfn, plf->lfFaceName, LF_FACESIZE );
+#endif
+#ifdef OPUS_X64
+	{
+	extern void OpusX64TraceRibbon();
+	OpusX64TraceRibbon(pffn->szFfn, ibstFont, plf->lfHeight,
+			plf->lfWeight, plf->lfCharSet, 0L, 0L, 0);
+	}
+#endif
 
 	if (vfPrvwDisp && !fPrinterFont)
 		GenPrvwPlf(plf);
@@ -986,7 +1105,16 @@ HANDNATIVE struct FCE *PfceLruGet()
 	for ( pfce = rgfce; pfce < &rgfce [ifceMax]; pfce++ )
 		{
 		if (pfce->hfont == NULL)
+			{
+#ifdef OPUS_X64
+			{
+			extern void OpusX64TraceRibbon();
+			OpusX64TraceRibbon("pfce-free-slot", (int)(pfce - rgfce),
+					pfce->fcidRequest.ibstFont, 0, 0, 0L, 0L, 0);
+			}
+#endif
 			return pfce;
+			}
 		else  if (pfce->pfceNext == NULL)
 			pfceEndChain = pfce;
 		}
@@ -1020,6 +1148,14 @@ HANDNATIVE struct FCE *PfceLruGet()
 		}
 
 	FreeHandlesOfPfce( pfceEndChain );
+#ifdef OPUS_X64
+	{
+	extern void OpusX64TraceRibbon();
+	OpusX64TraceRibbon("pfce-evicted-slot", (int)(pfceEndChain - rgfce),
+			pfceEndChain->fcidRequest.ibstFont, pfceEndChain->fPrinter,
+			0, 0L, 0L, 0);
+	}
+#endif
 	return pfceEndChain;
 }
 
