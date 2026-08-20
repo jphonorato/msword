@@ -70,6 +70,15 @@ int fWidthsOnly;
 	union FCID fcid;
 	struct DOD *pdod;
 
+#ifdef OPUS_X64
+	{
+	extern void OpusX64TraceRibbon();
+	void *retaddr = __builtin_return_address(0);
+	OpusX64TraceRibbon("loadfont-caller", pchp->ftc, pchp->hps,
+			fWidthsOnly, 0, (long)(unsigned long long)retaddr, 0L, 0);
+	}
+#endif
+
 	Assert( vfli.doc != docNil );
 	Assert( pchp != NULL);
 
@@ -321,6 +330,10 @@ LValidateFce:
 
 /* Call Windows to request the font */
 
+#ifdef OPUS_X64
+	SetLastError(0);	/* so a NULL return's GetLastError() is fresh, not
+				   leftover from something earlier this tick */
+#endif
 	if ((pfce->hfont = CreateFontIndirect( (LPLOGFONT)&lf )) == NULL)
 		{
 #ifdef DFONT
@@ -893,6 +906,14 @@ int fPrinterFont;
 
 /* Scale the request into device units */
 
+#ifdef OPUS_X64
+	{
+	extern void OpusX64TraceRibbon();
+	OpusX64TraceRibbon("fcid-identity", fcid.ibstFont, fcid.wProps,
+			fcid.hps, fcid.kul, (long)(unsigned long long)__builtin_return_address(0),
+			0L, 0);
+	}
+#endif
 	Assert( fcid.hps > 0 );
 	plf->lfHeight = NMultDiv( fcid.hps * (czaPoint / 2),
 			fPrinterFont ? vfli.dyuInch : vfli.dysInch,
@@ -958,7 +979,37 @@ int fPrinterFont;
 		plf->lfUnderline = 1;
 
 	plf->lfCharSet = ChsPffn(pffn);
+#ifdef OPUS_X64
+	/* In a printer-less Wine prefix (no printer configured), Opus's own
+	   font-table build (Opus/SYSCHG.C:FontNameEnum) enumerates against the
+	   printer DC (vpri.hdc) and can come back with a garbage OEM_CHARSET
+	   (255) for what is really a normal graphics/TrueType font -- confirmed
+	   with standalone EnumFontsA/EnumFontFamiliesExA probes against a real
+	   screen DC, which never report 255 for the same font. Handing that raw
+	   255 to CreateFontIndirect makes it fail outright (GetLastError=183)
+	   instead of falling back, which SetErrorMat(matFont) turns into a real
+	   "cannot display requested font" alert -- and that dialog's own modal
+	   message loop then swallows every later keystroke. A real device/
+	   printer font legitimately reporting OEM_CHARSET isn't affected: no
+	   printer exists here to produce one, so on a graphics font this can
+	   only be the printer-less-enumeration artifact, not a genuine request.
+	   (Confirmed: pffn->fGraphics reads fFalse here too -- the same
+	   printer-DC enumeration that produced the bad charset also
+	   misclassifies this scalable font as DEVICE_FONTTYPE, so gating on
+	   fGraphics would just make this never fire. Not conditioning on it.)
+	   Treat it as "no usable charset" and fall back to the safe default
+	   rather than letting it kill font realization. */
+	if (plf->lfCharSet == OEM_CHARSET)
+		plf->lfCharSet = DEFAULT_CHARSET;
+#endif
 	bltbyte( pffn->szFfn, plf->lfFaceName, LF_FACESIZE );
+#ifdef OPUS_X64
+	{
+	extern void OpusX64TraceRibbon();
+	OpusX64TraceRibbon(pffn->szFfn, ibstFont, plf->lfHeight,
+			plf->lfWeight, plf->lfCharSet, 0L, 0L, 0);
+	}
+#endif
 
 	if (vfPrvwDisp && !fPrinterFont)
 		GenPrvwPlf(plf);
@@ -1010,7 +1061,16 @@ HANDNATIVE struct FCE *PfceLruGet()
 	for ( pfce = rgfce; pfce < &rgfce [ifceMax]; pfce++ )
 		{
 		if (pfce->hfont == NULL)
+			{
+#ifdef OPUS_X64
+			{
+			extern void OpusX64TraceRibbon();
+			OpusX64TraceRibbon("pfce-free-slot", (int)(pfce - rgfce),
+					pfce->fcidRequest.ibstFont, 0, 0, 0L, 0L, 0);
+			}
+#endif
 			return pfce;
+			}
 		else  if (pfce->pfceNext == NULL)
 			pfceEndChain = pfce;
 		}
@@ -1044,6 +1104,14 @@ HANDNATIVE struct FCE *PfceLruGet()
 		}
 
 	FreeHandlesOfPfce( pfceEndChain );
+#ifdef OPUS_X64
+	{
+	extern void OpusX64TraceRibbon();
+	OpusX64TraceRibbon("pfce-evicted-slot", (int)(pfceEndChain - rgfce),
+			pfceEndChain->fcidRequest.ibstFont, pfceEndChain->fPrinter,
+			0, 0L, 0L, 0);
+	}
+#endif
 	return pfceEndChain;
 }
 

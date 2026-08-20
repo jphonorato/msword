@@ -488,13 +488,30 @@ is dirtied */
 	if (vrf.fPreloadSelFont)
 		{
 		vrf.fPreloadSelFont = fFalse;
+#ifdef OPUS_X64
+		{
+		extern void OpusX64TraceRibbon();
+		OpusX64TraceRibbon("idle-preload-check", selCur.chp.hps,
+				selCur.chp.ftc, selCur.fIns, hwwdCur != hNil,
+				0L, 0L, 0);
+		}
+#endif
 		if (selCur.fIns && hwwdCur != hNil &&
 				DocMother(vfli.doc) == DocMother(selCur.doc))
 	/* one case where vfli.doc not equal to selCur.doc is we are stepping
 	through macro statement in an active window.  vfli.doc may point to the
 	macro doc because we just hilighted the macro statement but selCur.doc
 	is the active doc that the macro is executing on.
-*/
+
+	(investigate/font-typing-idle-preload: hps==0 here was suspected of
+	racing the ribbon's FONT/SIZE combos and tripping a real "cannot
+	display requested font" alert via CreateFontIndirect failure -- traced
+	and falsified. idle-preload-check below never fires during
+	opus_word1_font_typing_test at all; the actual failing LoadFont call
+	is a different one entirely (Opus/disp1.c's LoadFcidFull during
+	document repaint), and it fails on a bad charset byte for an
+	enumerated font, not on hps. See LOADFONT.C's OEM_CHARSET fallback in
+	C_FGraphicsFcidToPlf for the real fix.) */
 			{
 #ifdef BRYANL
 			CommSz( SzShared( "Preloading font!!\r\n") );
