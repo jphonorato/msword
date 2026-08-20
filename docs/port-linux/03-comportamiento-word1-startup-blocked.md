@@ -1108,13 +1108,13 @@ el diálogo de error siguió apareciendo idéntico.
 **La llamada real que falla:** instrumentando el return address de
 `C_LoadFont` (`__builtin_return_address(0)`) se confirmó que la
 llamada que sí truena viene de otro lado, no de `LoadFont(pchp,
-fFalse)`. El sitio real, confirmado por `nm`/lectura de código, es
-`Opus/disp1.c`'s `LoadFcidFull(pchr->fcid)` -- llamado una vez por
-carácter durante el repintado del panel del documento (dos sitios,
-disp1.c:832 y disp1.c:1698), usando el `fcid` cacheado en cada
-`CHR`, no `selCur.chp`. Con el documento vacío en `[pre-type]`, esto
-repinta el carácter de fin de párrafo con el `fcid` que sea que tenga
-en ese momento.
+fFalse)`. En esta sesión se conjeturó por `nm`/lectura de código (sin
+`gdb`, sin backtrace real) que el sitio era `Opus/disp1.c`'s
+`LoadFcidFull(pchr->fcid)`. **Corrección, "Sexta actualización" más
+abajo: esa conjetura era incorrecta.** Con un backtrace real de `gdb`
+se confirmó que el sitio real es `Opus/wordtech/format.c:2269`
+(`C_FormatLineDxa`), no `disp1.c`. Detalle completo en la Sexta
+actualización.
 
 **Hipótesis 2 -- `hps==0` es la causa: descartada con datos, no
 lectura.** Se añadió un trace (`fcid-identity`) al entrar a
@@ -1384,6 +1384,177 @@ DISPLAY=:99 ctest --test-dir out/linux-winelib-debug -LE word1_startup_blocked
     9/9 -- gating sin cambios
 ```
 
+**Sexta actualización 2026-08-20 (debian-VM): backtrace real con
+`gdb` confirma el sitio de la llamada (no es `disp1.c`) y reproduce de
+forma independiente la pista de `lfPitchAndFamily` que la Quinta
+actualización (arriba, sesión en `exia`) ya había probado y
+descartado.** Sesión paralela a la de `exia`: ambas partieron de
+`6417213` al mismo tiempo, sin verse la una a la otra hasta el
+`push`. Pedido explícito de usar `gdb` contra
+`WORD1.exe.so` para lo que la instrumentación por trazas (`printf`
+vía `OpusX64TraceRibbon`) no puede dar: un backtrace real y el valor
+completo del `LOGFONTA` en el momento exacto de la llamada.
+
+**Cómo atar `gdb` a este binario -- ninguno de los pasos obvios
+funciona a la primera, dejado documentado para no re-derivarlo:**
+
+1. `WORD1.exe` es un script `sh` (`exec "$WINELOADER" "$apppath"`), no
+   un binario -- `gdb --args WORD1.exe` falla con "not in executable
+   format". El target real, siguiendo el mismo patrón que la sesión de
+   `_setjmp` (§3, Fix round 3) ya estableció, es
+   `/usr/lib/wine/wine64 /home/pablo/msword/bin/WORD1.exe.so`
+   directamente -- no `/usr/bin/wine` (también un script) ni el
+   `.exe` generado.
+2. **Adjuntar (`attach`) a un proceso ya corriendo, apuntando por
+   nombre (`pgrep -f WORD1.exe.so`), es una carrera que no se puede
+   ganar así nomás.** El PID que aparece con ese nombre en `ps`
+   corresponde a `/proc/PID/exe` = `/usr/lib/wine/wine64` (confirmado
+   con `readlink`), pero el proceso pasa **más de un segundo entero**
+   varado en `?? () from libc.so.6` -- todavía en el arranque de
+   `ld.so`/preloader de Wine -- antes de que `WORD1.exe.so` esté
+   siquiera mapeado. Adjuntar en ese punto y esperar a que la librería
+   "aparezca" (`set breakpoint pending on` + esperar el evento de
+   carga estándar de `dlopen`) **nunca dispara**, ni con reintentos
+   largos: el cargador propio de Wine para módulos winelib no pasa por
+   el mecanismo estándar de `dlopen`/`r_debug` que `gdb` vigila para
+   resolver breakpoints pendientes, aunque el módulo esté clarísimamente
+   mapeado y corriendo (confirmado con salida real de la app --
+   mensajes `fixme:dwmapi:...`, ventana creada -- mientras el
+   breakpoint seguía `<PENDING>`).
+3. **Arreglo: cargar los símbolos a mano con la dirección real de
+   carga.** Con el proceso ya corriendo, `grep WORD1.exe.so
+   /proc/PID/maps` da la dirección base real (el primer mapeo, offset
+   de archivo 0). Con eso:
+   ```
+   add-symbol-file /home/pablo/msword/bin/WORD1.exe.so -o 0xBASE -readnow
+   ```
+   Sin `-readnow` el archivo se agrega pero el DWARF completo no se
+   lee (`info sources` lo muestra como "Full debug information has not
+   yet been read"), y los breakpoints por `archivo:línea` siguen
+   fallando con "No source file named ...".
+4. **Los breakpoints por `archivo:línea` contra el path de
+   `src/Opus/` nunca resuelven, aunque el archivo compilado sí tenga
+   DWARF completo.** Motivo real, encontrado con `info sources`: el
+   build no compila `src/Opus/LOADFONT.C` directo -- genera una copia
+   en minúsculas primero (mismo mecanismo que ya se había visto de
+   pasada en otros archivos, `generated/lowercase-c/spell.c`) y
+   compila **esa**. El path que el DWARF realmente tiene es
+   `/home/pablo/msword/out/linux-winelib-debug/generated/lowercase-c/loadfont.c`,
+   no `/home/pablo/msword/src/Opus/LOADFONT.C`. `break
+   .../src/Opus/LOADFONT.C:337` nunca va a resolver contra este build;
+   hay que usar el path generado, o mejor, el punto 5.
+5. **Lo que sí funciona de manera confiable: breakpoint por símbolo de
+   función, no por archivo:línea.** `break CreateFontIndirectA`
+   resuelve al toque incluso en modo `pending`, apenas el módulo
+   carga -- no depende de rutas de código fuente en absoluto, solo de
+   la tabla de símbolos ELF (que `WORD1.exe.so` sí expone sin
+   ambigüedad, `nm` ya lo había confirmado en la Cuarta actualización).
+   `CreateFontIndirect` (sin sufijo) no existe como símbolo -- el
+   código resuelve a la variante ANSI `CreateFontIndirectA` (coherente
+   con que el proyecto no compila con `UNICODE`).
+6. **`CreateFontIndirectA` se llama desde decenas de sitios en toda la
+   app** (la primera llamada real que se vio fue de
+   `Opus/initwin.c:2499`, `FInitScreenConstants`, la fuente de la
+   línea de estado -- nada que ver con el ribbon). Un breakpoint
+   incondicional ahí genera un `commands` block que revienta apenas
+   toca un frame sin las variables esperadas (`No symbol "fcid" in
+   current context`), lo cual en modo `-batch` aborta el script
+   entero silenciosamente y deja correr el proceso libre el resto del
+   test. Arreglo: condicionar con la función de conveniencia de `gdb`
+   `$_caller_is(...)`:
+   ```
+   break CreateFontIndirectA if $_caller_is("C_LoadFcid")
+   ```
+   Con eso el breakpoint solo dispara para las llamadas que de verdad
+   importan.
+
+**Script final (contra el proceso `WORD1.exe.so` que lanza el arnés de
+verdad, no una instancia manual):**
+
+```
+set breakpoint pending on
+attach <PID recién aparecido, por pgrep -f WORD1.exe.so>
+break CreateFontIndirectA if $_caller_is("C_LoadFcid")
+commands
+  silent
+  frame 1
+  printf "facename='%s' lfHeight=%d lfWeight=%d lfCharSet=%d lfPitchAndFamily=%d\n", ...
+  printf "fcid: ibstFont=%d hps=%d kul=%d wProps=%d\n", ...
+  bt 14
+  continue
+end
+continue
+```
+
+**Resultado -- dos hits reales, backtrace completo, sin conjeturas:**
+
+Ambos van por la **misma cadena de llamadas**, disparada por
+`WM_PAINT` (`message=15`), no por el preload de `idle.c` ni por
+`LoadFcidFull` de `disp1.c` (la conjetura de la Cuarta actualización,
+hecha solo con `nm`/lectura de código, sin backtrace real -- **incorrecta**,
+corregida acá):
+
+```
+WwPaneWndProc (wproc.c:1932, WM_PAINT)
+ -> UpdateWindowWw (disp1.c:2525)
+ -> UpdateWw (disp3.c:441)
+ -> C_FUpdateDr (disp2.c:563)
+ -> C_FormatDrLine (format.c:438)
+ -> C_FormatLineDxa (format.c:2269)     <-- el sitio real
+ -> LoadFont / C_LoadFont / C_LoadFcid (loadfont.c:337, CreateFontIndirectA)
+```
+
+`C_FormatLineDxa` es medición de ancho de línea durante layout -- no
+insertar texto, no preload especulativo. Las dos llamadas capturadas
+son **`fWidthsOnly=1`** (widths-only) -- confirma en vivo que el
+camino `LNewFce` (fuente nunca antes vista) llama `CreateFontIndirect`
+sin importar `fWidthsOnly`, tal como ya se había leído en el código
+pero nunca visto ejecutarse.
+
+**Comparación completa del `LOGFONTA` real, hit por hit:**
+
+| Campo | "Helv" (`ibstFont=2`, funciona) | "Liberation Sans" (`ibstFont=4`, falla) |
+|---|---|---|
+| `lfHeight` | 0 | 0 |
+| `lfWeight` | 400 | 400 |
+| `lfCharSet` | 0 | 1 (ya con el fix de la Cuarta actualización aplicado) |
+| `lfPitchAndFamily` | **32** | **0** |
+| `fcid.hps` | 0 | 0 |
+
+**El mismo campo que la Quinta actualización ya había identificado y
+descartado, visto ahora en vivo vía `gdb` en vez de por trace:**
+`lfPitchAndFamily` sale **0** para "Liberation Sans" contra **32** para
+"Helv" -- confirma con datos de un proceso distinto (`debian-VM`,
+frente a `exia`) el mismo hallazgo de la Hipótesis 8 de arriba.
+`lfPitchAndFamily` se arma en `Opus/LOADFONT.C:C_FGraphicsFcidToPlf`
+como `(pffn->ffid & maskFfFfid) | fcid.prq` -- `pffn->ffid` viene del
+mismo sitio que el charset corrupto (`Opus/SYSCHG.C:FontNameEnum`,
+enumeración contra el DC de impresora sin impresora real configurada).
+**La Quinta actualización ya lo probó como fix (forzando `FF_SWISS=32`
+para "Liberation Sans") y descartó**: mismo fallo idéntico,
+`FF_DONTCARE=0` es un valor legítimo, no es la causa. Esta sesión no
+sabía eso al escribir el hallazgo (partió de `6417213` en paralelo,
+antes del `push` de `exia`) -- queda documentado igual porque el
+backtrace real de `gdb` es la primera confirmación *en vivo*, no por
+trace, de que el campo corrupto llega intacto hasta la llamada real a
+`CreateFontIndirectA`, reforzando que la Hipótesis 8 fue descartada
+con datos sólidos y no por una lectura de trace incompleta.
+
+**Estado al cortar:** no se aplicó ningún fix nuevo esta sesión, solo
+diagnóstico. Con las dos sesiones combinadas (`exia` + `debian-VM`),
+el panorama es: sitio de la llamada confirmado (`C_FormatLineDxa`),
+`LOGFONTA` completo confirmado correcto en cada campo inspeccionable
+(charset, pitch/family, height, weight -- los dos únicos que
+difieren entre "Helv" y "Liberation Sans" ya se probaron por
+separado, sin efecto), y confirmación decisiva por sonda standalone
+de que el mismo `LOGFONTA` byte-por-byte funciona perfecto fuera de
+WORD1 (Quinta actualización). El único hilo restante, señalado ya por
+la Quinta actualización y no intentado por ninguna de las dos
+sesiones: `gdb` con un breakpoint **dentro** de la implementación de
+`CreateFontIndirectA` de Wine mismo (no solo a la entrada, como hizo
+esta sesión), para ver en qué paso interno diverge la segunda llamada
+de la primera.
+
 ## 9. `--clipboard`: "Ctrl+A did not execute Select All" -- confirmado, verify-only, cierra Task 7
 
 **Task 7, 2026-08-19 en exia.** El plan (Step 1) pedía correr
@@ -1629,16 +1800,30 @@ sesión (2026-08-19, exia):
    `idle.c:503`/`selCur.chp.hps==0` de la "Tercera actualización"
    -- **descartada con trazas directas** en la "Cuarta actualización"
    (debian-VM): el bloque de preload de `idle.c` nunca se alcanza
-   durante el test. `CreateFontIndirect` falla realmente en
-   `Opus/disp1.c`'s `LoadFcidFull` (repintado de documento, no
-   preload), para la segunda fuente distinta pedida en el proceso,
-   con `hps` idéntico al de la primera (que sí funciona). Seis
-   hipótesis descartadas con evidencia (carrera `hps`, charset
-   `OEM_CHARSET`, caché de fuentes, `GetLastError` remanente, buffer
-   `szFfn`); un fix real y menor se queda (charset saneado en
-   `LOADFONT.C`) pero no cierra el test solo. Causa raíz real aún sin
-   localizar -- ver "Cuarta actualización" en §8 para candidatos no
-   explorados
+   durante el test. `CreateFontIndirect` falla para la segunda fuente
+   distinta pedida en el proceso, con `hps` idéntico al de la primera
+   (que sí funciona). Sitio real confirmado con un backtrace de `gdb`
+   en la "Sexta actualización": `Opus/wordtech/format.c:2269`
+   (`C_FormatLineDxa`, medición de ancho de línea durante layout
+   disparado por `WM_PAINT`), no `idle.c` ni `disp1.c` (conjetura
+   anterior, corregida). Nueve hipótesis descartadas en total con
+   evidencia entre las dos sesiones paralelas (Quinta y Sexta
+   actualización -- `exia` y `debian-VM`, ambas partiendo de la misma
+   base sin verse entre sí): carrera `hps`, charset `OEM_CHARSET`,
+   caché de fuentes, `GetLastError` remanente, buffer `szFfn` (más un
+   bug real e independiente de lectura fuera de límites en ese mismo
+   buffer, arreglado), `pffn->fGraphics`, `lfPitchAndFamily` corrupto
+   (probado como fix y descartado -- mismo fallo con `FF_SWISS`
+   forzado), y agotamiento de handles GDI. Confirmación decisiva de la
+   Quinta actualización: una sonda standalone con el `LOGFONTA`
+   byte-por-byte idéntico al que falla dentro de WORD1 tiene éxito
+   fuera del proceso -- **no es una limitación de Wine**, la causa está
+   en el estado de proceso/GDI de WORD1 mismo. Dos fixes reales y
+   menores se quedan (charset saneado y buffer de nombre acotado en
+   `LOADFONT.C`) pero ninguno cierra el test. Causa raíz real aún sin
+   localizar -- único hilo sin intentar: `gdb` con breakpoint dentro de
+   la implementación de `CreateFontIndirectA` de Wine mismo, no solo a
+   la entrada. Ver Quinta y Sexta actualización en §8
 5. `--clipboard` (Ctrl+A) -- **arreglado**, mismo root cause que #1
    (Task 7, §9)
 6. `--selection` -- **arreglado**, 3 bugs de arnés encadenados (Task
