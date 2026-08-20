@@ -333,6 +333,18 @@ LValidateFce:
 #ifdef OPUS_X64
 	SetLastError(0);	/* so a NULL return's GetLastError() is fresh, not
 				   leftover from something earlier this tick */
+	/* Full-LOGFONT dump right before the call: prior traces only checked
+	   lfHeight/lfWeight/lfCharSet -- comparing every remaining field
+	   (pitch/family, quality, precision flags, facename bytes) between
+	   the succeeding "Helv" call and the failing "Liberation Sans" one,
+	   since the charset fix alone (Opus/LOADFONT.C, FGraphicsFcidToPlf)
+	   didn't clear the test. */
+	{
+	extern void OpusX64TraceRibbon();
+	OpusX64TraceRibbon(lf.lfFaceName, lf.lfPitchAndFamily, lf.lfQuality,
+			lf.lfOutPrecision, lf.lfClipPrecision, (long)lf.lfWidth,
+			(long)lf.lfEscapement, fcid.ibstFont);
+	}
 #endif
 	if ((pfce->hfont = CreateFontIndirect( (LPLOGFONT)&lf )) == NULL)
 		{
@@ -963,8 +975,8 @@ int fPrinterFont;
 /* bits 0-1: pitch request
 	bits 4-6: font family */
 	plf->lfPitchAndFamily = (pffn->ffid & maskFfFfid) | fcid.prq;
-	Assert( (plf->lfPitchAndFamily & maskPrqLF) == FIXED_PITCH || 
-			(plf->lfPitchAndFamily & maskPrqLF) == VARIABLE_PITCH || 
+	Assert( (plf->lfPitchAndFamily & maskPrqLF) == FIXED_PITCH ||
+			(plf->lfPitchAndFamily & maskPrqLF) == VARIABLE_PITCH ||
 			(plf->lfPitchAndFamily & maskPrqLF) == DEFAULT_PITCH );
 
 /* Set Bold, Italic, StrikeOut, Underline */
@@ -1002,7 +1014,39 @@ int fPrinterFont;
 	if (plf->lfCharSet == OEM_CHARSET)
 		plf->lfCharSet = DEFAULT_CHARSET;
 #endif
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	/* struct FFN's szFfn is a flexible array member ("Variable length" --
+	   see Opus/fontwin.h) allocated in the STTB via
+	   IbstAddStToSttb/FInsStInSttb1 sized exactly to the font name's own
+	   Pascal length (CbSzOfPffn(pffn) bytes) -- never LF_FACESIZE (32).
+	   bltbyte(..., LF_FACESIZE) always read a hardcoded 32 bytes from it
+	   regardless of that real allocation size: a genuine out-of-bounds
+	   heap read for every font name shorter than 31 characters (i.e.
+	   virtually all of them). Confirmed via a byte-dump trace
+	   (2026-08-20): harmless for names followed in memory by another
+	   short valid entry with an early NUL (the name still reads back
+	   correctly, GDI stops at its own NUL same as us), but still
+	   undefined behavior regardless of whether any single font name
+	   happens to survive it -- copy only the real length and zero the
+	   rest of the destination instead. (Investigated as a candidate
+	   root cause for the CreateFontIndirect NULL-return bug in
+	   docs/port-linux/03-comportamiento-word1-startup-blocked.md Task 6
+	   Bug 4 -- ruled out as the cause there: the NUL still lands
+	   correctly within the over-read for every font tried, so GDI never
+	   actually sees the garbage. Fixed here anyway as a real,
+	   independent correctness issue.) */
+	{
+	int cchReal = CbSzOfPffn(pffn);
+	if (cchReal < 0)
+		cchReal = 0;
+	else  if (cchReal > LF_FACESIZE - 1)
+		cchReal = LF_FACESIZE - 1;
+	SetBytes(plf->lfFaceName, 0, LF_FACESIZE);
+	bltbyte(pffn->szFfn, plf->lfFaceName, cchReal);
+	}
+#else
 	bltbyte( pffn->szFfn, plf->lfFaceName, LF_FACESIZE );
+#endif
 #ifdef OPUS_X64
 	{
 	extern void OpusX64TraceRibbon();

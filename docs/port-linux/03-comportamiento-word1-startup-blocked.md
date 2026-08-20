@@ -1253,6 +1253,137 @@ identificado.
 sonda standalone que Wine ya no ve ninguna impresora. No queda drift
 de entorno.
 
+**Quinta actualización 2026-08-20 (exia): tres hipótesis más
+descartadas, un bug real distinto encontrado y arreglado (no relacionado
+con la falla), y confirmación decisiva de que la causa NO es una
+limitación de Wine.** Continuación directa de la sesión anterior (pull
+de `6417213`), revisando los dos candidatos que quedaron anotados sin
+explorar.
+
+**Hipótesis 7 -- `pffn->fGraphics`/`fty` (candidato anotado, no un
+mecanismo nuevo): descartada como explicación, ya estaba confirmada en
+el código.** El comentario ya presente en `Opus/LOADFONT.C` (líneas
+~996-999, agregado en la sesión anterior) confirma que `fGraphics` da
+`fFalse` para "Liberation Sans" por la misma enumeración contra
+`vpri.hdc` que corrompió el charset -- mismo origen ya identificado, no
+un mecanismo distinto. `fGraphics` solo se guarda en `pfce->fGraphics`/
+`vfli.fGraphics` (grep confirmado: sin ningún `if` que dependa de él
+antes de `CreateFontIndirect`), así que no puede ser la causa de que la
+llamada falle.
+
+**Hipótesis 8 -- `lfPitchAndFamily` corrupto (`FF_DONTCARE=0` vs.
+`FF_SWISS=32` de "Helv"): real, pero no causal -- descartada
+empíricamente, no por lectura.** Un trace del `LOGFONT` completo justo
+antes de `CreateFontIndirect` (todos los campos no revisados antes:
+`lfPitchAndFamily`, `lfQuality`, `lfOutPrecision`, `lfClipPrecision`,
+`lfWidth`, `lfEscapement`) mostró que **todo es idéntico entre "Helv" y
+"Liberation Sans" excepto `lfPitchAndFamily`**: 32 (`FF_SWISS`) contra 0
+(`FF_DONTCARE`) -- mismo origen que la Hipótesis 3/7 (`pffn->ffid`
+corrupto por la misma enumeración sin impresora). Se forzó
+`lfPitchAndFamily` a `FF_SWISS` para "Liberation Sans" como prueba
+empírica directa (no como arreglo definitivo) -- **mismo fallo
+idéntico**, `CreateFontIndirect` sigue devolviendo `NULL`. Revertido.
+`FF_DONTCARE` es un valor legítimo y común en Windows real; no es la
+causa.
+
+**Bug real encontrado (no causal para esta falla, arreglado de todos
+modos): lectura fuera de límites en `bltbyte(pffn->szFfn,
+plf->lfFaceName, LF_FACESIZE)`.** `struct FFN.szFfn` es un flexible
+array member (`CHAR szFfn[]; /* Variable length */`, `Opus/fontwin.h`),
+almacenado en la STTB (`IbstAddStToSttb`/`FInsStInSttb1`,
+`Opus/wordtech/sttb.c`) con tamaño exacto Pascal-string (`CbSzOfPffn`),
+nunca 32 bytes. El `bltbyte` original copiaba 32 bytes fijos sin
+importar el tamaño real asignado -- lectura fuera de límites genuina
+para cualquier nombre de fuente más corto de 31 caracteres (es decir,
+prácticamente todos). Confirmado con un dump hexadecimal de
+`lf.lfFaceName[16..31]` para ambas fuentes: para "Helv" (entrada
+sembrada al arranque, junto a otras entradas cortas válidas en memoria)
+el byte de posición 15 es un carácter real ('e') seguido de más
+contenido no-nulo -- el over-read cae en datos de OTRA entrada válida
+adyacente. Para "Liberation Sans" (15 caracteres, agregada en runtime)
+el byte 15 es correctamente `\0` (el nombre termina bien), pero el byte
+16 es `0xFF` seguido de ceros -- **el over-read cae en memoria genuina
+fuera de la entrada real.** En ambos casos, sin embargo, el terminador
+nulo real cae en la posición correcta (4 para "Helv", 15 para
+"Liberation Sans") -- y GDI/`CreateFontIndirect`, igual que `%s`, deja
+de leer en el primer `\0`. **Esto descarta la hipótesis de corrupción
+de nombre como causa de esta falla específica** -- el nombre que
+`CreateFontIndirect` realmente ve es correcto en ambos casos -- pero
+sigue siendo un bug real (comportamiento indefinido, lectura de heap
+sin inicializar) que se arregló de todos modos: `Opus/LOADFONT.C`
+ahora hace `SetBytes(plf->lfFaceName, 0, LF_FACESIZE)` seguido de un
+`bltbyte` acotado a `CbSzOfPffn(pffn)` bytes reales (guardado bajo
+`#if defined(__GNUC__) && !defined(_MSC_VER)`, MSVC sigue con el
+`bltbyte` de 32 bytes original sin cambios).
+
+**Confirmación decisiva: no es una limitación de Wine para estos
+parámetros.** Con cada campo de `LOGFONT` inspeccionable ya descartado
+o idéntico, y el nombre confirmado correcto hasta su `\0`, se armó una
+sonda standalone (`winegcc`, sin código de este proyecto -- mismo
+patrón que la "Confirmación decisiva" de §12/`--interaction`) que
+llama `CreateFontIndirectA` con el `LOGFONT` **byte por byte idéntico**
+al que falla dentro de WORD1 (`lfFaceName="Liberation Sans"`,
+`lfHeight=0`, `lfWeight=400`, `lfCharSet=1`, `lfQuality=4`,
+`lfPitchAndFamily=0` y también probado con `32`, resto en cero).
+**Ambas variantes tienen éxito** (`hfont` no nulo, `GetLastError=0`) en
+un proceso limpio, mismo binario de Wine, mismo prefix. Esto descarta
+por completo que sea una limitación de Wine para esta combinación de
+parámetros -- el mismo `CreateFontIndirectA` con los mismos datos
+funciona perfecto fuera de WORD1. La causa está genuinamente en algo
+del estado de proceso/GDI de WORD1 en ese momento, no en los datos que
+se piden.
+
+**Hipótesis de agotamiento de handles GDI: descartada, sin necesidad de
+medir vía `GetGuiResources`.** Se intentó medir el conteo de objetos
+GDI del proceso WORD1 desde el arnés de test (`GetGuiResources(hProcess,
+GR_GDIOBJECTS)`) -- esta build de Wine lo tiene sin implementar,
+siempre devuelve 0. Señal inútil, descartada como método. Pero un
+conteo más simple resultó decisivo: el trace `loadfont-caller`
+(`__builtin_return_address` de cada llamada a `C_LoadFont`) aparece
+**35 veces** en toda la corrida del test, pero `fcid-identity` (el
+único punto que de verdad llega a `C_FGraphicsFcidToPlf`/
+`CreateFontIndirect`, tras pasar los CASE 1-3 de caché de
+`C_LoadFcid`) aparece solo **2 veces** -- las otras 33 son *cache
+hits*, nunca llegan a pedir una fuente nueva a GDI. Con solo 2
+creaciones reales de fuente en toda la corrida, un límite de 10.000
+handles por proceso (el límite clásico de Windows) queda
+completamente fuera de alcance. Descartado sin ambigüedad.
+
+**Estado al cortar (segunda vez): nueve hipótesis descartadas en total
+con evidencia directa** (las seis de la actualización anterior + estas
+tres). La causa de por qué `CreateFontIndirect` devuelve `NULL`
+específicamente para la segunda fuente distinta pedida, con datos
+confirmados correctos en cada campo inspeccionable, sigue sin
+localizar -- y ya no hay ningún candidato más a nivel de datos/estado
+de aplicación que revisar por trazas o sondas standalone. Lo único que
+queda, si se retoma, es bajar un nivel: adjuntar `gdb` al proceso
+WORD1 real (no una sonda standalone limpia) y poner un breakpoint
+dentro de la implementación de `CreateFontIndirect` de Wine mismo
+(`dlls/gdi32` o `dlls/win32u`, según versión) para ver en qué paso
+interno diverge esa segunda llamada respecto a la primera -- una
+herramienta bastante más pesada que trazas de aplicación o sondas
+standalone, y no intentada todavía.
+
+**Archivos modificados esta ronda (sin commitear al momento de
+escribir esto):**
+- `src/Opus/LOADFONT.C`: el arreglo real que se queda (bltbyte
+  acotado + `SetBytes` de cero para `lfFaceName`, guardado GNUC-only,
+  MSVC sin cambios) -- corrige un bug genuino de comportamiento
+  indefinido, no relacionado con la falla de este test. Trace de
+  `fcid-identity` (ya existente) se mantiene tal cual.
+- `src/port/original/opus_word1_ui_test.cpp`: sin cambio neto (se
+  agregó y luego se quitó el chequeo de `GetGuiResources`, que resultó
+  no implementado en este Wine).
+
+**Verificado, sin regresión:**
+```
+DISPLAY=:99 ctest --test-dir out/linux-winelib-debug -L word1_startup_blocked
+    7/9 -- mismos dos fallos conocidos (--interaction, --font-typing)
+
+DISPLAY=:99 ctest --test-dir out/linux-winelib-debug -LE word1_startup_blocked
+    9/9 -- gating sin cambios
+```
+
 ## 9. `--clipboard`: "Ctrl+A did not execute Select All" -- confirmado, verify-only, cierra Task 7
 
 **Task 7, 2026-08-19 en exia.** El plan (Step 1) pedía correr
