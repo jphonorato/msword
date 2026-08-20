@@ -431,8 +431,27 @@ bool wait_for_focus_traced(const HANDLE process, const DWORD thread_id,
         gui.cbSize = sizeof(gui);
         if (GetGUIThreadInfo(thread_id, &gui)) {
             if (gui.hwndFocus != last) {
+                wchar_t class_name[64] = {};
+                wchar_t caption[128] = {};
+                GetClassNameW(gui.hwndFocus, class_name,
+                              static_cast<int>(std::size(class_name)));
+                GetWindowTextW(gui.hwndFocus, caption,
+                               static_cast<int>(std::size(caption)));
+                // Narrow before printing: std::cerr with wchar_t* is a
+                // deleted overload, and wide iostreams assume 4-byte
+                // wchar_t while these buffers are real 2-byte WCHAR.
+                char class_name_ansi[128] = {};
+                char caption_ansi[256] = {};
+                WideCharToMultiByte(CP_ACP, 0, class_name, -1, class_name_ansi,
+                                    static_cast<int>(sizeof(class_name_ansi)),
+                                    nullptr, nullptr);
+                WideCharToMultiByte(CP_ACP, 0, caption, -1, caption_ansi,
+                                    static_cast<int>(sizeof(caption_ansi)),
+                                    nullptr, nullptr);
                 std::cerr << "  [focus-trace] t+" << (GetTickCount64() - start)
-                          << "ms hwndFocus=" << gui.hwndFocus;
+                          << "ms hwndFocus=" << gui.hwndFocus
+                          << " class=" << class_name_ansi
+                          << " caption='" << caption_ansi << "'";
                 if (gui.hwndFocus == expected) {
                     std::cerr << " (== pane)";
                     saw_expected = true;

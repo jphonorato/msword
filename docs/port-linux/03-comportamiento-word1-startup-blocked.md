@@ -806,6 +806,27 @@ Esto toca `Opus/iconbar1.c` (árbol restringido) -- necesita autorización
 explícita antes de tocar código ahí, per `CLAUDE.md`. Diagnóstico
 completo, sin cambio de código en `Opus/` esta sesión.
 
+**Actualización 2026-08-20 (exia): hipótesis `CBRollUp` descartada, foco
+nunca sale del botón "OK".** Se añadió `wait_for_focus_traced` (variante
+de `wait_for_focus` que loguea cada `hwndFocus` distinto visto, con clase
+y caption) para probar la hipótesis de arriba -- que Wine's `CBRollUp()`
+(dlls/user32/combo.c) corre la cadena SDM completa (incluido el
+`SetFocus(pane)` real de `FDlgIb`) y solo *después* oculta el popup listbox,
+robando el foco como efecto secundario. La traza la contradice: el foco no
+llega a `pane` ni transitoriamente -- se queda fijo en una ventana
+`class=Button caption='OK'` (hwnd distinto cada corrida, ~0x1011x) desde
+el primer poll (`t+0`/`t+1ms`) hasta el timeout de 1500ms, sin un solo
+cambio intermedio. Eso descarta la hipótesis original: no es que el foco
+llegue y se vaya, es que nunca se mueve de ese botón "OK" en absoluto --
+el `SetFocus(hwwdCur->hwnd)` de `FDlgIb` o no se ejecuta, o se ejecuta y
+es inmediatamente revertido a ese botón por algo que corre después (o el
+propio `hwwdCur` no apunta al pane esperado). Candidato más probable:
+ese "OK" es el botón por defecto de algún diálogo/dialog-manager SDM que
+sigue vivo (o se recrea) en ese hilo de mensajes; no identificado más
+allá de clase+caption esta sesión. Sigue sin arreglar, sigue tocando
+`Opus/iconbar1.c` (restringido) -- este hallazgo solo corrige el
+diagnóstico previo, no lo cierra.
+
 **Verificado:**
 ```
 DISPLAY=:99 ctest -R "^opus_word1_font_typing_test$" --output-on-failure
