@@ -404,6 +404,55 @@ bool wait_for_focus(const HANDLE process, const DWORD thread_id,
     return false;
 }
 
+/* Diagnostic-only variant of wait_for_focus: same wait/timeout contract,
+   but logs every distinct hwndFocus value it observes (fast 10ms poll)
+   instead of only the final true/false. Built to test a specific
+   hypothesis for Task 6 Bug 3 (docs/port-linux/03-comportamiento-
+   word1-startup-blocked.md, junior-to-senior review): Wine 10.0's
+   dlls/user32/combo.c CBRollUp() sends CBN_SELENDOK (which runs WORD1's
+   whole SDM focus-restore chain, including the SetFocus(pane) in
+   Opus/iconbar1.c's dlmDlgClick) and only THEN, after that call returns,
+   hides the still-open listbox popup via NtUserShowWindow(hWndLBox,
+   SW_HIDE) -- which can reassign OS focus as a side effect of hiding a
+   focused window. If that hypothesis is right, this trace should show
+   focus reaching the pane and then leaving again, not simply never
+   arriving. */
+bool wait_for_focus_traced(const HANDLE process, const DWORD thread_id,
+                           const HWND expected, const DWORD timeout_ms) {
+    const ULONGLONG deadline = GetTickCount64() + timeout_ms;
+    const ULONGLONG start = GetTickCount64();
+    HWND last = reinterpret_cast<HWND>(static_cast<UINT_PTR>(~0ULL));
+    bool saw_expected = false;
+    do {
+        if (WaitForSingleObject(process, 0) == WAIT_OBJECT_0) {
+            return false;
+        }
+        GUITHREADINFO gui{};
+        gui.cbSize = sizeof(gui);
+        if (GetGUIThreadInfo(thread_id, &gui)) {
+            if (gui.hwndFocus != last) {
+                std::cerr << "  [focus-trace] t+" << (GetTickCount64() - start)
+                          << "ms hwndFocus=" << gui.hwndFocus;
+                if (gui.hwndFocus == expected) {
+                    std::cerr << " (== pane)";
+                    saw_expected = true;
+                }
+                std::cerr << '\n';
+                last = gui.hwndFocus;
+            }
+            if (gui.hwndFocus == expected) {
+                return true;
+            }
+        }
+        Sleep(10);
+    } while (GetTickCount64() < deadline);
+    if (saw_expected) {
+        std::cerr << "  [focus-trace] pane focus was reached transiently but "
+                     "did not hold through timeout\n";
+    }
+    return false;
+}
+
 bool make_foreground_and_focus(const HWND main_window, const HWND focus,
                                const DWORD target_thread_id) {
     const DWORD current_thread_id = GetCurrentThreadId();
@@ -948,8 +997,11 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
             got_foreground && choose_combo_item_with_mouse(font_combo, font_index);
         const bool regained_focus =
             chose_item &&
-            wait_for_focus(process.hProcess, thread_id, pane, 1500);
+            wait_for_focus_traced(process.hProcess, thread_id, pane, 1500);
         if (!got_foreground || !chose_item || !regained_focus) {
+            std::cerr << "  [focus-trace] identities: pane=" << pane
+                      << " font_combo=" << font_combo
+                      << " main_window=" << main_window << '\n';
             std::cerr << "font combo select stages: foreground="
                       << got_foreground << " chose_item=" << chose_item
                       << " regained_focus=" << regained_focus << '\n';
