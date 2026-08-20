@@ -16,6 +16,9 @@
 
 #include "word.h"
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "OpusShellMemory.h"    /* Qt-2 B3: OpusMem* */
+#endif
 #include "heap.h"
 #include "file.h"
 #include "props.h"

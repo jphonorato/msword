@@ -44,6 +44,9 @@
 #define NOKANJI
 #include "word.h"
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "OpusShellMemory.h"    /* Qt-2 B3: OpusMem* */
+#endif
 #include "heap.h"
 #include "doslib.h"
 #include "debug.h"
@@ -759,6 +762,15 @@ FInitVpscd()
 			sizeof (int) * (sizeof (struct SCD)  / sizeof (int)));
 
 	SetWords( vpscd, 0, sizeof (struct SCD) / sizeof (int) );
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if ((ghsz = GhMySpellGetrgchCase()) == NULL || 
+			(lprgch = (char far *)OpusMemLock((OpusHandle)ghsz)) == NULL)
+		return fFalse;
+
+	bltx(lprgch, (CHAR FAR *)&vpscd->rgchCase, 256/sizeof(int));
+	OpusMemUnlock((OpusHandle)ghsz);
+	OpusMemFree((OpusHandle)ghsz);
+#else
 	if ((ghsz = GhMySpellGetrgchCase()) == NULL || 
 			(lprgch = GlobalLockClip(ghsz)) == NULL)
 		return fFalse;
@@ -766,6 +778,7 @@ FInitVpscd()
 	bltx(lprgch, (CHAR FAR *)&vpscd->rgchCase, 256/sizeof(int));
 	GlobalUnlock(ghsz);
 	GlobalFree( ghsz );
+#endif
 	return fTrue;
 }
 
@@ -1297,7 +1310,11 @@ struct GHD *pghd;
 	if (pghd->ichMax > 0)
 		{
 		Assert( pghd->ghsz != NULL );
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree( (OpusHandle)pghd->ghsz );
+#else
 		GlobalFree( pghd->ghsz );
+#endif
 		pghd->ichMax = 0;
 		}
 }

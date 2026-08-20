@@ -12,6 +12,9 @@ current device. */
 
 #include "word.h"
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "OpusShellMemory.h"    /* Qt-2 B3: OpusMem* */
+#endif
 #include "heap.h"
 #include "ch.h"
 #include "disp.h"
@@ -1257,15 +1260,26 @@ int i;
 
 	i -= ircdsNonCoreMin;
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if ((h = (HANDLE)OpusMemAlloc((unsigned long)(uns)rgrcds[i].cb,
+			OpusMemFlagsFromWin16(GMEM_MOVEABLE))) == NULL)
+#else
 	if ((h = OurGlobalAlloc(GMEM_MOVEABLE, (long)(uns)rgrcds[i].cb)) == NULL)
+#endif
 		{
 		SetErrorMat(matMem);
 		return NULL;
 		}
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	lpch = (LPSTR)OpusMemLock((OpusHandle)h);
+	bltbx((LPSTR)rgrcds[i].rgchBits, lpch, rgrcds[i].cb);
+	OpusMemUnlock((OpusHandle)h);
+#else
 	lpch = GlobalLock(h);
 	bltbx((LPSTR)rgrcds[i].rgchBits, lpch, rgrcds[i].cb);
 	GlobalUnlock(h);
+#endif
 	return h;
 }
 
@@ -1298,7 +1312,11 @@ FreeIrcds(ircds)
 
 	else  if (!vsci.fUseResCursors)
 		{
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree((OpusHandle)h);
+#else
 		GlobalFree(h);
+#endif
 		*mpircdsphc[i] = NULL;
 		}
 }

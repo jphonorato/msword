@@ -283,8 +283,13 @@ DontDraw:
 		UnlogGdiHandle(hbm, 1010);
 		DeleteObject( hbm );
 		}
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if (hBits != NULL)
+		OpusMemFree((OpusHandle)hBits);
+#else
 	if (hBits != NULL)
 		GlobalFree( hBits );
+#endif
 
 	if (!fDrawn)
 		if (!vfli.fPrint && vfGrInterrupt) /* interrupted by user */
@@ -1856,10 +1861,24 @@ int ww;
 
 		cfcPic = (vpicFetch.lcb - vpicFetch.cbHeader);  /* size of pic bytes */
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		if ((*phMF = (HANDLE)OpusMemAlloc((unsigned long)cfcPic,
+				OPUS_MEM_ESCAPES | OpusMemFlagsFromWin16(GMEM_MOVEABLE))) == NULL)
+#else
 		if ((*phMF =GlobalAlloc2( GMEM_MOVEABLE, cfcPic )) == NULL)
+#endif
 			{    /* Not enough global heap space to load metafile */
 			return fFalse;
 			}
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		if ((lpch = (LPCH)OpusMemLock((OpusHandle)*phMF)) == NULL)
+			{
+			Assert (*phMF != NULL);
+			OpusMemFree((OpusHandle)*phMF);
+			*phMF = NULL;
+			return fFalse;
+			}
+#else
 		if ((lpch = GlobalLock (*phMF)) == NULL)
 			{
 			Assert (*phMF != NULL);
@@ -1867,6 +1886,7 @@ int ww;
 			*phMF = NULL;
 			return fFalse;
 			}
+#endif
 		lpMH = lpch; /* so we can check win 3 meta after loading */
 
 		fnPreloadSave = vfnPreload;
@@ -1896,14 +1916,22 @@ int ww;
 #ifdef DEBUG
 		iT = 
 #endif
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		 	(OpusMemUnlock((OpusHandle)*phMF), 0);
+#else
 		 	GlobalUnlock (*phMF);
+#endif
 		Assert(!iT);
 
 		if (vwWinVersion < 0x0300 && mtVersion != 0x100) 
 			{
 			/* we got win 3 metafile that we can not display in Win 2 */
 			Assert (*phMF != NULL);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+			OpusMemFree((OpusHandle)*phMF);
+#else
 			GlobalFree( *phMF );
+#endif
 			*phMF = NULL;
 			PictError (eidPicWrongWin);
 			return fFalse;

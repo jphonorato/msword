@@ -46,6 +46,9 @@
 
 #include "word.h"
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "OpusShellMemory.h"    /* Qt-2 B3: OpusMem* */
+#endif
 #include "file.h"
 #include "props.h"
 #include "format.h"
@@ -410,9 +413,15 @@ CMB * pcmb;
 		UnlogGdiHandle(hDCMeta, 1086);
 		LogGdiHandle(hMeta, 1087);
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		if ( ((hData = (HANDLE)OpusMemAlloc((unsigned long)sizeof(METAFILEPICT),
+				OPUS_MEM_ESCAPES | OpusMemFlagsFromWin16(GMEM_MOVEABLE))) == NULL) ||
+				((lpch = (LPSTR)OpusMemLock((OpusHandle)hData)) == NULL))
+#else
 		if ( ((hData=OurGlobalAlloc(GMEM_MOVEABLE,
 				(long)sizeof(METAFILEPICT) ))==NULL) ||
 				((lpch=GlobalLock( hData ))==NULL))
+#endif
 			{
 			goto ErrRet;
 			}
@@ -423,7 +432,11 @@ CMB * pcmb;
 			mfp.xExt = 0;
 			mfp.yExt = 0;
 			bltbx( (LPCH)&mfp, lpch, sizeof(METAFILEPICT) );
+#if defined(__GNUC__) && !defined(_MSC_VER)
+			OpusMemUnlock((OpusHandle)hData);
+#else
 			GlobalUnlock( hData );
+#endif
 			}
 
 
@@ -434,7 +447,11 @@ CMB * pcmb;
 				fTrue /* fEmptyPic */,
 				&vchpFetch  /* pchp */,	NULL /* prcWinMF */);
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree((OpusHandle)hData);
+#else
 		GlobalFree( hData );
+#endif
 		UnlogGdiHandle(hMeta, 1087);
 		DeleteMetaFile(hMeta);
 		hMeta = hData = NULL;
@@ -443,7 +460,11 @@ CMB * pcmb;
 			{
 ErrRet:
 			if (hData != NULL)
+#if defined(__GNUC__) && !defined(_MSC_VER)
+				OpusMemFree((OpusHandle)hData);
+#else
 				GlobalFree( hData );
+#endif
 			if (hMeta != NULL)
 				{
 				UnlogGdiHandle(hMeta, 1087);

@@ -13,6 +13,9 @@
 
 #include "word.h"
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "OpusShellMemory.h"    /* Qt-2 B3: OpusMem* */
+#endif
 #include "file.h"
 #include "ff.h"
 #include "grstruct.h"
@@ -175,9 +178,15 @@ LError:
 			BOOL f = FReadPict(PcaPoint(&ca, doc, cpResult), 
 					CF_METAFILEPICT, h1, 0, fFalse /* fEmptyPic */,
 					&chp, &rc /* prcWinMF */);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+			OpusMemFree((OpusHandle)h1);
+			Assert(h2 != NULL);
+			OpusMemFree((OpusHandle)h2); /* free the hMF too */
+#else
 			GlobalFree(h1);
 			Assert(h2 != NULL);
 			GlobalFree(h2); /* free the hMF too */
+#endif
 			if (f)
 				{
 				goto LHavePict;
@@ -279,8 +288,14 @@ struct CHP *pchp;
 		lcb = stmGlobal.fcMac - sizeof(BITMAPFILEHEADER);
 
 		/* allocate space for DIB, can be > 64K, use GlobalAlloc2 */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		if ( ((hData = (HANDLE)OpusMemAlloc((unsigned long)lcb,
+				OPUS_MEM_ESCAPES | OpusMemFlagsFromWin16(GMEM_MOVEABLE))) == NULL) ||
+			  ((lpch = (LPCH)OpusMemLock((OpusHandle)hData)) == NULL))
+#else
 		if ( ((hData=GlobalAlloc2(GMEM_MOVEABLE, lcb ))==NULL) ||
 			  ((lpch=GlobalLock( hData ))==NULL))
+#endif
 			{
 #ifdef DEBUG
 			if (vdbs.fDumpPicInfo)
@@ -309,13 +324,21 @@ struct CHP *pchp;
 				lpch = LpchIncr(lpch, (unsigned)cb);
 				lcb  -= cb;
 				}
+#if defined(__GNUC__) && !defined(_MSC_VER)
+			OpusMemUnlock((OpusHandle)hData);
+#else
 			GlobalUnlock( hData );
+#endif
 			}
 
 		/* load DIB into document */
 		fOk = FReadPict(&caPic, CF_DIB, hData, 0, fFalse, pchp, NULL);
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree((OpusHandle)hData);
+#else
 		GlobalFree(hData);
+#endif
 		return fOk;
 
 #undef cbReadMax
@@ -334,10 +357,15 @@ struct CHP *pchp;
 	GetInfoTIFF(hpc, rgco); /* may abort out to setjmp location */
 
 	PcaPoint(&caPic, doc, cp);
-	/* allocate space for bitmap structure floowed by stFile */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if ( ((hData = (HANDLE)OpusMemAlloc((unsigned long)(sizeof(BITMAP) + *stFile + 1),
+			OPUS_MEM_ESCAPES | OpusMemFlagsFromWin16(GMEM_MOVEABLE))) == NULL) ||
+			((lpch = (LPCH)OpusMemLock((OpusHandle)hData)) == NULL))
+#else
 	if ( ((hData=OurGlobalAlloc(GMEM_MOVEABLE,
 			(long)(sizeof(BITMAP) + *stFile + 1) ))==NULL) ||
 			((lpch=GlobalLock( hData ))==NULL))
+#endif
 		{
 		goto ErrRet;
 		}
@@ -369,7 +397,11 @@ struct CHP *pchp;
 		/* store bm struct AND file name */
 		bltbx( (LPCH)&bm, lpch, sizeof(BITMAP) );
 		bltbx( (LPCH)stFile, lpch + sizeof(BITMAP), *stFile + 1 );
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemUnlock((OpusHandle)hData);
+#else
 		GlobalUnlock( hData );
+#endif
 		MeltHp();
 		}
 
@@ -382,7 +414,11 @@ struct CHP *pchp;
 
 ErrRet:
 	if (hData != NULL)
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree((OpusHandle)hData);
+#else
 		GlobalFree( hData );
+#endif
 	if (hpc != hNil)
 		FreeH (hpc);
 
@@ -1604,9 +1640,16 @@ pgrib->hPref);
 			LPCH lpch;
 			unsigned uMul;
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+			if ((hPict = (HANDLE)OpusMemAlloc((unsigned long)sizeof(mfp),
+					OPUS_MEM_ESCAPES | OpusMemFlagsFromWin16(GMEM_MOVEABLE))) != NULL)
+				{
+				lpch = (LPCH)OpusMemLock((OpusHandle)hPict);
+#else
 			if ((hPict = OurGlobalAlloc(GMEM_MOVEABLE, (DWORD)sizeof(mfp))) != NULL)
 				{
 				lpch = GlobalLock(hPict);
+#endif
 				Assert(lpch != NULL); /* DavidW says won't fail! */
 
 				SetBytes(&mfp, 0, sizeof(mfp));
@@ -1625,7 +1668,11 @@ pgrib->hPref);
 				*prc = grpi.rc; /* will need for window org, ext */
 
 				bltbx((LPCH)&mfp, lpch, sizeof(mfp));
+#if defined(__GNUC__) && !defined(_MSC_VER)
+				OpusMemUnlock((OpusHandle)hPict);
+#else
 				GlobalUnlock(hPict);
+#endif
 #ifdef DREADPIC
 				CommSz(SzShared("\tconverting metafile...\r\n"));
 				CommSzNum(SzShared("\t\tgrpi.cInch = "), grpi.cInch);
