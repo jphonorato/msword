@@ -327,6 +327,13 @@ LValidateFce:
 		CommSzSz(SzFrame("Failed to create logical font!"),szEmpty);
 #endif
 LSystemFontErr:
+#ifdef OPUS_X64
+		{
+		extern void OpusX64TraceRibbon();
+		OpusX64TraceRibbon("matfont-set", fcid.ibstFont, fcid.wProps,
+				lf.lfHeight, (int)GetLastError(), 0L, 0L, 0);
+		}
+#endif
 		SetErrorMat(matFont);
 		fFallback = fTrue;
 LSystemFont:
@@ -769,8 +776,17 @@ HDC *phdc;
 					{
 /* could not select in the font: revert back to the system font */
 LScreenFail:
-#ifdef DFONT		  
+#ifdef DFONT
 					CommSzSz(SzFrame("Failed to select screen font"),szEmpty);
+#endif
+#ifdef OPUS_X64
+					{
+					extern void OpusX64TraceRibbon();
+					OpusX64TraceRibbon("screenfail",
+							(int)(long)vsci.hdcScratch, (int)(long)*phfont,
+							(int)(long)hfontSystem, (int)GetLastError(),
+							0L, 0L, 0);
+					}
 #endif
 					SetErrorMat(matFont);
 					if (*phfont != hfontSystem)
@@ -881,6 +897,14 @@ int fPrinterFont;
 	plf->lfHeight = NMultDiv( fcid.hps * (czaPoint / 2),
 			fPrinterFont ? vfli.dyuInch : vfli.dysInch,
 			czaInch );
+#ifdef OPUS_X64
+	{
+	extern void OpusX64TraceRibbon();
+	OpusX64TraceRibbon("lfheight-calc", fcid.hps, czaPoint,
+			plf->lfHeight, fPrinterFont, (long)vfli.dysInch,
+			(long)vfli.dyuInch, 0);
+	}
+#endif
 
 /* (BL) *** HACK ***   ***  ACK *** **** GAG ****  *** BARF ***
 		The Windows courier font has interesting non-international pixels

@@ -792,6 +792,14 @@ the convention is that an event has to be present when returning)
 		}
 	Win( GetSelCurChp(fFalse) );
 
+#ifdef OPUS_X64
+	{
+	extern void OpusX64TraceRibbon();
+	OpusX64TraceRibbon("insertloop-chp", ch, selCur.fUpdateChp,
+			selCur.fUpdateChpGray, selCur.chp.ftc, (long)selCur.cpFirst,
+			(long)selCur.chp.hps, 0);
+	}
+#endif
 
 #ifdef WIN
 /* BEGIN QUICK-AND-DIRTY OVERTYPE */

@@ -2263,6 +2263,13 @@ BOOL fInit;
 	else
 		grpfShowAllNew = 2; /* gray, not 0 or 1 */
 
+#ifdef OPUS_X64
+	{
+	extern void OpusX64TraceRibbon();
+	OpusX64TraceRibbon("updateribbon-before", fInit, selCur.fUpdateChp,
+			selCur.fUpdateChpGray, selCur.chp.ftc, 0L, (long)selCur.chp.hps, 0);
+	}
+#endif
 	if (selCur.fUpdateChpGray || fInit || selCur.fUpdateChp)
 		if (FGetCharState(fFalse/*fAll*/, fTrue /*fAbortOk*/ ) == fFalse)
 			{
@@ -2273,6 +2280,13 @@ BOOL fInit;
 			else
 				return;
 			}
+#ifdef OPUS_X64
+	{
+	extern void OpusX64TraceRibbon();
+	OpusX64TraceRibbon("updateribbon-after", fInit, selCur.fUpdateChp,
+			selCur.fUpdateChpGray, selCur.chp.ftc, 0L, (long)selCur.chp.hps, 0);
+	}
+#endif
 
 	selCur.fUpdateRibbon = fFalse;  /* prevent unneeded updates later */
 

@@ -918,6 +918,161 @@ Archivos: `src/port/original/opus_word1_ui_test.cpp` (literales de
 fuente, `CB_SHOWDROPDOWN`, diagnóstico de las 3 etapas del clic de
 combo), `Opus/fontwin.h` (guard LP64 de `union FCID`).
 
+**Tercera actualización 2026-08-20 (exia): "no conserva la fuente" era
+diagnóstico engañoso -- el texto nunca se tecleó. Causa raíz real
+encontrada: `idle.c:503` precarga la fuente con `selCur.chp.hps == 0`,
+`CreateFontIndirect` falla, y el diálogo real de error resultante se
+traga el teclado. Sesión cerrada sin arreglo -- se retoma en Debian 13
+(LXQt).**
+
+El "cuarto bug" del párrafo anterior resultó ser una lectura
+equivocada. Con foco confirmado correcto en `pane`
+(`[pre-type] hwndFocus=... (== pane)=1`), se trazó `FIsKeyMessage`
+(`Opus/wproc.c:2450`) y el `PeekMessage` del loop principal
+(`OpusOriginalWinMain`, `Opus/wproc.c:~556`): **cero** mensajes
+`WM_CHAR`/`WM_KEYDOWN` llegan a ninguno de los dos durante todo
+`--font-typing`, pese a que `send_physical_text` (SendInput real, no
+`PostMessageW`) reporta éxito. Prueba diferencial decisiva: el mismo
+trace, corrido contra `opus_word1_typing_test` (tecleo simple, sin
+ribbon), sí ve cada tecla (`iskeymsg`/`mainloop-msg` para cada
+`WM_KEYDOWN`/`WM_KEYUP`/`WM_CHAR`, valores `tmc` deletreando
+"ORIGINAL"). La app permanece "responsive"
+(`window_is_responsive`/`WM_NULL` responde) durante toda la falla --
+no es un cuelgue real.
+
+**Teorías de foco descartadas, todas verificadas empíricamente, ninguna
+cambió el síntoma un solo bit (`applied=3,48 inserted=20,0` idéntico
+en cada intento):**
+
+- `SetTimer`-reassert de Task 6 Bug 3 (arriba) desactivado
+  temporalmente -- el test simplemente vuelve a fallar el chequeo de
+  foco original (`regained_focus=0`), sin siquiera llegar al tecleo:
+  confirma que ese fix sigue siendo necesario, pero no es la causa de
+  esto.
+- `SetForegroundWindow(GetAncestor(pane, GA_ROOT))` agregado junto al
+  reassert de foco (`opus_sdm_runtime.cpp`, diagnóstico, sigue en el
+  árbol sin commitear) -- `foreground_result=1`, `root` resuelve
+  correctamente a `main_window`. Sin cambio.
+- Cursor real (`SetCursorPos`) movido al centro de `pane` justo antes
+  de teclear -- por si este Xvfb (sin gestor de ventanas) enrutara
+  input real por posición del puntero (`XGetInputFocus` devuelve
+  `PointerRoot` fijo durante todo el test, confirmado con una sonda
+  standalone en C/Xlib). Sin cambio.
+- `make_foreground_and_focus(main_window, pane, thread_id)` (el mismo
+  helper que sí usa con éxito el bloque `caret_mode`, con su
+  `AttachThreadInput` cruzado entre el proceso de test y el hilo de
+  WORD1) llamado explícitamente antes de `send_physical_text`. Sin
+  cambio -- y de paso se confirmó que `caret_mode`/`--caret` no está
+  registrado como ctest (`src/CMakeLists.txt` solo registra 8 modos),
+  así que ese patrón nunca estuvo realmente probado en este entorno,
+  no era la referencia sólida que parecía.
+- `IsWindowEnabled`, `GetActiveWindow`, captura de mouse
+  (`GUITHREADINFO.hwndCapture`) -- todos correctos (`paneEnabled=1
+  mainEnabled=1 active=main_window capture=0`).
+
+**Causa real: `EnumThreadWindows` sobre el hilo de WORD1 en el momento
+`[pre-type]` muestra una ventana visible extra, clase `#32770`
+(diálogo estándar de Windows), título `"Microsoft Word"`, con hijos
+`Static id=65535 text='Low memory: cannot display requested font'` +
+`Button id=1 text='OK'`.** Ese diálogo real -- no ficticio, no un
+efecto de foco -- corre su propio loop de mensajes modal desde que se
+crea; por eso ni `FIsKeyMessage` ni el `PeekMessage` del loop principal
+ven un solo mensaje después: el hilo está parado dentro del loop del
+diálogo, no en el de Opus. Explica también por qué la app sigue
+"responsive" (el loop del diálogo también atiende `WM_NULL`) y por qué
+ningún arreglo de foco cambió nada -- el foco nunca fue el problema.
+
+Rastreado hasta el origen exacto (2 puntos de traza nuevos en
+`Opus/LOADFONT.C`, autorizados como continuación de esta misma
+investigación):
+
+```
+idle.c:503   LoadFont(&selCur.chp, fFalse)   /* "preload new font in
+                                                 Idle, avoid delay
+                                                 when typing commences" */
+  -> C_LoadFcid -> FGraphicsFcidToPlf:
+       lf.lfHeight = NMultDiv(fcid.hps * (czaPoint/2), vfli.dysInch, czaInch)
+       trace: fcid.hps=0  vfli.dysInch=96 (DPI normal, no es la causa)
+       lf.lfHeight=0
+  -> CreateFontIndirect(&lf) devuelve NULL (GetLastError=5,
+     ERROR_ACCESS_DENIED)
+  -> SetErrorMat(matFont)  (LOADFONT.C:330, camino LSystemFontErr)
+  -> idle.c / ReportPendingAlerts(): case matFont ->
+     ErrorEid(eidCantRealizeFont, ...) -> el MessageBox real de arriba
+```
+
+`selCur.chp.hps` **debería** ser 48 (24pt, la talla recién elegida en
+el ribbon -- confirmado por separado con
+`SendMessageW(pane, kWmOpusX64QuerySelection, 50, 0)` justo antes de
+teclear) pero en el momento en que corre el preload de `idle.c:503`
+lee `0`. **No cerrado -- pendiente identificar la carrera exacta.**
+`vrf.fPreloadSelFont` se marca `fTrue` en dos sitios
+(`Opus/cmdcore.c:510`, `Opus/dlglook1.c:781`) y se consume una sola vez
+por tick de idle (`Opus/idle.c:488-505`, usa `selCur.chp` tal cual,
+sin resolver `hps==0` a un valor real primero). Candidato más probable
+sin confirmar: el preload dispara y consume la marca justo después de
+elegir la FUENTE (ribbon combo 1), con `selCur.chp.hps` todavía en su
+valor original de documento (0, ver `initial_hps=0` en el trace de
+arriba) -- antes de que la selección de TALLA (ribbon combo 2) llegue
+a escribir 48 ahí. Verificar: en qué tick exacto de idle corre esto
+respecto a los dos `combo-select` del trace de ribbon, y si `hps==0`
+es en sí un estado legítimo (placeholder "heredar de estilo") que
+otros caminos resuelven antes de tocar GDI y este no.
+
+**Diagnóstico dejado en el árbol, sin commitear** (continuidad para la
+sesión en Debian 13/LXQt -- todo bajo `#ifdef OPUS_X64`, guardado,
+no afecta MSVC):
+
+- `Opus/LOADFONT.C` -- traza `lfheight-calc` (entrada a
+  `FGraphicsFcidToPlf`, imprime `fcid.hps`/`vfli.dysInch`/
+  `lf.lfHeight`), `matfont-set` (fallo de `CreateFontIndirect`),
+  `screenfail` (fallo de `OurSelectObject` en el DC de pantalla --
+  no se disparó esta sesión, el fallo real fue siempre
+  `CreateFontIndirect`).
+- `Opus/wproc.c` -- traza en `FIsKeyMessage` (entrada,
+  `WM_CHAR`/`WM_KEYDOWN`) y en el `PeekMessage` del loop principal de
+  `OpusOriginalWinMain` (mismo filtro).
+- `Opus/iconbar3.c` -- traza de entrada/salida de `IBDlgLoop()`
+  (descartó la hipótesis de que el loop se quedaba atascado ahí).
+- `Opus/rulerdrw.c` -- traza alrededor de `FGetCharState` en
+  `UpdateRibbon` (descartó que ahí se corrompiera `selCur.chp`).
+- `Opus/wordtech/insert.c` -- traza en `InsertLoopCh` justo después de
+  `GetSelCurChp` (cero hits durante `--font-typing`, confirmando que
+  esa rutina nunca corre -- consistente con el diálogo bloqueante).
+- `src/port/original/opus_sdm_runtime.cpp` -- `SetForegroundWindow`
+  especulativo junto al reassert de foco de Task 6 (no ayudó, inerte,
+  se puede revertir cuando se retome).
+- `src/port/original/opus_word1_ui_test.cpp` -- diagnóstico
+  `[pre-type]` (foco/enabled/active/capture), `[enum-window]`/
+  `[dialog-child]` (el que encontró el diálogo real), llamada a
+  `make_foreground_and_focus` antes de teclear (no ayudó, inerte).
+
+Nada de esto se commiteó esta sesión -- queda como `M` en
+`git status` en `src/Opus/{LOADFONT.C,iconbar3.c,rulerdrw.c,wproc.c,
+wordtech/insert.c}` y `src/port/original/{opus_sdm_runtime.cpp,
+opus_word1_ui_test.cpp}`. `git status` también muestra `M` en
+`Opus/{ddeclnt.c,etcmd.c,filecvt.c,raremsg.c,spelcore.c}` -- eso es
+contenido de una migración `OpusMem*` de otra sesión en paralelo (mas
+un fix mío de "takeover" sobre una etiqueta `LError` colgante en
+`etcmd.c`/`spelcore.c` que dejaba esos dos archivos sin compilar); no
+tocar esos cinco al continuar salvo que sea la misma sesión que los
+dejó así.
+
+**Próximo paso concreto al retomar:** trazar el orden exacto entre
+(a) el momento en que `Opus/dlglook1.c:781`/`Opus/cmdcore.c:510` ponen
+`vrf.fPreloadSelFont = fTrue` tras cada selección de ribbon, y (b) el
+tick de idle que lo consume en `Opus/idle.c:503` -- lo más probable es
+que el preload dispare tras la selección de FUENTE, antes de que la de
+TALLA llegue a escribir `selCur.chp.hps`, y que el arreglo real sea
+usar un hps ya resuelto (o posponer el preload hasta que ambas
+selecciones se hayan aplicado) en vez de tocar `Opus/idle.c` a ciegas.
+Una vez cerrado esto, falta además verificar que el nombre visible del
+diálogo `"Low memory: cannot display requested font"` no es en sí un
+mensaje legítimo de Word 1.1a bajo otras circunstancias (`eidCantRealizeFont`,
+`Opus/wordtech/error.c:933`) -- aquí es un falso positivo de una
+llamada de precarga con datos a medio actualizar, no una condición
+real de memoria.
+
 ## 9. `--clipboard`: "Ctrl+A did not execute Select All" -- confirmado, verify-only, cierra Task 7
 
 **Task 7, 2026-08-19 en exia.** El plan (Step 1) pedía correr
@@ -1157,9 +1312,13 @@ sesión (2026-08-19, exia):
 4. `--font-typing` -- **parcial**: 3 de 4 bugs arreglados (nombres de
    fuente, `union FCID` LP64, foco tras selección de ribbon -- este
    último arreglado 2026-08-20 en `opus_sdm_runtime.cpp`, no en
-   `Opus/iconbar1.c`, ver actualización en §8); el test ahora avanza a
-   un cuarto bug distinto, texto nuevo no conserva la fuente del
-   ribbon, sin investigar (Task 6, §8)
+   `Opus/iconbar1.c`, ver actualización en §8); el cuarto bug tenía
+   diagnóstico engañoso ("no conserva la fuente" -- en realidad el
+   tecleo nunca llega a Opus): causa raíz real localizada
+   (`idle.c:503` precarga con `selCur.chp.hps==0`, `CreateFontIndirect`
+   falla, aparece un diálogo real de error que se traga el teclado),
+   sin arreglar -- se retoma en Debian 13/LXQt (Task 6, §8, "Tercera
+   actualización")
 5. `--clipboard` (Ctrl+A) -- **arreglado**, mismo root cause que #1
    (Task 7, §9)
 6. `--selection` -- **arreglado**, 3 bugs de arnés encadenados (Task
