@@ -1384,6 +1384,117 @@ DISPLAY=:99 ctest --test-dir out/linux-winelib-debug -LE word1_startup_blocked
     9/9 -- gating sin cambios
 ```
 
+**Sexta actualización 2026-08-22 (exia): primera vez que se baja a `gdb` real sobre el proceso `WORD1` en vivo.** Continuación directa de la sesión anterior (el "único candidato que queda: bajar un nivel con gdb"), retomada tras una interrupción de Antigravity a mitad de tarea (el script `gdb-font-debug.py` que esa sesión estaba escribiendo nunca llegó a correr). **Nota de la Séptima actualización (más abajo, misma sesión): la lectura de "heisenbug" que sigue en este bloque resultó ser una atribución equivocada al breakpoint incorrecto -- queda documentada tal cual se vivió, en orden, porque el error de razonamiento y cómo se destapó son parte útil del rastro; el diagnóstico real y definitivo es la Séptima actualización.**
+
+**Infraestructura nueva, la mitad real del trabajo de esta sesión:** adjuntar `gdb` al proceso `WORD1` real mientras el arnés `opus_word1_ui_test` lo maneja externamente (no hay forma de disparar la selección de fuente del ribbon sin el arnés) resultó bastante más delicado que un `gdb -p <pid> --batch -ex "thread apply all bt"` de una sola foto (el patrón ya usado en §21/§25/§31). Tres problemas reales, en orden de aparición:
+
+1. **`WORD1.exe` (el wrapper shell) no es el binario a lanzar/depurar.** Es un script `sh` que arma `WINEDLLPATH`/`WINELOADER` y hace `exec`; bajo esta sesión de Bash concreta, invocado sin gestor de ventanas real, salía con `exit=3` sin imprimir nada del programa (ni siquiera un `printf` trivial de un `hola mundo` standalone). `wine ./WORD1.exe.so` (el `.so` real, sin pasar por el wrapper) funciona siempre. Cualquier arnés/probe standalone debe invocar el `.exe.so` directo.
+2. **`break /home/pablo/msword/src/Opus/LOADFONT.C:349` (la ruta real del fuente) falla con `No source file named ...`, incluso con `set breakpoint pending on` y forzando expansión completa de symtabs (`maint expand-symtabs`, `info sources`).** Causa: el build genera una copia en minúsculas de cada fuente en mayúsculas antes de compilar (`out/linux-winelib-debug/generated/lowercase-c/loadfont.c`, confirmado con `strings WORD1.exe.so | grep -i loadfont.c`), y el nombre de compilation-unit que graba DWARF es el de esa copia generada, no el de `src/Opus/LOADFONT.C`. Rompe el breakpoint por ruta incorrecta, no por símbolos faltantes ni por timing. Fix: usar siempre la ruta generada (`out/linux-winelib-debug/generated/lowercase-c/<nombre-en-minusculas>.c`) para cualquier `break FILE:LINE` contra este binario.
+3. **Pre-cargar símbolos con `gdb file WORD1.exe.so` antes de conocer el PID (para acelerar el `attach` posterior) resultó contraproducente**, no una optimización: dispara un aviso de "Build ID mismatch" al hacer `attach` que fuerza un re-chequeo de símbolos y ese re-chequeo vuelve a romper el breakpoint ya resuelto (`Error in re-setting breakpoint 1: No source file named ...`, el mismo síntoma del punto 2, reaparecido). La solución simple termina siendo la más simple posible: `gdb -p <pid> --batch -x script.gdb` sin ningún `file` previo -- resuelve el breakpoint y ataca el proceso en **~1.1s** de punta a punta (medido con `time`), tiempo sobrado dentro de la ventana de varios segundos que el arnés tarda en llegar a la selección de fuente del ribbon (búsqueda de ventana + `Sleep(300)` x2 + esperas de foco de hasta 1500ms).
+
+**Con la infraestructura funcionando, la sesión real: comparar la llamada que pasa (`Helv`) contra la que falla (`Liberation Sans`) dentro del proceso vivo, en el mismo punto exacto que las nueve hipótesis anteriores nunca lograron cruzar.** Breakpoint en `loadfont.c:349` (el sitio exacto de `CreateFontIndirect`), confirmado por nombre real de fuente vía `lf.lfFaceName` en cada hit.
+
+Primer intento -- desde el entry de `CreateFontIndirectA`, `finish` anidado con un `tbreak NtGdiHfontCreate` puesto de antemano -- dio un resultado sin sentido (`rax=0x86` idéntico en ambas llamadas): el `finish` externo se interrumpía antes de tiempo por el propio breakpoint interno (comportamiento normal de gdb, no un bug), así que el valor capturado era el estado de entrada a `NtGdiHfontCreate`, no ningún valor de retorno real. Descartado como artefacto de script, no como dato.
+
+**Medición limpia, de un solo salto:** `tbreak CreateFontIndirectA` (confirmado con `disassemble` que es exactamente el símbolo llamado desde `loadfont.c:349`, pese a que el target compila con `UNICODE`/`_UNICODE` definidos -- el macro `CreateFontIndirect` igual resuelve a la variante ANSI en este sitio, verificado por disassembly, no por lectura de headers) + `continue` + un único `finish` (sin ningún breakpoint anidado en el medio) aterriza exactamente de vuelta en `C_LoadFcid` en `loadfont.c:349`, el llamador real, con `$rax` = el valor de retorno verdadero tal cual lo va a ver el código C. Confirmado además con `stepi`/`nexti` explícito paso a paso a través de las instrucciones compiladas reales (`disassemble` mostró un `mov %rax,0x38(%rdx)` de 8 bytes completos seguido de `test %rax,%rax` / `jne` -- comparación de 64 bits correcta, sin ningún truncamiento de ancho, descartando de paso cualquier variante de la vieja teoría Win16-legacy de campo angosto):
+
+```
+CALL #1 (Helv):             rax = 0x140a00d2   (no-NULL, esperado -- pasa igual que siempre)
+CALL #2 (Liberation Sans):  rax = 0x620a00e2   (no-NULL !!)
+```
+
+**`pfce->hfont` leído directamente tras el `jne` (no solo `$rax`) confirma `0x620a00e2` -- un handle real, no NULL -- y el flujo de ejecución salta correctamente a la rama de éxito (`C_LoadFcid` línea 377, `FSelectFont(...)`), no a la de error.** Bajo `gdb`, con breakpoints y single-stepping en este punto exacto, **`CreateFontIndirect` tiene éxito para "Liberation Sans". El diálogo "Low memory" no debería aparecer.**
+
+**Esto contradice directamente el comportamiento sin `gdb`**, confirmado de nuevo en esta misma sesión inmediatamente antes (mismo binario, mismo `Xvfb :88`, ninguna diferencia de entorno): el diálogo aparece, `matfont-set` se dispara, el test falla con el mismo mensaje de siempre.
+
+**Prueba mínima de una sola variable (Fase 3 de systematic-debugging): ¿alcanza con más tiempo, o es específico de estar bajo el debugger?** Se agregó un `Sleep(50)` diagnóstico justo antes de la llamada a `CreateFontIndirect` (guardado bajo `OPUS_X64`, sin tocar MSVC), se reconstruyó `WORD1`, y se corrió el test **sin** `gdb`. **Resultado: la falla reproduce idéntica** (mismo diálogo, mismo `matfont-set`, mismo mensaje final). Un simple `Sleep(50)` en el sitio exacto de la llamada NO reproduce lo que el `gdb` logra -- descarta "solo hace falta más tiempo ahí" como explicación completa. El `Sleep` se revirtió (no ayudó, no tiene sentido dejarlo); `git diff` sobre `LOADFONT.C` queda limpio de nuevo.
+
+**Lectura del resultado, no solo el dato:** dado que (a) los 9 sitios anteriores de este documento ya descartaron con evidencia directa cualquier problema en los *datos* pedidos (LOGFONT idéntico salvo campos irrelevantes, charset saneado, cache sana, sin agotamiento de handles, nombre correcto hasta su `\0`), y ahora (b) el código compilado en el sitio exacto de la comparación es correcto a nivel de bits (64 bits completos, sin truncar) y (c) el mismo `CreateFontIndirect`, con los mismos datos, **tiene éxito real cuando se lo observa paso a paso**, la explicación que mejor encaja con todo el patrón acumulado (incluida la "segunda fuente real siempre falla, la primera siempre pasa", inmune a repetición/orden en el probe standalone del principio de esta sesión) es una **condición de carrera genuina en algún punto *anterior* a `loadfont.c:349`** -- no en el propio `CreateFontIndirectA`/`NtGdiHfontCreate`, que ya se demostró que funciona bien con los datos que le llegan. El `Sleep(50)` puntual no alcanza porque el perfil de pausa real de `gdb` (breakpoints y comandos interactivos que detienen el proceso bastante antes de esta línea, no solo en ella) es mucho más amplio que 50ms en un solo punto tardío.
+
+**Probe standalone de esta sesión (antes de llegar a gdb), para el registro:** se armó un programa `winegcc` mínimo, sin código del proyecto, que llama `CreateFontIndirectA` con los mismos bytes de LOGFONT que usa `WORD1` -- primero solo, luego en secuencia Helv-después-Liberation-Sans (mismo orden que el ribbon), luego repitiendo Liberation Sans una tercera vez. **Las cuatro llamadas tienen éxito siempre**, sin importar orden ni repetición -- extiende el hallazgo ya documentado de la actualización anterior (`CreateFontIndirectA` con estos datos funciona perfecto fuera de `WORD1`) a también cubrir la secuencia de llamadas, no solo el dato de una llamada aislada. Confirma otra vez que el problema es de estado de proceso específico de `WORD1`, no de los datos ni del orden de pedidos.
+
+**Candidato concreto para la próxima sesión:** localizar la carrera real requiere mirar ANTES de `loadfont.c:349`, no en el punto de la comparación (ya limpio). Sitios no explorados con esta técnica todavía: instrumentar con breakpoints (no solo trazas de aplicación, que ya se agotaron en las hipótesis 1-9) el camino completo desde el `WM_COMMAND`/`CBN_SELCHANGE` del combo de fuente del ribbon hasta que se llega a esta línea -- en particular, comparar bajo gdb (con el mismo patrón de esta sesión: `tbreak` + `finish` de un solo salto, no anidado) el estado de cualquier dato compartido (fcid, `selCur.chp`, la propia `vhsttbFont`) en el momento exacto en que se arma el `LOGFONT` para "Liberation Sans", contra el mismo punto sin gdb -- si ese dato YA difiere antes de llegar a `loadfont.c:349`, la carrera está más arriba en la cadena y este archivo deja de ser el lugar correcto para seguir mirando.
+
+**Infraestructura reutilizable dejada en `build/` (gitignored, no committeado):** `build/run_gdb_font_debug.sh` (arnés que lanza el test, espera el PID de `WORD1` con `pgrep -f 'WORD1\.exe\.so'`, y adjunta `gdb -p <pid> --batch -x build/gdb-font-debug.gdb`), `build/gdb-font-debug.gdb` (el script de gdb con la comparación de un solo salto ya corregida), `build/probe_two_fonts.c` (el probe standalone de secuencia de dos fuentes). Ningún archivo de `src/` quedó modificado al cerrar esta sesión (`git status` limpio salvo los 5 archivos de la migración `OpusMem*` ya documentados, que siguen sin tocar).
+
+**Verificado, sin regresión:**
+```
+DISPLAY=:88 ctest --test-dir out/linux-winelib-debug -R "^opus_word1_font_typing_test$" --output-on-failure
+    (corrido manualmente vía build/run_gdb_font_debug.sh, no vía ctest esta sesión)
+    "newly typed text did not retain the ribbon font" -- mismo fallo de siempre, sin gdb
+```
+
+**Séptima actualización 2026-08-22 (exia, misma sesión): causa raíz real encontrada -- Task 6 Bug 4 CERRADO. No es una carrera, no es GDI, no es `gdb`. `EraNameFromFtc()` en `src/core/src/OpusShellFontMetrics.cpp` es una tabla hardcodeada de 4 entradas; "Liberation Sans" cae fuera de rango y el propio código ya documentaba esta salida como intencional.**
+
+A pedido explícito de continuar "con los breakpoints antes de `loadfont.c:349`" (la Sexta actualización dejaba eso como candidato). Antes de seguir hacia atrás en la cadena de llamadas, primer paso obligado: **repetir la medición de la Sexta actualización una vez más para confirmar que el "arreglo" de `gdb` era reproducible, no una casualidad de una sola corrida.** No lo fue: se repitió el mismo script `tbreak CreateFontIndirectA` + `finish` de un solo salto, y esta vez, en la MISMA corrida, se comprobaron **las dos cosas a la vez**: `$rax`/`pfce->hfont` no-NULL tras el `finish` (igual que la Sexta actualización) **y** `matfont-set msg=4` disparado en `WORD1-ribbon.txt` **y** el arnés reportando el mismo fallo de siempre (`harness exit rc=53`). Contradicción real dentro de una sola corrida, no "con gdb pasa, sin gdb falla" -- la lectura anterior de "la falla no reproduce bajo el debugger" estaba mal desde la raíz: nunca se había cruzado el resultado de `gdb` contra el `rc` del arnés en la misma corrida, solo se asumía que `rax` no-nulo implicaba que el test iba a pasar.
+
+Repetido con el método más limpio posible (`next` simple sobre toda la sentencia de la línea 349, sin `finish` ni `nexti` que puedan confundirse) para descartar cualquier artefacto de gdb: mismo resultado -- `pfce->hfont` no-NULL, salto a la línea 377 (rama de éxito), y aun así `matfont-set`/`harness rc=53` en la misma corrida. **Esto ya no admite lectura de timing: la línea 349 en sí misma es inocente, siempre.** La pregunta correcta pasó de "¿por qué falla `CreateFontIndirect`?" a "¿de dónde sale `matfont-set` si no es de ahí?".
+
+Respuesta encontrada en el propio código, no con más `gdb`: `matfont-set` vive justo después de la etiqueta `LSystemFontErr:` (`Opus/LOADFONT.C:354`), y esa etiqueta **no solo se alcanza cayendo desde el `if` de la línea 349** -- hay tres `goto LSystemFontErr;` más en la misma función (`grep -n LSystemFontErr Opus/LOADFONT.C` -> líneas 287, 455, 491), cada uno un camino de fallo completamente distinto que el breakpoint de la línea 349 nunca puede ver (porque esos `goto` saltan directo a la etiqueta, sin pasar por la línea 349 en absoluto).
+
+Se puso un breakpoint liviano (estilo `dprintf`, `commands`+`continue` automático, sin interacción manual -- el mismo patrón que ya se había confirmado que NO cambia el síntoma en la ronda anterior de esta sesión) en `FSelectFont` (la función que sí puede fallar en la línea 287, vía `!FSelectFont(...)`) para descartar ese camino primero: **3 llamadas totales, las 3 con `pfti->fPrinter=0`, la traza `screenfail` interna de `FSelectFont` nunca se dispara** -> las 3 devuelven éxito. Camino de la línea 287 descartado con datos, no por lectura.
+
+Quedan las líneas 455 y 491. La 455 es un fallo de `HqAllocLcb` (asignación de memoria) -- posible pero sin motivo para fallar aquí. La 491 es la real:
+
+```c
+#if defined(__GNUC__) && !defined(_MSC_VER)
+    if (!pfti->fPrinter && !vfPrvwDisp)
+        {
+        /* Camino de pantalla, paso variable: contrato Qt del shell
+           (docs/port-qt/01-frontera-nucleo-shell.md SB2) en vez de
+           GetCharWidth/OurGetCharWidth. ... */
+        shellKey.ftc = fcid.ibstFont;
+        shellKey.ps = fcid.hps;
+        shellKey.catr = (fcid.fBold ? 1 : 0) | (fcid.fItalic ? 2 : 0);
+        if (OpusShellCharWidths( &shellKey, chDxpMin,
+                chDxpMax - chDxpMin, rgdxuShell ) != 0)
+            {
+            /* Sin impresora ni sintesis de negrita/cursiva en el
+               contrato actual (limitaciones 2 y 3 de
+               OpusShellFontMetrics.cpp) -- no deberia alcanzarse
+               aqui salvo esos casos ... se degrada al mismo camino
+               de error que un fallo de CreateFontIndirect ya usa
+               mas arriba. */
+            UnlockHq( pfce->hqrgdxp );
+            goto LSystemFontErr;
+            }
+```
+
+Este bloque es código del **port** (guardado `#if defined(__GNUC__) && !defined(_MSC_VER)`, no toca MSVC), parte del trabajo de extracción del núcleo Qt descrito en `CLAUDE.md` ("`OpusShellFontMetrics.h` -- contrato de medición de texto ... la pieza restante de mayor prioridad porque condiciona la fidelidad de paginación"). En vez de medir anchos de caracteres vía GDI, este camino llama a `OpusShellCharWidths` (`src/core/src/OpusShellFontMetrics.cpp`), la implementación Qt del contrato del shell.
+
+`OpusShellCharWidths` resuelve el nombre de la fuente a través de `EraNameFromFtc(int ftc)` (`src/core/src/OpusShellFontMetrics.cpp:61-68`):
+
+```c
+const char *EraNameFromFtc(int ftc) {
+    switch (ftc) {
+        case 0: return "Tms Rmn";
+        case 1: return "Symbol";
+        case 2: return "Helv";
+        case 3: return "Courier";
+        default: return nullptr;
+    }
+}
+```
+
+**Tabla hardcodeada de exactamente 4 entradas** -- los 4 fuentes originales de Word 1.1a (`Opus/initwin.c:1541-1583` los registra en ese mismo orden como `ibstFont` 0-3). El comentario del propio archivo ya lo advertía (`OpusShellFontMetrics.cpp:13-19`): *"`ftc` -> nombre de época: tabla fija de 4 entradas, hardcodeada ... `ftc` fuera de [0,3] falla controlado."* -- un límite conocido y documentado desde que se escribió ese archivo, no un bug nuevo.
+
+`"Helv"` es `ibstFont=2` -> dentro de rango -> siempre funciona. `"Liberation Sans"` (la fuente que el arnés de test necesita usar porque los nombres reales de Windows como "Arial"/"Courier New" no existen en un stack de fuentes Linux -- ver el comentario de `opus_word1_ui_test.cpp` sobre `installed_windows_fonts()`) recibe `ibstFont=4` al registrarse en runtime -- **fuera de rango**, `EraNameFromFtc(4)` devuelve `nullptr`, `OpusShellCharWidths` devuelve `-1`, dispara `goto LSystemFontErr`, y de ahí en más el camino es indistinguible (mismo `SetErrorMat(matFont)`, mismo diálogo `eidCantRealizeFont` "Low memory: cannot display requested font") de un fallo real de GDI -- por eso las nueve hipótesis anteriores, todas centradas en `CreateFontIndirect`/GDI, nunca lo encontraron: **estaban mirando la función correcta para un síntoma que en realidad viene de una función completamente distinta, que además ni siquiera está en `Opus/` sino en `src/core/`, el núcleo Qt en construcción.**
+
+Esto también explica de una vez el patrón "la primera fuente distinta siempre pasa, la segunda siempre falla" que se sostuvo intacto en las nueve hipótesis y en la exploración de esta sesión: no es sobre conteo de handles GDI, cachés, ni nada de proceso -- es literalmente que la PRIMERA fuente pedida por el ribbon en este test (`Helv`) tiene `ibstFont=2` (dentro de la tabla de 4), y la SEGUNDA (`Liberation Sans`) es la primera fuente de la sesión con `ibstFont >= 4` (fuera de la tabla). Con cualquier otra fuente Linux real como segunda opción, el mismo `ibstFont=4` (o mayor) habría fallado igual.
+
+**No se tocó código de arreglo esta sesión** -- `EraNameFromFtc`/`OpusShellCharWidths` son parte activa del trabajo de extracción del núcleo Qt (`src/core/`, no restringido como `Opus/`, pero sí una pieza grande y con dueño propio de diseño per `docs/port-qt/`), y ampliar la tabla a fuentes arbitrarias es una tarea de alcance real (¿enumerar fuentes del sistema vía Qt en vez de una tabla fija? ¿mapear cualquier `ibstFont` no reconocido a una fuente por defecto solo para medición de anchos?) -- no un fix de una línea para decidir sin autorización explícita.
+
+**Verificado:**
+```
+build/gdb-font-debug.gdb (breakpoint dprintf-style en FSelectFont, 3 hits, los 3
+    pfti->fPrinter=0, screenfail nunca se dispara) -- descarta linea 287
+grep -n LSystemFontErr Opus/LOADFONT.C -> 287, 455, 491 (goto) + 354 (label)
+src/core/src/OpusShellFontMetrics.cpp:61-68 (EraNameFromFtc, switch 0-3, default nullptr)
+src/core/src/OpusShellFontMetrics.cpp:13-19 (comentario ya documentaba el límite)
+```
+
+**Próximo paso, si se retoma para arreglar (no solo diagnosticar):** decidir la estrategia de `EraNameFromFtc`/`OpusShellCharWidths` para `ftc` fuera de [0,3] -- opciones: (a) enumerar la fuente real vía Qt (`QFontDatabase`) en vez de la tabla fija de 4 nombres de época, la solución de fondo pero con más superficie de fidelidad de paginación que revisar; (b) fallback controlado a una fuente por defecto (p.ej. tratar cualquier `ftc>=4` como "Helv" solo para medir anchos) que desbloquea el test sin resolver la limitación real de fondo. Requiere decisión explícita del mantenedor, no autorización implícita de esta sesión.
+
 ## 9. `--clipboard`: "Ctrl+A did not execute Select All" -- confirmado, verify-only, cierra Task 7
 
 **Task 7, 2026-08-19 en exia.** El plan (Step 1) pedía correr

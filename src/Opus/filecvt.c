@@ -979,6 +979,37 @@ HANDLE ghIniName, ghIniExt;
 
 
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* H  O U R  O P U S  M E M  A L L O C */
+/* Qt-2 B3: sustituto de OurGlobalAlloc (res.c) para los handles de este
+   archivo ya migrados a OpusShellMemory -- mismo patron que
+   HOurOpusMemAlloc (raremsg.c/help.c): llamar a OpusMemAlloc pelado
+   perderia dos comportamientos propios de OurGlobalAlloc (res.c:1833):
+   el rechazo de bloques mayores de 64K (res.c:1843) y SetErrorMat(matMem)
+   cuando la asignacion falla (res.c:1871, dentro de GlobalAlloc2),
+   incluido el reintento con el area de swap reducida. */
+static HANDLE HOurOpusMemAlloc(unsigned long dwBytes, unsigned flags)
+{
+	HANDLE h;
+
+	if (dwBytes > 0x00010000L)
+		{
+		SetErrorMat(matMem);
+		return NULL;
+		}
+
+	if ((h = (HANDLE)OpusMemAlloc(dwBytes, flags)) == NULL)
+		{
+		ShrinkSwapArea();
+		if ((h = (HANDLE)OpusMemAlloc(dwBytes, flags)) == NULL)
+			SetErrorMat(matMem);
+		GrowSwapArea();
+		}
+	return h;
+}
+#endif
+
+
 /* F  A D D  S T R I N G S  F O R  C O N V T R */
 /* %%Function:FAddStringsForConvtr %%Owner:peterj */
 FAddStringsForConvtr(rgch)
@@ -999,13 +1030,22 @@ CHAR *rgch;  /* pass in an st, immediately converted to sz */
 	if (!FLoadConvtrLib(rgch))
 		return fFalse;
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	ghIniName = HOurOpusMemAlloc(1L, OpusMemFlagsFromWin16(gmemLibShare));
+	ghIniExt = HOurOpusMemAlloc(1L, OpusMemFlagsFromWin16(gmemLibShare));
+#else
 	ghIniName = OurGlobalAlloc(gmemLibShare, 1L);
 	ghIniExt = OurGlobalAlloc(gmemLibShare, 1L);
+#endif
 
 	if (ghIniName == NULL || ghIniExt == NULL)
 		goto LRet;
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	lpch = (char far *)OpusMemLock((OpusHandle)ghIniName);
+#else
 	lpch = GlobalLockClip(ghIniName);
+#endif
 	*lpch = 0;
 #if defined(__GNUC__) && !defined(_MSC_VER)
 	OpusMemUnlock((OpusHandle)ghIniName);
@@ -1013,7 +1053,11 @@ CHAR *rgch;  /* pass in an st, immediately converted to sz */
 	GlobalUnlock(ghIniName);
 #endif
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	lpch = (char far *)OpusMemLock((OpusHandle)ghIniExt);
+#else
 	lpch = GlobalLockClip(ghIniExt);
+#endif
 	*lpch = 0;
 #if defined(__GNUC__) && !defined(_MSC_VER)
 	OpusMemUnlock((OpusHandle)ghIniExt);
@@ -1023,8 +1067,13 @@ CHAR *rgch;  /* pass in an st, immediately converted to sz */
 
 	CallGetIniEntry(ghIniName, ghIniExt);
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	lpchName = (char far *)OpusMemLock((OpusHandle)ghIniName);
+	lpchExt = (char far *)OpusMemLock((OpusHandle)ghIniExt);
+#else
 	lpchName = GlobalLockClip(ghIniName);
 	lpchExt = GlobalLockClip(ghIniExt);
+#endif
 
 	for (;;)
 		{
