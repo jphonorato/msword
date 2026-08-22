@@ -194,8 +194,13 @@ CHAR *szArg;
 	if (vsab.fOwnClipboard || !OpenClipboard (vhwndApp))
 		return fFalse;
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if ((hData = GetClipboardData (cfLink)) == NULL ||
+			(lpch = (CHAR FAR *)OpusMemLock ((OpusHandle)hData)) == NULL)
+#else
 	if ((hData = GetClipboardData (cfLink)) == NULL ||
 			(lpch = GlobalLockClip (hData)) == NULL)
+#endif
 		{
 		CloseClipboard();
 		return fFalse;
@@ -813,6 +818,22 @@ int wLow, wHigh;
 						dcl, message, 0);
 				goto LDataNack;
 				}
+#if defined(__GNUC__) && !defined(_MSC_VER)
+			if ((lpdms = (struct DMS FAR *)OpusMemLock ((OpusHandle)wLow)) == NULL)
+				{
+				/* incoming data--could easily not be lockable */
+				ShrinkSwapArea();
+				lpdms = (struct DMS FAR *)OpusMemLock ((OpusHandle)wLow);
+				GrowSwapArea();
+				if (lpdms == NULL)
+					/* still can't lock it */
+					{
+					ReportDdeError ("Cannot lock handle, dropping message",
+							dcl, message, 0);
+					return fTrue;  /* drop the message */
+					}
+				}
+#else
 			if ((lpdms = GlobalLockClip (wLow)) == NULL)
 				{
 				/* incoming data--could easily not be lockable */
@@ -827,6 +848,7 @@ int wLow, wHigh;
 					return fTrue;  /* drop the message */
 					}
 				}
+#endif
 			dms = *lpdms;
 #if defined(__GNUC__) && !defined(_MSC_VER)
 			OpusMemUnlock ((OpusHandle)wLow);
@@ -1524,6 +1546,37 @@ LStopWaiting:
 }
 
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* H  O U R  O P U S  M E M  A L L O C */
+/* Qt-2 B3: sustituto de OurGlobalAlloc (res.c) para el handle de este
+   archivo ya migrado a OpusShellMemory -- mismo patron que
+   HOurOpusMemAlloc (raremsg.c/help.c): llamar a OpusMemAlloc pelado
+   perderia dos comportamientos propios de OurGlobalAlloc (res.c:1833):
+   el rechazo de bloques mayores de 64K (res.c:1843) y SetErrorMat(matMem)
+   cuando la asignacion falla (res.c:1871, dentro de GlobalAlloc2),
+   incluido el reintento con el area de swap reducida. */
+static HANDLE HOurOpusMemAlloc(unsigned long dwBytes, unsigned flags)
+{
+	HANDLE h;
+
+	if (dwBytes > 0x00010000L)
+		{
+		SetErrorMat(matMem);
+		return NULL;
+		}
+
+	if ((h = (HANDLE)OpusMemAlloc(dwBytes, flags)) == NULL)
+		{
+		ShrinkSwapArea();
+		if ((h = (HANDLE)OpusMemAlloc(dwBytes, flags)) == NULL)
+			SetErrorMat(matMem);
+		GrowSwapArea();
+		}
+	return h;
+}
+#endif
+
+
 /* F  P O S T  A D V I S E */
 /*  Post a WM_DDE_ADVISE message for client link iddli.  Adds and deletes
 	atoms.  Allocates data if not already allocated and frees it on failure.
@@ -1564,9 +1617,15 @@ int iddli;
 
 	DdeRpt2(DdeDbgCommInt ("FPostAdvise: cf = ", ddli.cf));
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if ((hData == NULL && (hData = HOurOpusMemAlloc((unsigned long)cbDMS,
+			OpusMemFlagsFromWin16(GMEM_DDE))) == NULL)
+			|| (lpdms = (struct DMS FAR *)OpusMemLock ((OpusHandle)hData)) == NULL)
+#else
 	if ((hData == NULL && (hData = OurGlobalAlloc(GMEM_DDE,
 			(DWORD)cbDMS)) == NULL)
 			|| (lpdms = GlobalLockClip (hData)) == NULL)
+#endif
 		{
 		DdeRpt2(DdeDbgCommSz ("Cannot allocate or lock"));
 		goto LFail;

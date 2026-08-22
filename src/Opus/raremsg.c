@@ -1398,7 +1398,11 @@ LError:
 			break;
 			}
 		}
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if ((lpch = (CHAR FAR *)OpusMemLock((OpusHandle)hdata)) == NULL)
+#else
 	if ((lpch = GlobalLockClip(hdata)) == NULL)
+#endif
 		goto LError;
 	for (ich = pfedt->ichMicSel; ich < pfedt->ichMacSel; ich++)
 		{
@@ -1476,8 +1480,13 @@ FEDT ***phfedt;
 	hdata = GetClipboardData(CF_TEXT);
 	/* BUG!! - it would be nice if we allowed LFs in chart alpha
 		pasting */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if ((hdata2 = HFedtStripText(hfedt, hdata)) == NULL
+			|| (lpch = (CHAR FAR *)OpusMemLock((OpusHandle)hdata2)) == NULL)
+#else
 	if ((hdata2 = HFedtStripText(hfedt, hdata)) == NULL
 			|| (lpch = GlobalLockClip(hdata2)) == NULL)
+#endif
 		{
 		CloseClipboard();
 		return(FALSE);

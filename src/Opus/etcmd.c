@@ -1125,6 +1125,42 @@ Exit:
 
 
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* H  O U R  O P U S  M E M  R E A L L O C */
+/* Qt-2 B3: sustituto de OurGlobalReAlloc (res.c) para los handles de este
+   archivo ya migrados a OpusShellMemory -- mismo patron que
+   HOurOpusMemAlloc (raremsg.c/help.c): llamar a OpusMemRealloc pelado
+   perderia dos comportamientos propios de OurGlobalReAlloc (res.c:1883)
+   que el codigo de mas abajo ya replicaba en linea antes de este helper:
+   el rechazo de bloques mayores de 64K (res.c:1894) y el reintento con
+   el area de swap reducida (res.c:1900-1906) cuando el primer intento
+   falla -- ese reintento se habia quedado sin reproducir en los sitios
+   de realloc migrados de este archivo. Devuelve el mismo handle h en
+   exito (igual que OpusMemRealloc/GlobalReAlloc bajo GMEM_MOVEABLE) o
+   NULL en fallo; el llamador no debe reasignar su handle a partir del
+   valor de retorno, tal como no lo hacia con OurGlobalReAlloc. */
+static HANDLE HOurOpusMemRealloc(HANDLE h, unsigned long dwBytes, unsigned flags)
+{
+	HANDLE hNew;
+
+	if (dwBytes > 0x00010000L)
+		{
+		SetErrorMat(matMem);
+		return NULL;
+		}
+
+	if ((hNew = (HANDLE)OpusMemRealloc((OpusHandle)h, dwBytes, flags)) == NULL)
+		{
+		ShrinkSwapArea();
+		if ((hNew = (HANDLE)OpusMemRealloc((OpusHandle)h, dwBytes, flags)) == NULL)
+			SetErrorMat(matMem);
+		GrowSwapArea();
+		}
+	return hNew;
+}
+#endif
+
+
 /* F  C L E A R  G H D */
 /*   Allocate and null-fill ghd */
 
@@ -1170,19 +1206,32 @@ int cch;
 		}
 	else  if (pghd->ichMax < cch)
 		{
-		if (OurGlobalReAlloc(pghd->ghsz, (long)(uns)cch, GMEM_MOVEABLE) == NULL)
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		if (HOurOpusMemRealloc(pghd->ghsz, (unsigned long)(long)(uns)cch,
+				OPUS_MEM_ESCAPES | OpusMemFlagsFromWin16(GMEM_MOVEABLE)) == NULL)
 			{
-LError:		
 			SetErrorMat( matMem );
 			return fFalse;
 			}
+#else
+		if (OurGlobalReAlloc(pghd->ghsz, (long)(uns)cch, GMEM_MOVEABLE) == NULL)
+			{
+LError:
+			SetErrorMat( matMem );
+			return fFalse;
+			}
+#endif
 LNewSiz:
 		pghd->ichMax = cch;
 		}
 
 	Assert( pghd->ichMax >= cch );
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if ((lpch = (CHAR FAR *)OpusMemLock((OpusHandle)pghd->ghsz)) == NULL)
+#else
 	if ((lpch = GlobalLockClip( pghd->ghsz )) == NULL)
+#endif
 		goto LError;
 
 	SetBytes(lpch, 0, pghd->ichMac = cch);
@@ -1192,6 +1241,17 @@ LNewSiz:
 	GlobalUnlock( pghd->ghsz );
 #endif
 	return fTrue;
+
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	/* Qt-2 B3: shared target for the three GNUC goto LError sites above --
+	   MSVC's #else branch still carries its own inline LError: label (the
+	   realloc failure block a few lines up), reached the same way it always
+	   was; this is the GNUC-only twin, needed because that label lives
+	   inside a preprocessor branch that's compiled out here. */
+LError:
+	SetErrorMat( matMem );
+	return fFalse;
+#endif
 }
 
 
@@ -1207,7 +1267,11 @@ int cch;
 {
 	LPSTR   lp;
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if ((lp = (LPSTR)OpusMemLock((OpusHandle)pghd->ghsz)) == NULL)
+#else
 	if ((lp = GlobalLockClip(pghd->ghsz)) == NULL)
+#endif
 		{
 		SetErrorMat(matMem);
 		return fFalse;
@@ -1277,7 +1341,11 @@ char *sz;
 	Assert( pghd->ichMax >= pghd->ichMac );
 	Assert( pghd->ichMac > 0 );
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if ((lpch = (CHAR FAR *)OpusMemLock((OpusHandle)pghd->ghsz)) == NULL)
+#else
 	if ((lpch = GlobalLockClip( pghd->ghsz )) == NULL)
+#endif
 		{
 		SetErrorMat(matMem);
 		return fFalse;
@@ -1328,19 +1396,32 @@ struct GHD *pghd;
 		}
 	else  if (pghd->ichMax < cch)
 		{
-		if (OurGlobalReAlloc(pghd->ghsz, (DWORD)cch, GMEM_MOVEABLE) == NULL)
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		if (HOurOpusMemRealloc(pghd->ghsz, (unsigned long)cch,
+				OPUS_MEM_ESCAPES | OpusMemFlagsFromWin16(GMEM_MOVEABLE)) == NULL)
 			{
-LError:		
 			SetErrorMat( matMem );
 			return fFalse;
 			}
+#else
+		if (OurGlobalReAlloc(pghd->ghsz, (DWORD)cch, GMEM_MOVEABLE) == NULL)
+			{
+LError:
+			SetErrorMat( matMem );
+			return fFalse;
+			}
+#endif
 LNewSiz:
 		pghd->ichMax = cch;
 		}
 
 	Assert( pghd->ichMax >= cch );
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if ((lpch = (CHAR FAR *)OpusMemLock((OpusHandle)pghd->ghsz)) != NULL)
+#else
 	if ((lpch = GlobalLockClip( pghd->ghsz )) != NULL)
+#endif
 		{
 		bltbx( (char far *)sz, lpch, pghd->ichMac = cch );
 #if defined(__GNUC__) && !defined(_MSC_VER)
@@ -1353,6 +1434,14 @@ LNewSiz:
 	else
 		return fFalse;
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	/* Qt-2 B3: shared target for the two GNUC goto LError sites above --
+	   same twin-label pattern as FClearGhd just above, for the same
+	   reason (MSVC's inline LError: lives inside its own #else branch). */
+LError:
+	SetErrorMat( matMem );
+	return fFalse;
+#endif
 }
 
 
