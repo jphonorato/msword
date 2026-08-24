@@ -16,6 +16,9 @@
 #include "word.h"
 #include "heap.h"
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "OpusShellMemory.h"    /* Qt-2 B3: OpusMem* */
+#endif
 #include "dde.h"
 #include "el.h"
 #include "macrocmd.h"
@@ -57,6 +60,66 @@ extern int dclMac;
 extern int flashID;
 extern int sbStrings;
 extern int vwWinVersion;
+
+
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* H  O U R  O P U S  M E M  A L L O C */
+/* Qt-2 B3: sustituto de OurGlobalAlloc (res.c) para los handles de este
+   archivo ya migrados a OpusShellMemory -- mismo helper que filecvt.c ya
+   tiene.  Llamar a OpusMemAlloc pelado perderia dos comportamientos
+   propios de OurGlobalAlloc (res.c:1833): el rechazo de bloques mayores
+   de 64K (res.c:1843) y el reintento con el area de swap reducida mas
+   SetErrorMat(matMem) cuando el segundo intento tambien falla
+   (res.c:1867-1873, dentro de GlobalAlloc2).  res.c es el hub y se migra
+   al final, no en este lote -- ver 767006b, que existe porque un primer
+   pase perdio justamente ese reintento. */
+static HANDLE HOurOpusMemAlloc(unsigned long dwBytes, unsigned flags)
+{
+	HANDLE h;
+
+	if (dwBytes > 0x00010000L)
+		{
+		SetErrorMat(matMem);
+		return NULL;
+		}
+
+	if ((h = (HANDLE)OpusMemAlloc(dwBytes, flags)) == NULL)
+		{
+		ShrinkSwapArea();
+		if ((h = (HANDLE)OpusMemAlloc(dwBytes, flags)) == NULL)
+			SetErrorMat(matMem);
+		GrowSwapArea();
+		}
+	return h;
+}
+
+
+/* H  O U R  O P U S  M E M  R E A L L O C */
+/* Qt-2 B3: sustituto de OurGlobalReAlloc (res.c:1883), mismo helper que
+   ya existe en etcmd.c.  Devuelve el mismo handle h en exito (invariante
+   de handle estable del contrato, OpusShellMemory.h) o NULL en fallo; el
+   llamador no reasigna su handle a partir del valor de retorno, tal como
+   no lo hacia con OurGlobalReAlloc. */
+static HANDLE HOurOpusMemRealloc(HANDLE h, unsigned long dwBytes, unsigned flags)
+{
+	HANDLE hNew;
+
+	if (dwBytes > 0x00010000L)
+		{
+		SetErrorMat(matMem);
+		return NULL;
+		}
+
+	if ((hNew = (HANDLE)OpusMemRealloc((OpusHandle)h, dwBytes, flags)) == NULL)
+		{
+		ShrinkSwapArea();
+		if ((hNew = (HANDLE)OpusMemRealloc((OpusHandle)h, dwBytes, flags)) == NULL)
+			SetErrorMat(matMem);
+		GrowSwapArea();
+		}
+	return hNew;
+}
+#endif
 
 
 /* E L  D D E  I N I T I A T E */
@@ -174,8 +237,14 @@ CHAR ** pstExec;
 		/* never returns */
 		}
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if ((hExec = HOurOpusMemAlloc((unsigned long)((DWORD)**pstExec + 1),
+			OpusMemFlagsFromWin16(GMEM_DDE))) == NULL
+			|| (lpch = GlobalLockClip (hExec)) == NULL)
+#else
 	if ((hExec = OurGlobalAlloc(GMEM_DDE, (DWORD)**pstExec + 1))
 			== NULL || (lpch = GlobalLockClip (hExec)) == NULL)
+#endif
 		/* error: cannot allocate */
 		{
 		rerr = rerrOutOfMemory;
@@ -184,7 +253,11 @@ CHAR ** pstExec;
 
 	bltbx ((CHAR FAR *)*pstExec + 1, lpch, **pstExec);
 	lpch [**pstExec] = 0;
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)hExec);
+#else
 	GlobalUnlock (hExec);
+#endif
 
 	Assert (!PdcldDcl (dcl)->fResponse && !PdcldDcl (dcl)->fAck &&
 			!PdcldDcl (dcl)->fBusy);
@@ -215,7 +288,11 @@ LReturn:
 #endif /* DEBUG */
 
 	if (hExec != NULL)
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree((OpusHandle)hExec);
+#else
 		GlobalFree (hExec);
+#endif
 
 	if (rerr != rerrNil)
 		RtError (rerr);
@@ -262,8 +339,14 @@ SD HUGE *hpsdData;
 
 	cch = CchFromSd (*hpsdData);
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if ((hData = HOurOpusMemAlloc((unsigned long)(long)(uns)(cch + 1 + cbDMS),
+			OpusMemFlagsFromWin16(GMEM_DDE))) == NULL
+			|| (lpch = GlobalLockClip (hData)) == NULL)
+#else
 	if ((hData = OurGlobalAlloc(GMEM_DDE, (long)(uns)(cch + 1 + cbDMS)))
 			== NULL || (lpch = GlobalLockClip (hData)) == NULL)
+#endif
 		/* error: cannot allocate */
 		{
 		DeleteAtom(atomItem);
@@ -279,7 +362,11 @@ SD HUGE *hpsdData;
 	while (cch--)
 		*lpch++ = *hpch++;
 	*lpch = 0;
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)hData);
+#else
 	GlobalUnlock (hData);
+#endif
 
 	Assert (!PdcldDcl (dcl)->fResponse && !PdcldDcl (dcl)->fAck &&
 			!PdcldDcl (dcl)->fBusy);
@@ -311,7 +398,11 @@ LReturn:
 #endif /* DEBUG */
 
 	if (hData != NULL)
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree((OpusHandle)hData);
+#else
 		GlobalFree (hData);
+#endif
 
 	if (rerr != rerrNil)
 		RtError (rerr);
@@ -571,7 +662,11 @@ int wLow, wHigh;
 				{
 				ReportDdeError ("Unexpected Data (not response) or wrong format to macro.",
 						dcl, message, 0);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+				OpusMemUnlock((OpusHandle)wLow);
+#else
 				GlobalUnlock (wLow);
+#endif
 				goto LDataNack;
 				}
 
@@ -593,7 +688,11 @@ int wLow, wHigh;
 					}
 				}
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+			OpusMemUnlock((OpusHandle)wLow);
+#else
 			GlobalUnlock (wLow);
+#endif
 
 
 			if (vddes.sdResult != sdNil)
@@ -615,7 +714,11 @@ LDataNack:
 
 			if (wLow != NULL &&
 					(fMustFree || (dms.fRelease && (!dms.fAck || fSuccess))))
+#if defined(__GNUC__) && !defined(_MSC_VER)
+				OpusMemFree((OpusHandle)wLow);
+#else
 				GlobalFree (wLow);
+#endif
 
 			return fTrue;
 			}
@@ -747,28 +850,49 @@ BOOL fWait;
 		{
 		DdeDbgCommSz ("DoJmp'd to ElSendKeys");
 LFail:
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		if (hevt)
+			OpusMemFree((OpusHandle)hevt);
+		if (hKeys != NULL)
+			OpusMemFree((OpusHandle)hKeys);
+#else
 		if (hevt)
 			GlobalFree(hevt);
 		if (hKeys != NULL)
 			GlobalFree(hKeys);
+#endif
 		penvMem = penvSav;
 		RtError(rerrCannotSendKeys);
 		return 0; /* failed */
 		}
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if ((hKeys = HOurOpusMemAlloc((unsigned long)((DWORD)**pstKeys+1),
+			OpusMemFlagsFromWin16(GMEM_MOVEABLE))) == NULL
+			|| (lpch = (CHAR FAR *)OpusMemLock((OpusHandle)hKeys)) == NULL)
+#else
 	if ((hKeys = OurGlobalAlloc(GMEM_MOVEABLE, (DWORD)**pstKeys+1)) == NULL
 			|| (lpch = GlobalLock (hKeys)) == NULL)
+#endif
 		goto LFail;
 
 	bltbx ((CHAR FAR *)*pstKeys + 1, lpch, **pstKeys);
 	lpch [**pstKeys] = 0;
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)hKeys);
+#else
 	GlobalUnlock (hKeys);
+#endif
 
 	if (!FParseKeys(hKeys, NULL, &hevt))
 		goto LFail;
 
 	AddKeys(&hevt);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemFree((OpusHandle)hKeys);
+#else
 	GlobalFree (hKeys);
+#endif
 	penvMem = penvSav;
 
 	/* we can't wait when excel is active, it would screw everything up */
@@ -802,35 +926,66 @@ HEVT *phevt;
 	AssertPenv (penvMem);
 	if ((hevt=*phevt)==NULL)
 		{
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		if ((hevt=HOurOpusMemAlloc((unsigned long)sizeof(EVT),
+				OpusMemFlagsFromWin16(GMEM_SENDKEYS)))==NULL)
+#else
 		if ((hevt=OurGlobalAlloc(GMEM_SENDKEYS, (DWORD) sizeof(EVT)))==NULL)
+#endif
 			{
 			SetErrorMat(matMem);
 			DoJmp(penvMem, TRUE);
 			}
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		lpevt=(EVT FAR *)OpusMemLock((OpusHandle)hevt);
+#else
 		lpevt=GlobalLock(hevt);
+#endif
 		Assert(lpevt!=NULL);
 		lpevt->ieventCur=0;
 		lpevt->ieventMac=0;
 		}
 	else
 		{
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		lpevt=(EVT FAR *)OpusMemLock((OpusHandle)hevt);
+#else
 		lpevt=GlobalLock(hevt);
+#endif
 		Assert(lpevt!=NULL);
 		cb = lpevt->ieventMac*sizeof(EVENT)+sizeof(EVT);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemUnlock((OpusHandle)hevt);
+		if (HOurOpusMemRealloc(hevt, (unsigned long)(long)cb,
+				OpusMemFlagsFromWin16(GMEM_SENDKEYS)) == NULL)
+#else
 		GlobalUnlock(hevt);
 		if (OurGlobalReAlloc(hevt, (long)cb, GMEM_SENDKEYS) == NULL)
+#endif
 			{
 			SetErrorMat(matMem);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+			OpusMemFree((OpusHandle)hevt);
+#else
 			GlobalFree(hevt);
+#endif
 			DoJmp(penvMem, TRUE);
 			}
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		lpevt=(EVT FAR *)OpusMemLock((OpusHandle)hevt);
+#else
 		lpevt=GlobalLock(hevt);
+#endif
 		Assert(lpevt!=NULL);
 		}
 	lpevt->rgevent[lpevt->ieventMac].wm = wm;
 	lpevt->rgevent[lpevt->ieventMac].vk = vk;
 	lpevt->ieventMac++;
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)hevt);
+#else
 	GlobalUnlock(hevt);
+#endif
 	*phevt = hevt;
 }
 
@@ -868,15 +1023,27 @@ HEVT *phevt;
 
 	cGrp=fHaveShift=fHaveCtrl=fHaveAlt=0;
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	/* Qt-2 B3: hKeys aqui puede ser el bloque propio de ElSendKeys o el
+	   hCmds ajeno que DDESRVR.C pasa via FExecuteHCommands -- el contrato
+	   enruta por IsOwn(), no por sitio de llamada. */
+	if ((lpch = (CHAR FAR *)OpusMemLock((OpusHandle)hKeys)) == NULL)
+		return FALSE;
+#else
 	if ((lpch = GlobalLock(hKeys)) == NULL)
 		return FALSE;
+#endif
 
 	penvSav = penvMem;
 	if (SetJmp(penvMem = &env))
 		{
 		DdeDbgCommSz ("DoJmp'd to FParseKeys");
 ParseErr:
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemUnlock((OpusHandle)hKeys);
+#else
 		GlobalUnlock (hKeys);
+#endif
 		penvMem = penvSav;
 		return FALSE;
 		}
@@ -1062,7 +1229,11 @@ Cancel:
 		}
 	CancelMods(&fHaveShift, &fHaveCtrl, &fHaveAlt, 10, phevt);
 	Assert(!fHaveShift && !fHaveCtrl && !fHaveAlt);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)hKeys);
+#else
 	GlobalUnlock (hKeys);
+#endif
 	penvMem = penvSav;
 	return(TRUE);
 }
@@ -1164,7 +1335,11 @@ HEVT hevt;
 	AssertPenv (penvMem);
 	if (!hevt)
 		return(hevt);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	lpevt=(EVT FAR *)OpusMemLock((OpusHandle)hevt);
+#else
 	lpevt=GlobalLock(hevt);
+#endif
 	Assert(lpevt!=NULL);
 	if (lpevt->ieventCur == 0)
 		goto Done;
@@ -1172,15 +1347,30 @@ HEVT hevt;
 	Assert(cevent>0);
 	bltbx(&lpevt->rgevent[lpevt->ieventCur], &lpevt->rgevent[0],
 			cevent*sizeof(EVENT));
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)hevt);
+	if (HOurOpusMemRealloc(hevt,
+			(unsigned long)(uns)(sizeof(EVT)+(cevent-1)*sizeof(EVENT)),
+			OpusMemFlagsFromWin16(GMEM_SENDKEYS)) == NULL)
+#else
 	GlobalUnlock(hevt);
 	if (OurGlobalReAlloc(hevt, (long)(uns)(sizeof(EVT)+(cevent-1)*sizeof(EVENT)), GMEM_SENDKEYS) == NULL)
+#endif
 		DoJmp(penvMem, TRUE);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	lpevt=(EVT FAR *)OpusMemLock((OpusHandle)hevt);
+#else
 	lpevt=GlobalLock(hevt);
+#endif
 	Assert(lpevt!=NULL);
 	lpevt->ieventMac -= lpevt->ieventCur;
 	lpevt->ieventCur=0;
 Done:
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)hevt);
+#else
 	GlobalUnlock(hevt);
+#endif
 	return(hevt);
 }
 
@@ -1217,10 +1407,19 @@ OOM:
 		   and freed here. */
 		if (hPlaybackHook)
 			RemovePlaybackHook ();
+		/* Qt-2 B3 / D-2: hData es el bloque DRVDATA del hook de playback
+		   (GMEM_FIXED|GMEM_LOWER, su direccion se convierte en el segmento
+		   de datos del hook, lpdrvhd->wDataSeg) -- segmento/selector, no
+		   heap; queda fuera de OpusShellMemory igual que hCode y
+		   hPlaybackHook. */
 		if (hData)
 			GlobalFree(hData);
 		SetErrorMat(matMem);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree((OpusHandle)*phevt);
+#else
 		GlobalFree(*phevt);
+#endif
 		*phevt = NULL;
 		DoJmp(penvMem = penvMemSav, TRUE);
 		}
@@ -1228,27 +1427,54 @@ OOM:
 		{
 		*lphevtHead = HevtCompactHevt(*lphevtHead);
 		Assert(*lphevtHead);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		lpevtHead = (EVT FAR *)OpusMemLock((OpusHandle)*lphevtHead);
+		lpevt = (EVT FAR *)OpusMemLock((OpusHandle)*phevt);
+#else
 		lpevtHead = GlobalLock(*lphevtHead);
 		lpevt = GlobalLock(*phevt);
+#endif
 		Assert(lpevtHead != NULL);
 		Assert(lpevt != NULL);
 		cevent = lpevt->ieventMac+lpevtHead->ieventMac;
 		Assert(lpevtHead->ieventCur == 0);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemUnlock((OpusHandle)*phevt);
+		OpusMemUnlock((OpusHandle)*lphevtHead);
+		if (HOurOpusMemRealloc(*lphevtHead,
+				(unsigned long)(sizeof(EVT)+(long)(cevent-1)*sizeof(EVENT)),
+				OpusMemFlagsFromWin16(GMEM_SENDKEYS)) == NULL)
+#else
 		GlobalUnlock(*phevt);
 		GlobalUnlock(*lphevtHead);
 		if (OurGlobalReAlloc(*lphevtHead,
 				(sizeof(EVT)+(long)(cevent-1)*sizeof(EVENT)),GMEM_SENDKEYS) == NULL)
+#endif
 			DoJmp(penvMem, TRUE);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		lpevtHead = (EVT FAR *)OpusMemLock((OpusHandle)*lphevtHead);
+		lpevt = (EVT FAR *)OpusMemLock((OpusHandle)*phevt);
+#else
 		lpevtHead = GlobalLock(*lphevtHead);
 		lpevt = GlobalLock(*phevt);
+#endif
 		bltbx(&lpevt->rgevent[0],
 				&lpevtHead->rgevent[lpevtHead->ieventMac],
 				lpevt->ieventMac*sizeof(EVENT));
 		lpevtHead->ieventMac = cevent;
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemUnlock((OpusHandle)*phevt);
+		OpusMemUnlock((OpusHandle)*lphevtHead);
+#else
 		GlobalUnlock(*phevt);
 		GlobalUnlock(*lphevtHead);
+#endif
 		penvMem = penvMemSav;
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree((OpusHandle)*phevt);
+#else
 		GlobalFree(*phevt);
+#endif
 		*phevt = NULL;
 		}
 	else
@@ -1256,6 +1482,11 @@ OOM:
 		/* install playback hook */
 		if (hPlaybackHook == NULL)
 			{
+			/* Qt-2 B3 / D-2: hCode (segmento de codigo del cargador),
+			   hPlaybackHook y hData (GMEM_FIXED|GMEM_LOWER, su direccion se
+			   convierte en segmento de datos del hook via wDataSeg) no son
+			   heap -- quedan fuera de OpusShellMemory, ver
+			   2026-08-11-opus-memory-blocked-categories-design.md D-2. */
 			hCode = GetCodeHandle(PlaybackHook);
 			Assert(hCode);
 			if ((hData=OurGlobalAlloc(GMEM_FIXED|GMEM_LOWER, (long)sizeof(struct DRVDATA)))==NULL)
@@ -1318,18 +1549,36 @@ typedef void (WINAPI *OPUS_PFN_FREESELECTOR)(HANDLE);
 		Assert(lphevtHead != NULL);
 		*lphevtHead = *phevt;
 		/* save and reset key state */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		if ((*lphrgbKeyState=HOurOpusMemAlloc(256L,
+				OpusMemFlagsFromWin16(GMEM_SENDKEYS))) != NULL)
+#else
 		if ((*lphrgbKeyState=OurGlobalAlloc(GMEM_SENDKEYS, (DWORD) 256)) != NULL)
+#endif
 			{
+#if defined(__GNUC__) && !defined(_MSC_VER)
+			if ((lpbKeyState = (BYTE FAR *)OpusMemLock(
+					(OpusHandle)*lphrgbKeyState)) == (BYTE FAR *)NULL)
+#else
 			if ((lpbKeyState = GlobalLock(*lphrgbKeyState)) == (BYTE FAR *)NULL)
+#endif
 				{
+#if defined(__GNUC__) && !defined(_MSC_VER)
+				OpusMemFree((OpusHandle)*lphrgbKeyState);
+#else
 				GlobalFree(*lphrgbKeyState);
+#endif
 				*lphrgbKeyState = NULL;
 				}
 			else
 				{
 				/* preserve old key state */
 				GetKeyboardState(lpbKeyState);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+				OpusMemUnlock((OpusHandle)*lphrgbKeyState);
+#else
 				GlobalUnlock(*lphrgbKeyState);
+#endif
 				/* reset key state */
 				SetBytes (rgb, 0, 256);
 				SetKeyboardState((BYTE FAR *)rgb);
@@ -1413,7 +1662,11 @@ HANDLE hCmds;
 			if ((cch = *(pich+1)-(*pich)) >= cchMaxSz)
 				{
 LUnlockDone:
+#if defined(__GNUC__) && !defined(_MSC_VER)
+				OpusMemUnlock((OpusHandle)hCmds);
+#else
 				GlobalUnlock (hCmds);
+#endif
 				goto LDone;
 				}
 			bltbx (lpch + *pich, (CHAR FAR *)szCmd, cch);
@@ -1433,7 +1686,11 @@ LUnlockDone:
 			goto LUnlockDone;
 		cp += 7;
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemUnlock((OpusHandle)hCmds);
+#else
 		GlobalUnlock (hCmds);
+#endif
 		}
 
 
@@ -1510,7 +1767,11 @@ LDone:
 #endif /* DEBUG */
 
 	if (hevt != NULL)
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree((OpusHandle)hevt);
+#else
 		GlobalFree (hevt);
+#endif
 	penvMem = penvSav;
 	return fSuccess;
 }

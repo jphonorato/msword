@@ -5,6 +5,7 @@
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
 #if defined(__GNUC__) && !defined(_MSC_VER)
 #include "OpusShellConfig.h"    /* Qt-2 B5: OpusShellProfile* */
+#include "OpusShellMemory.h"    /* Qt-2 B3: OpusMem* */
 #endif
 #include "heap.h"
 #include "ch.h"
@@ -806,16 +807,30 @@ RemovePlaybackHook ()
 		{
 		UnhookWindowsHook(WH_JOURNALPLAYBACK,
 				lpfnPlaybackHook);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree((OpusHandle)*lphevtHead);
+#else
 		GlobalFree(*lphevtHead);
+#endif
 		if (*lphrgbKeyState)
 			{
+#if defined(__GNUC__) && !defined(_MSC_VER)
+			SetKeyboardState((BYTE FAR *)OpusMemLock(
+					(OpusHandle)*lphrgbKeyState));
+			OpusMemUnlock((OpusHandle)*lphrgbKeyState);
+			OpusMemFree((OpusHandle)*lphrgbKeyState);
+#else
 			SetKeyboardState(GlobalLock(*lphrgbKeyState));
 			GlobalUnlock(*lphrgbKeyState);
 			GlobalFree(*lphrgbKeyState);
+#endif
 			}
 		*lphevtHead = *lphrgbKeyState = NULL;
 		lphevtHead = NULL;
 		}
+	/* Qt-2 B3 / D-2: hPlaybackHook es segmento/selector Win16
+	   (GMEM_FIXED|GMEM_LOWER + AllocSelector/PrestoChangoSelector en
+	   eldde.c AddKeys), no heap -- fuera de OpusShellMemory. */
 	GlobalFree(hPlaybackHook);
 	hPlaybackHook = NULL;
 }
