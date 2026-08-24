@@ -1,5 +1,8 @@
 #include "opus_x64_compat.h"
 #include "opus_x64_heap.h"
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "OpusShellMemory.h"    /* Qt-2 B3: OpusMem* */
+#endif
 
 #include <algorithm>
 #include <cstdint>
@@ -243,7 +246,16 @@ LRESULT CALLBACK PlaybackHook(const int code, const WPARAM parameter,
     }
 
     HANDLE queue_handle = *lphevtHead;
+#if defined(__GNUC__) && !defined(_MSC_VER)
+    /* Qt-2 B3: mismo bloque hevt que eldde.c aloca con GMEM_SENDKEYS
+     * (-> OPUS_MEM_LOWER -> HGLOBAL real via passthrough).  Se pasa por
+     * el contrato para que productor y consumidor de la familia A usen
+     * la misma puerta, no porque el GlobalLock crudo fallara. */
+    auto* queue = static_cast<NativePlaybackQueue*>(
+        OpusMemLock(reinterpret_cast<OpusHandle>(queue_handle)));
+#else
     auto* queue = static_cast<NativePlaybackQueue*>(GlobalLock(queue_handle));
+#endif
     if (queue == nullptr) {
         return 0;
     }
@@ -262,19 +274,40 @@ LRESULT CALLBACK PlaybackHook(const int code, const WPARAM parameter,
         output->time = 0;
         output->hwnd = nullptr;
     }
+#if defined(__GNUC__) && !defined(_MSC_VER)
+    OpusMemUnlock(reinterpret_cast<OpusHandle>(queue_handle));
+#else
     GlobalUnlock(queue_handle);
+#endif
 
     if (finished) {
+#if defined(__GNUC__) && !defined(_MSC_VER)
+        OpusMemFree(reinterpret_cast<OpusHandle>(queue_handle));
+#else
         GlobalFree(queue_handle);
+#endif
         *lphevtHead = nullptr;
         if (lphrgbKeyState != nullptr && *lphrgbKeyState != nullptr) {
             HANDLE state_handle = *lphrgbKeyState;
+#if defined(__GNUC__) && !defined(_MSC_VER)
+            auto* state = static_cast<unsigned char*>(
+                OpusMemLock(reinterpret_cast<OpusHandle>(state_handle)));
+#else
             auto* state = static_cast<unsigned char*>(GlobalLock(state_handle));
+#endif
             if (state != nullptr) {
                 SetKeyboardState(state);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+                OpusMemUnlock(reinterpret_cast<OpusHandle>(state_handle));
+#else
                 GlobalUnlock(state_handle);
+#endif
             }
+#if defined(__GNUC__) && !defined(_MSC_VER)
+            OpusMemFree(reinterpret_cast<OpusHandle>(state_handle));
+#else
             GlobalFree(state_handle);
+#endif
             *lphrgbKeyState = nullptr;
         }
     }
