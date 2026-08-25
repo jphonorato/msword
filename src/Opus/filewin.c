@@ -932,6 +932,366 @@ int ibpDelete;
 }
 
 
+/* P A C K E D   F I B   A N D   P L C   I / O */
+
+/* In memory an FC or a CP is the native long, which is 8 bytes wide in a
+	64 bit build.  On file both have always been 4 bytes, as has every other
+	FIB field, so the in memory FIB cannot be blitted to or from a file page:
+	it does not even fit in a sector.  The routines below are the only place
+	that knows the on file layout.  They are not conditional on the build --
+	where long is already 4 bytes they produce exactly the bytes the old
+	blits produced, so the file format does not change. */
+
+/* %%Function:PackDiskL %%Owner:port */
+/* store l as a 4 byte little endian quantity at hpch */
+private PackDiskL(hpch, l)
+CHAR HUGE *hpch;
+long l;
+{
+	hpch[0] = (CHAR)(l & 0xff);
+	hpch[1] = (CHAR)((l >> 8) & 0xff);
+	hpch[2] = (CHAR)((l >> 16) & 0xff);
+	hpch[3] = (CHAR)((l >> 24) & 0xff);
+}
+
+
+/* %%Function:LFromDisk %%Owner:port */
+/* fetch the 4 byte little endian quantity at hpch, sign extended so that
+	the fcNil/cpNil sentinel (0xffffffff on file) comes back as -1 */
+private long LFromDisk(hpch)
+CHAR HUGE *hpch;
+{
+	unsigned long ul;
+
+	ul = ((unsigned long)hpch[0]) |
+			(((unsigned long)hpch[1]) << 8) |
+			(((unsigned long)hpch[2]) << 16) |
+			(((unsigned long)hpch[3]) << 24);
+	/* where long is wider than 4 bytes this fills the high bytes in; where
+		it is exactly 4 bytes the mask is 0 and the cast does the work. */
+	if (ul & 0x80000000L)
+		return (long)(ul | ~(unsigned long)0xffffffffL);
+	return (long)ul;
+}
+
+
+/* %%Function:IbBltFibUns %%Owner:port */
+/* move one 4 byte wide FIB field (uns, PN or int) between its native form
+	at pb and its packed form at hpch+ib.  cbMac is how many packed bytes
+	are there; a field past the end is left alone.  Returns the offset of
+	the next field. */
+private int IbBltFibUns(hpch, cbMac, ib, pb, cbNative, fPack)
+CHAR HUGE *hpch;
+int cbMac;
+int ib;
+char *pb;
+int cbNative;
+int fPack;
+{
+	Assert(cbNative == sizeof (uns));
+	if (ib + cbFibWord <= cbMac)
+		{
+		if (fPack)
+			PackDiskL(hpch + ib, (long)*(uns *)pb);
+		else
+			*(uns *)pb = (uns)LFromDisk(hpch + ib);
+		}
+	return ib + cbFibWord;
+}
+
+
+/* %%Function:IbBltFibLong %%Owner:port */
+/* same for an FC or a CP field, which the file format also stores in
+	4 bytes */
+private int IbBltFibLong(hpch, cbMac, ib, pb, cbNative, fPack)
+CHAR HUGE *hpch;
+int cbMac;
+int ib;
+char *pb;
+int cbNative;
+int fPack;
+{
+	long l;
+
+	Assert(cbNative == sizeof (FC));
+	if (ib + cbFibWord <= cbMac)
+		{
+		if (fPack)
+			{
+			l = *(FC *)pb;
+			/* a real fc or cp never needs more than 4 bytes; if one does,
+				something upstream is broken and we must not truncate it
+				quietly. */
+			Assert(l >= -2147483647L - 1L && l <= 2147483647L);
+			PackDiskL(hpch + ib, l);
+			}
+		else
+			*(FC *)pb = (FC)LFromDisk(hpch + ib);
+		}
+	return ib + cbFibWord;
+}
+
+
+#define FibUns(fld) \
+		(ib = IbBltFibUns(hpch, cbMac, ib, (char *)&pfib->fld, \
+				(int)sizeof (pfib->fld), fPack))
+#define FibLong(fld) \
+		(ib = IbBltFibLong(hpch, cbMac, ib, (char *)&pfib->fld, \
+				(int)sizeof (pfib->fld), fPack))
+
+/* %%Function:CbBltFibPacked %%Owner:port */
+/* Move a FIB between its native form (*pfib) and its packed, one 4 byte
+	word to the field, on file form (hpch).  cbMac is how many packed bytes
+	are available at hpch; fields beyond it are left as the caller set them,
+	which is how a short fib written by an older version is read.  Field
+	order is exactly the field order of struct FIB.  Returns the number of
+	packed bytes a whole FIB occupies. */
+private int CbBltFibPacked(pfib, hpch, cbMac, fPack)
+struct FIB *pfib;
+CHAR HUGE *hpch;
+int cbMac;
+int fPack;
+{
+	int ib = 0;
+	int i;
+	uns grpfFib = 0;
+
+	FibUns(wIdent);
+	FibUns(nFib);
+	FibUns(nProduct);
+	FibUns(nLocale);
+	FibUns(pnNext);
+
+	/* The file status bits.  A bit field has no address, so this one word
+		is assembled by hand; bit 0 is fDot, as it is in the struct. */
+	Assert(ib == iwFibGrpfFib * cbFibWord);
+	if (fPack)
+		{
+		if (pfib->fDot)
+			grpfFib |= fFibDot;
+		if (pfib->fGlsy)
+			grpfFib |= fFibGlsy;
+		if (pfib->fComplex)
+			grpfFib |= fFibComplex;
+		if (pfib->fHasPic)
+			grpfFib |= fFibHasPic;
+		grpfFib |= (pfib->cQuickSaves << shftFibQuickSaves) & wFibQuickSaves;
+		}
+	ib = IbBltFibUns(hpch, cbMac, ib, (char *)&grpfFib,
+			(int)sizeof (grpfFib), fPack);
+	if (!fPack)
+		{
+		pfib->fDot = (grpfFib & fFibDot) != 0;
+		pfib->fGlsy = (grpfFib & fFibGlsy) != 0;
+		pfib->fComplex = (grpfFib & fFibComplex) != 0;
+		pfib->fHasPic = (grpfFib & fFibHasPic) != 0;
+		pfib->cQuickSaves = (grpfFib & wFibQuickSaves) >> shftFibQuickSaves;
+		}
+
+	Assert(ib == iwFibNFibBack * cbFibWord);
+	FibUns(nFibBack);
+
+	for (i = 0; i < (int)(sizeof (pfib->rgwSpare0) /
+			sizeof (pfib->rgwSpare0[0])); i++)
+		FibUns(rgwSpare0[i]);
+
+	Assert(ib == iwFibFcMin * cbFibWord);
+	FibLong(fcMin);
+	FibLong(fcMac);
+	FibLong(cbMac);
+	FibLong(fcSpare0);
+	FibLong(fcSpare1);
+	FibLong(fcSpare2);
+	FibLong(fcSpare3);
+
+	FibLong(ccpText);
+	FibLong(ccpFtn);
+	FibLong(ccpHdd);
+	FibLong(ccpMcr);
+	FibLong(ccpAtn);
+	FibLong(ccpSpare0);
+	FibLong(ccpSpare1);
+	FibLong(ccpSpare2);
+	FibLong(ccpSpare3);
+
+	FibLong(fcStshfOrig);
+	FibUns(cbStshfOrig);
+
+	FibLong(fcStshf);
+	FibUns(cbStshf);
+	FibLong(fcPlcffndRef);
+	FibUns(cbPlcffndRef);
+	FibLong(fcPlcffndTxt);
+	FibUns(cbPlcffndTxt);
+	FibLong(fcPlcfandRef);
+	FibUns(cbPlcfandRef);
+	FibLong(fcPlcfandTxt);
+	FibUns(cbPlcfandTxt);
+	FibLong(fcPlcfsed);
+	FibUns(cbPlcfsed);
+	FibLong(fcPlcfpgd);
+	FibUns(cbPlcfpgd);
+	FibLong(fcPlcfphe);
+	FibUns(cbPlcfphe);
+	FibLong(fcSttbfglsy);
+	FibUns(cbSttbfglsy);
+	FibLong(fcPlcfglsy);
+	FibUns(cbPlcfglsy);
+	FibLong(fcPlcfhdd);
+	FibUns(cbPlcfhdd);
+	FibLong(fcPlcfbteChpx);
+	FibUns(cbPlcfbteChpx);
+	FibLong(fcPlcfbtePapx);
+	FibUns(cbPlcfbtePapx);
+	FibLong(fcPlcfsea);
+	FibUns(cbPlcfsea);
+	FibLong(fcSttbfffn);
+	FibUns(cbSttbfffn);
+	FibLong(fcPlcffldMom);
+	FibUns(cbPlcffldMom);
+	FibLong(fcPlcffldHdr);
+	FibUns(cbPlcffldHdr);
+	FibLong(fcPlcffldFtn);
+	FibUns(cbPlcffldFtn);
+	FibLong(fcPlcffldAtn);
+	FibUns(cbPlcffldAtn);
+	FibLong(fcPlcffldMcr);
+	FibUns(cbPlcffldMcr);
+	FibLong(fcSttbfbkmk);
+	FibUns(cbSttbfbkmk);
+	FibLong(fcPlcfbkf);
+	FibUns(cbPlcfbkf);
+	FibLong(fcPlcfbkl);
+	FibUns(cbPlcfbkl);
+	FibLong(fcCmds);
+	FibUns(cbCmds);
+	FibLong(fcPlcmcr);
+	FibUns(cbPlcmcr);
+	FibLong(fcSttbfmcr);
+	FibUns(cbSttbfmcr);
+	FibLong(fcPrEnv);
+	FibUns(cbPrEnv);
+	FibLong(fcWss);
+	FibUns(cbWss);
+	FibLong(fcDop);
+	FibUns(cbDop);
+	FibLong(fcSttbfAssoc);
+	FibUns(cbSttbfAssoc);
+	FibLong(fcClx);
+	FibUns(cbClx);
+	FibLong(fcPlcfpgdFtn);
+	FibUns(cbPlcfpgdFtn);
+	FibLong(fcSpare4);
+	FibUns(cbSpare4);
+	FibLong(fcSpare5);
+	FibUns(cbSpare5);
+	FibLong(fcSpare6);
+	FibUns(cbSpare6);
+
+	FibUns(wSpare4);
+	FibUns(pnChpFirst);
+	FibUns(pnPapFirst);
+	FibUns(cpnBteChp);
+	FibUns(cpnBtePap);
+
+	Assert(ib == cbFibDisk);
+	return ib;
+}
+
+#undef FibUns
+#undef FibLong
+
+
+/* %%Function:PackFib %%Owner:port */
+/* write *pfib into the cbFibDisk bytes at hpch */
+void PackFib(pfib, hpch)
+struct FIB *pfib;
+CHAR HUGE *hpch;
+{
+	CbBltFibPacked(pfib, hpch, cbFibDisk, fTrue);
+}
+
+
+/* %%Function:UnpackFib %%Owner:port */
+/* read *pfib out of the cb packed bytes at hpch.  cb may be short (an old
+	file with a smaller fib); the missing fields come back zero. */
+void UnpackFib(hpch, pfib, cb)
+CHAR HUGE *hpch;
+struct FIB *pfib;
+int cb;
+{
+	SetBytes(pfib, 0, cbFIB);
+	CbBltFibPacked(pfib, hpch, min(cb, cbFibDisk), fFalse);
+}
+
+
+/* %%Function:LFromPackedFib %%Owner:port */
+/* fetch one field of a fib that is still in its packed form.  For the few
+	places that must look at a raw file page before it can be unpacked. */
+long LFromPackedFib(hpch, iw)
+CHAR HUGE *hpch;
+int iw;
+{
+	return LFromDisk(hpch + iw * cbFibWord);
+}
+
+
+/* the cp's of a PLC are 4 bytes on file and sizeof(CP) in memory, so they
+	are converted a bufferful at a time */
+#define ccpDiskBuf 64
+
+/* %%Function:WriteRgcpToFn %%Owner:port */
+/* write ccp cp's, 4 bytes each, at the current position of fn */
+void WriteRgcpToFn(fn, hprgcp, ccp)
+int fn;
+CP HUGE *hprgcp;
+uns ccp;
+{
+	CHAR rgb[ccpDiskBuf * cbCpDisk];
+	int ccpT;
+	int i;
+
+	while (ccp > 0)
+		{
+		ccpT = (int)min(ccp, (uns)ccpDiskBuf);
+		for (i = 0; i < ccpT; i++)
+			{
+			/* a cp that does not fit on file means a bug upstream; fail
+				loudly rather than truncate */
+			Assert(hprgcp[i] >= -2147483647L - 1L &&
+					hprgcp[i] <= 2147483647L);
+			PackDiskL(&rgb[i * cbCpDisk], (long)hprgcp[i]);
+			}
+		WriteRgchToFn(fn, rgb, (uns)(ccpT * cbCpDisk));
+		hprgcp += ccpT;
+		ccp -= ccpT;
+		}
+}
+
+
+/* %%Function:ReadRgcpFromFn %%Owner:port */
+/* read ccp cp's, 4 bytes each, from the current position of fn */
+void ReadRgcpFromFn(fn, hprgcp, ccp)
+int fn;
+CP HUGE *hprgcp;
+uns ccp;
+{
+	CHAR rgb[ccpDiskBuf * cbCpDisk];
+	int ccpT;
+	int i;
+
+	while (ccp > 0)
+		{
+		ccpT = (int)min(ccp, (uns)ccpDiskBuf);
+		ReadRgchFromFn(fn, rgb, (uns)(ccpT * cbCpDisk));
+		for (i = 0; i < ccpT; i++)
+			hprgcp[i] = (CP)LFromDisk(&rgb[i * cbCpDisk]);
+		hprgcp += ccpT;
+		ccp -= ccpT;
+		}
+}
+
+
 /* F E T C H  F I B */
 
 /* %%Function:FetchFib %%Owner:peterj */
@@ -940,23 +1300,23 @@ int fn;
 struct FIB *pfib;
 PN pn;
 {
-	struct FIB HUGE *hpfib;
+	CHAR HUGE *hpfib;
 	int cbFib;
 
 	Mac( Assert(cbFIB30 <= cbFIB) );
-	Assert(cbFIB <= cbFileHeader);
-	Assert(cbFIB <= cbSector);
+	Assert(cbFibDisk <= cbFileHeader);
+	Assert(cbFibDisk <= cbSector);
 	Win( Assert(PfcbFn(fn)->fHasFib) ); /* MAC calls before fcb is done */
 
 	/* Fib is read starting at pn.  It has length fib.fcMin-FcFromPn(pn)
-		but at most cbFIB is read.  Fib is first zero initialized in case
-		fib on file is short.
+		but at most cbFibDisk is read.  Fib is first zero initialized in case
+		fib on file is short.  fcMin itself has to come out of the packed
+		image: the file page is not a struct FIB.
 	*/
-	SetBytes(pfib, 0, cbFIB);
 	hpfib = HpchGetPn(fn, pn);
-	cbFib = (int)(hpfib->fcMin - FcFromPn(pn));
+	cbFib = (int)(LFromPackedFib(hpfib, iwFibFcMin) - FcFromPn(pn));
 
-	bltbh(hpfib, pfib, min(cbFIB, cbFib));
+	UnpackFib(hpfib, pfib, min(cbFibDisk, cbFib));
 
 	Assert(FNativeFormat(hpfib, fFalse));
 	if (pfib->nFib < nFibCurrent)

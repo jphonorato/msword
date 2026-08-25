@@ -1564,36 +1564,42 @@ ErrRet:
 	FnOpenStFile will open it as a "plain text" file.  If it has a fib but
 	we cannot read it (i.e., old format), warn the user (iff fErrors).
 */
-BOOL FNativeFormat(hpfib, fErrors)
-struct FIB HUGE *hpfib;
+/*  hpchFib points at the raw file page, where the fib is still packed
+	4 bytes to the field, so the few fields we need are fetched one at a
+	time rather than by dereferencing a struct FIB. */
+BOOL FNativeFormat(hpchFib, fErrors)
+CHAR HUGE *hpchFib;
 BOOL fErrors;
 
 {
-	int nFib = hpfib->nFib;
+	int nFib = (int)LFromPackedFib(hpchFib, iwFibNFib);
+	uns wIdent = (uns)LFromPackedFib(hpchFib, iwFibWIdent);
+	uns grpfFib = (uns)LFromPackedFib(hpchFib, iwFibGrpfFib);
 	int eid = eidNil;
 
-	if (hpfib->wIdent == wMagicPmWord)
+	if (wIdent == wMagicPmWord)
 		{
 		eid = eidPmWordFile;
 		goto LNative;
 		}
 
-	if (hpfib->wIdent == wMagic)
+	if (wIdent == wMagic)
 		{
 LNative:
 		if (nFib < nFibMinDoc)
 			eid = eidOldFib;
 
-		else  if (hpfib->fDot && nFib < nFibMinDot)
+		else  if ((grpfFib & fFibDot) && nFib < nFibMinDot)
 			eid = eidOldDot;
 
-		else  if (hpfib->nFibBack > nFibCurrent)
+		else  if (LFromPackedFib(hpchFib, iwFibNFibBack) > nFibCurrent)
 			eid = eidFutureFib;
 
-		else  if (nFib <= 18 && hpfib->fComplex)
+		else  if (nFib <= 18 && (grpfFib & fFibComplex))
 			eid = eidOldFastSavedFib;
 
-		else if ((hpfib->nProduct&0xfffe) == 0x2050 && hpfib->nFib == 30)
+		else if ((LFromPackedFib(hpchFib, iwFibNProduct) & 0xfffe) == 0x2050 &&
+				nFib == 30)
 			/* files with bogus font info were written by early versions
 			   of release 40. (0x2050==01.00.4000). */
 			eid = eidOldFib;
@@ -1646,13 +1652,15 @@ int     cb;
 	int     iMax;
 	struct PLC     **hplc, *pplc;
 
-	if (cbTotal < sizeof(CP))
+	/* cbTotal is an on file byte count, so the cp's in it are cbCpDisk
+		wide, not sizeof(CP) wide */
+	if (cbTotal < cbCpDisk)
 		{
 		Assert(fFalse);
 		/* safety, we have files out there with this true! */
 		return hNil;
 		}
-	iMax = (long)((long) cbTotal - sizeof(CP)) / (long)(cb + sizeof(CP));
+	iMax = (long)((long) cbTotal - cbCpDisk) / (long)(cb + cbCpDisk);
 	if (vmerr.fMemFail || (hplc = HplcInit(cb, iMax, cp0, fTrue /* ext rgFoo */)) == hNil)
 		return(hNil);
 	if ((*hplc)->iMax < iMax)
@@ -1676,6 +1684,7 @@ uns cbTotal;
 {
 	struct PLC *pplc;
 	CP HUGE *hprgcp;
+	uns ccp;
 
 	if (fcFirst != fcNil)
 		SetFnPos(fn, fcFirst);
@@ -1684,7 +1693,14 @@ uns cbTotal;
 	hprgcp = (CP HUGE *)HpOfHq(pplc->hqplce);
 	Assert(CbOfHq(pplc->hqplce) >= cbTotal);
 	Win(StartUMeas(umScanFnForBytes));
-	ReadHprgchFromFn(fn, hprgcp, cbTotal);
+	/* On file a plc is ccp cp's of cbCpDisk bytes followed by ccp-1 foos;
+		in memory the cp's are sizeof(CP) wide and the foos start after
+		them, so the two runs are read separately. */
+	ccp = (uns)(((long)cbTotal - cbCpDisk) / (long)(pplc->cb + cbCpDisk)) + 1;
+	ReadRgcpFromFn(fn, hprgcp, ccp);
+	if (pplc->cb > 0)
+		ReadHprgchFromFn(fn, (CHAR HUGE *)&hprgcp[ccp],
+				(uns)(pplc->cb * (ccp - 1)));
 	Win(StopUMeas(umScanFnForBytes));
 	return(hplc);
 }

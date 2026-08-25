@@ -2000,8 +2000,9 @@ struct DSR *pdsr;
 			}
 #endif /* DEBUG */
 		vpqsib->cpnBteChp = fkpdChp.pn - vpqsib->pnChpFirst + 1;
-		vpqsib->lcbAvailBte -= vpqsib->cpnBteChp * (sizeof(CP) + sizeof(PN)) +
-				sizeof(CP);
+		/* an on file byte count: cbCpDisk to the cp, not sizeof(CP) */
+		vpqsib->lcbAvailBte -= vpqsib->cpnBteChp * (cbCpDisk + sizeof(PN)) +
+				cbCpDisk;
 		pdsr->fFkpdChpIncomplete = fkpdChp.fPlcIncomplete;
 		}
 	return (fTrue);
@@ -2288,16 +2289,16 @@ FSaveTbls()
 			}
 		else
 			hprgcp = ((CP HUGE *)(*hplcsed)->rgcp);
-		WriteHprgchToFn(fnDest, hprgcp,
-				vpqsib->cbPlcfsed = (isedMac + 1) * sizeof(CP));
+		WriteRgcpToFn(fnDest, hprgcp, isedMac + 1);
+		vpqsib->cbPlcfsed = (isedMac + 1) * cbCpDisk;
 #ifdef MAC
 		if ((*hplcsed)->fExternal)
 			UnlockHq((*hplcsed)->hqplce);
 #endif
 
 		fcPosSave = (PfcbFn(fnDest))->fcPos;
-		SetFnPos(fnDest, vpqsib->fcPlcfsed + (isedMac * sizeof(CP)));
-		WriteRgchToFn(fnDest, &cpLastCorrect, sizeof(CP));
+		SetFnPos(fnDest, vpqsib->fcPlcfsed + (isedMac * cbCpDisk));
+		WriteRgcpToFn(fnDest, (CP HUGE *)&cpLastCorrect, 1);
 
 		SetFnPos(fnDest, fcPosSave);
 		fcDestLimSave = vfcDestLim;
@@ -2756,7 +2757,7 @@ FSaveTbls()
 		}
 
 	vpqsib->fcPlcfpcd = vfcDestLim;
-	vpqsib->cbPlcfpcd = (ipcdMac * (sizeof(CP) + cbPCD)) + sizeof(CP) + 3;
+	vpqsib->cbPlcfpcd = (ipcdMac * (cbCpDisk + cbPCD)) + cbCpDisk + 3;
 	vfcDestLim += vpqsib->cbPlcfpcd;
 	vpqsib->cbClx = vfcDestLim - vpqsib->fcClx;
 
@@ -2772,7 +2773,7 @@ FSaveTbls()
 		}
 	else
 		hprgcp = ((CP HUGE *)(*hplcpcd)->rgcp);
-	WriteHprgchToFn(fnDest, hprgcp, (ipcdMac + 1) * sizeof(CP));
+	WriteRgcpToFn(fnDest, hprgcp, ipcdMac + 1);
 #ifdef MAC
 	if ((*hplcpcd)->fExternal)
 		UnlockHq((*hplcpcd)->hqplce);
@@ -2905,9 +2906,9 @@ CP      cpCorrect;
 		else
 			hprgcp = ((CP HUGE *)pplc->rgcp);
 
-		/* write rgcp */
-		cbRgcp = (iMac + 1) * sizeof(CP);
-		WriteHprgchToFn(fnDest, hprgcp, cbRgcp);
+		/* write rgcp (cbCpDisk to the cp on file, not sizeof(CP)) */
+		cbRgcp = (iMac + 1) * cbCpDisk;
+		WriteRgcpToFn(fnDest, hprgcp, iMac + 1);
 
 		/* write rgfoo */
 		hpchFoo = &hprgcp[pplc->iMax];
@@ -2922,8 +2923,8 @@ CP      cpCorrect;
 		if (cpCorrect != cpNil)
 			{
 			fcPosSave = (PfcbFn(fnDest))->fcPos;
-			SetFnPos(fnDest, *pfc + iMac * sizeof(CP));
-			WriteRgchToFn(fnDest, &cpCorrect, sizeof(CP));
+			SetFnPos(fnDest, *pfc + iMac * cbCpDisk);
+			WriteRgcpToFn(fnDest, (CP HUGE *)&cpCorrect, 1);
 			SetFnPos(fnDest, fcPosSave);
 			}
 		}
@@ -3947,7 +3948,7 @@ PN pnFib;
 		uns ised;
 		CP far *lprgcp;
 /* calculate how many sed entries stored in disk copy of plc */
-		iMac = ((long)fib.cbPlcfsed - (long)sizeof(CP)) / ((long)cbSED + sizeof(CP));
+		iMac = ((long)fib.cbPlcfsed - (long)cbCpDisk) / ((long)cbSED + cbCpDisk);
 		Assert(iMac + 1 <= (*hplcsed)->iMax);
 /* read directly into external part of plc */
 		ReadIntoExtPlc(hplcsed, fn, fib.fcPlcfsed, fib.cbPlcfsed);
@@ -4253,9 +4254,11 @@ PN pn;
 	Mac( vfWritingFib = fFalse );
 	if (!vmerr.fDiskWriteErr)
 		{
-		bltbh(pfib, hpch, cbFIB);
-		Assert(cbFIB <= cbFileHeader);
-		SetBytes(LpOfHp(hpch+cbFIB), 0, cbFileHeader-cbFIB);
+		/* the fib goes out packed: in memory it is wider than the file
+			format (and wider than a sector), so it may not be blitted. */
+		Assert(cbFibDisk <= cbFileHeader);
+		PackFib(pfib, hpch);
+		SetBytes(LpOfHp(hpch+cbFibDisk), 0, cbFileHeader-cbFibDisk);
 		SetDirty(vibp);
 		}
 }
