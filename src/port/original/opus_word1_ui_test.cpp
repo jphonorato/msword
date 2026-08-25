@@ -26,6 +26,7 @@ namespace {
 
 constexpr UINT kWmCommand = 0x0111;
 constexpr WPARAM kFileNew = 1813;
+constexpr WPARAM kFileOpen = 1843; /* opuscmd.h imiOpen */
 constexpr WPARAM kFileSaveAs = 1897;
 constexpr WPARAM kFileExit = 2095;
 constexpr WPARAM kHelpAbout = 182;
@@ -178,6 +179,39 @@ void collect_descendants_by_class(const HWND parent,
             matches.push_back(child);
         }
         collect_descendants_by_class(child, expected_class, matches);
+    }
+}
+
+// Diagnostic helper for --roundtrip: dump every descendant of a dialog with
+// its control id, class, visibility and current text, recursively. Used
+// only on the Save As filename-set failure path (see task-1-report.md,
+// docs/superpowers/sdd/2026-08-25-doc-roundtrip/) where the real #32770
+// dialog's ComboBoxEx32 filename field does not retain a value set via
+// CDM_SETCONTROLTEXT or SetWindowTextA -- kept so whoever continues this
+// investigation gets the live control tree without re-instrumenting.
+void dump_dialog_tree_diagnostic(const HWND parent, const int depth = 0) {
+    for (HWND child = GetWindow(parent, GW_CHILD); child != nullptr;
+         child = GetWindow(child, GW_HWNDNEXT)) {
+        wchar_t class_name[128] = {};
+        wchar_t text[256] = {};
+        GetClassNameW(child, class_name, static_cast<int>(std::size(class_name)));
+        GetWindowTextW(child, text, static_cast<int>(std::size(text)));
+        char class_ansi[128] = {};
+        char text_ansi[256] = {};
+        WideCharToMultiByte(CP_ACP, 0, class_name, -1, class_ansi,
+                            static_cast<int>(sizeof(class_ansi)), nullptr,
+                            nullptr);
+        WideCharToMultiByte(CP_ACP, 0, text, -1, text_ansi,
+                            static_cast<int>(sizeof(text_ansi)), nullptr,
+                            nullptr);
+        for (int i = 0; i < depth; ++i) {
+            std::cerr << "  ";
+        }
+        std::cerr << "id=" << GetDlgCtrlID(child) << " hwnd=" << child
+                  << " class='" << class_ansi << "' text='" << text_ansi
+                  << "' visible=" << IsWindowVisible(child)
+                  << " enabled=" << IsWindowEnabled(child) << '\n';
+        dump_dialog_tree_diagnostic(child, depth + 1);
     }
 }
 
@@ -721,7 +755,7 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
         std::cerr <<
             "usage: opus_word1_ui_test WORD1.exe "
             "[--typing|--interaction|--selection|--caret|--formatting|--color|"
-            "--font-typing|--clipboard|--about|--save-as]\n";
+            "--font-typing|--clipboard|--about|--save-as|--roundtrip]\n";
         return 1;
     }
     const bool typing_mode =
@@ -753,10 +787,13 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
     const bool save_as_mode =
         argument_count == 3 &&
         lstrcmpW(arguments[2], L"--save-as") == 0;
+    const bool roundtrip_mode =
+        argument_count == 3 &&
+        lstrcmpW(arguments[2], L"--roundtrip") == 0;
     if (argument_count == 3 && !typing_mode && !interaction_mode &&
         !selection_mode && !caret_mode && !formatting_mode && !color_mode &&
         !font_typing_mode && !clipboard_mode && !about_mode &&
-        !save_as_mode) {
+        !save_as_mode && !roundtrip_mode) {
         std::cerr << "unknown test mode\n";
         return 1;
     }
@@ -848,6 +885,293 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
         WaitForSingleObject(process.hProcess, 2000);
         CloseHandle(process.hThread);
         CloseHandle(process.hProcess);
+        return 0;
+    }
+    if (roundtrip_mode) {
+        // Step 2 (plan docs/superpowers/plans/2026-08-25-doc-roundtrip.md):
+        // type a known line into Document1 and snapshot it via the
+        // opus_x64 query interface before anything is saved.
+        DWORD ignored_process_id = 0;
+        const DWORD thread_id =
+            GetWindowThreadProcessId(main_window, &ignored_process_id);
+        const HWND pane = find_descendant_by_class(main_window, L"OpusWwd");
+        if (pane == nullptr) {
+            return fail(process, 78,
+                        "roundtrip test could not find the document pane");
+        }
+        if (!make_foreground_and_focus(main_window, pane, thread_id)) {
+            return fail(process, 79,
+                        "roundtrip test could not focus the document pane");
+        }
+        if (!send_physical_text(L"roundtrip line one")) {
+            return fail(process, 80,
+                        "roundtrip test could not type the sample line");
+        }
+        Sleep(500);
+
+        const LRESULT cp_mac =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 41, 0);
+        if (cp_mac < 10) {
+            return fail(process, 81,
+                        "roundtrip test typed too little text to snapshot");
+        }
+        // Plain LRESULT storage, not std::wstring: these are raw byte
+        // values from query 69, not WCHAR text -- std::vector<LRESULT> is
+        // unrelated to the wide-char rule above (see the comment near
+        // lstrcmpW usage at the top of this file).
+        std::vector<LRESULT> snapshot_bytes(static_cast<std::size_t>(cp_mac));
+        for (LRESULT cp = 0; cp < cp_mac; ++cp) {
+            const LRESULT byte_value =
+                SendMessageW(pane, kWmOpusX64QuerySelection, 69, cp);
+            if (byte_value == -1) {
+                return fail(process, 82,
+                            "roundtrip snapshot query 69 returned -1");
+            }
+            snapshot_bytes[static_cast<std::size_t>(cp)] = byte_value;
+        }
+        const LRESULT ftc0 =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 51, 0);
+        const LRESULT hps0 =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 52, 0);
+        const LRESULT dyp0 =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 55, 0);
+        std::cerr << "roundtrip snapshot cpMac=" << cp_mac
+                  << " ftc0=" << ftc0 << " hps0=" << hps0 << " dyp0=" << dyp0
+                  << '\n';
+
+        // Step 3: choose an on-disk target and delete it if it is already
+        // there -- OFN_OVERWRITEPROMPT is on for the real Save As dialog
+        // (opus_sdm_runtime.cpp's run_word95_common_file_dialog), and a
+        // stray file left by a previous run would pop a "Confirm Save As"
+        // Yes/No prompt this mode does not expect at this point. 8.3-safe
+        // name so it round-trips through the legacy Win95 staging-file
+        // alias path unmodified.
+        char temp_dir[MAX_PATH] = {};
+        const DWORD temp_dir_length = GetTempPathA(
+            static_cast<DWORD>(std::size(temp_dir)), temp_dir);
+        if (temp_dir_length == 0 || temp_dir_length >= std::size(temp_dir)) {
+            return fail(process, 83,
+                        "roundtrip test could not resolve GetTempPathA");
+        }
+        char ansi_path[MAX_PATH] = {};
+        wsprintfA(ansi_path, "%soprt%04lx.doc", temp_dir,
+                  static_cast<unsigned long>(process.dwProcessId & 0xFFFFu));
+        DeleteFileA(ansi_path);
+        // Kept for Task 2, which continues this same mode with a second
+        // WORD1 process launched against this exact path on its command
+        // line.
+        wchar_t wide_path[MAX_PATH] = {};
+        MultiByteToWideChar(CP_ACP, 0, ansi_path, -1, wide_path,
+                            static_cast<int>(std::size(wide_path)));
+        std::cerr << "roundtrip target path='" << ansi_path
+                  << "' wideLength=" << lstrlenW(wide_path) << '\n';
+
+        // Step 4: File > Save As, driving the real #32770 common dialog --
+        // the decoy OpusSdmDialog forwarding hook from Task 5 exists for
+        // its own OK/Cancel buttons, not as a substitute for this window
+        // (docs/port-linux/03-comportamiento-word1-startup-blocked.md §7).
+        if (!PostMessageW(main_window, kWmCommand, kFileSaveAs, 0)) {
+            return fail(process, 84,
+                        "could not send File Save As for roundtrip");
+        }
+        const HWND save_dialog = wait_for_window(
+            process.hProcess, process.dwProcessId, L"#32770", L"Save As",
+            5000);
+        if (save_dialog == nullptr) {
+            log_process_windows(process.dwProcessId);
+            return fail(process, 85,
+                        "roundtrip Save As dialog (#32770) did not appear");
+        }
+        if (!window_is_responsive(process.hProcess, save_dialog)) {
+            DeleteFileA(ansi_path);
+            return fail(process, 86,
+                        "roundtrip Save As dialog did not finish initializing");
+        }
+
+        {
+            wchar_t dialog_caption[256] = {};
+            GetWindowTextW(save_dialog, dialog_caption,
+                           static_cast<int>(std::size(dialog_caption)));
+            char dialog_caption_ansi[256] = {};
+            WideCharToMultiByte(CP_ACP, 0, dialog_caption, -1,
+                                dialog_caption_ansi,
+                                static_cast<int>(sizeof(dialog_caption_ansi)),
+                                nullptr, nullptr);
+            std::cerr << "roundtrip found save_dialog=" << save_dialog
+                      << " caption='" << dialog_caption_ansi << "'\n";
+        }
+        /* CDM_SETCONTROLTEXT = WM_USER+100+4, edt1 = 0x0480 */
+        const LRESULT set_control_text_result = SendMessageA(
+            save_dialog, WM_USER + 104, 0x0480,
+            reinterpret_cast<LPARAM>(ansi_path));
+        char filename_check[MAX_PATH] = {};
+        GetDlgItemTextA(save_dialog, 0x0480, filename_check,
+                        static_cast<int>(std::size(filename_check)));
+        std::cerr << "roundtrip CDM_SETCONTROLTEXT(edt1) result="
+                  << set_control_text_result << " filename_check='"
+                  << filename_check << "'\n";
+        if (filename_check[0] == '\0') {
+            // edt1 (0x0480) does not exist in the Explorer-style template
+            // Wine actually builds (OFN_EXPLORER is set in
+            // run_word95_common_file_dialog) -- the filename field is
+            // cmb13 = 0x047C (1148), an editable ComboBoxEx32. Retarget
+            // CDM_SETCONTROLTEXT there first.
+            constexpr WPARAM kCmb13 = 0x047C;
+            const LRESULT cmb13_result = SendMessageA(
+                save_dialog, WM_USER + 104, kCmb13,
+                reinterpret_cast<LPARAM>(ansi_path));
+            GetDlgItemTextA(save_dialog, static_cast<int>(kCmb13),
+                            filename_check,
+                            static_cast<int>(std::size(filename_check)));
+            std::cerr << "roundtrip CDM_SETCONTROLTEXT(cmb13) result="
+                      << cmb13_result << " filename_check='" << filename_check
+                      << "'\n";
+        }
+        if (filename_check[0] == '\0') {
+            // Per the plan brief's documented fallback: find a child Edit
+            // and SetWindowTextA it directly.
+            const HWND filename_edit =
+                find_descendant_by_class(save_dialog, L"Edit");
+            char fallback_check[MAX_PATH] = {};
+            const BOOL set_text_result =
+                filename_edit != nullptr
+                    ? SetWindowTextA(filename_edit, ansi_path)
+                    : FALSE;
+            if (filename_edit != nullptr) {
+                GetWindowTextA(filename_edit, fallback_check,
+                              static_cast<int>(std::size(fallback_check)));
+            }
+            std::cerr << "roundtrip fallback filename_edit=" << filename_edit
+                      << " set_text_result=" << set_text_result
+                      << " fallback_check='" << fallback_check << "'\n";
+            if (filename_edit != nullptr && fallback_check[0] == '\0') {
+                // The bulk SetWindowTextA above did not stick; try real
+                // character-by-character WM_CHAR input instead, since that
+                // exercises the Edit control's normal typing path rather
+                // than a possibly-overridden WM_SETTEXT handler on the
+                // ComboBoxEx32 it lives in. WM_CHAR carries no pointer
+                // payload, so PostMessageA is safe here.
+                SetForegroundWindow(save_dialog);
+                SetFocus(filename_edit);
+                Sleep(100);
+                for (const char* p = ansi_path; *p != '\0'; ++p) {
+                    PostMessageA(filename_edit, WM_CHAR,
+                                static_cast<WPARAM>(
+                                    static_cast<unsigned char>(*p)),
+                                0);
+                    Sleep(5);
+                }
+                Sleep(200);
+                GetWindowTextA(filename_edit, fallback_check,
+                              static_cast<int>(std::size(fallback_check)));
+                std::cerr << "roundtrip WM_CHAR typing fallback_check='"
+                          << fallback_check << "'\n";
+            }
+            if (filename_edit == nullptr || fallback_check[0] == '\0') {
+                // BLOCKED (see task-1-report.md): none of CDM_SETCONTROLTEXT
+                // to edt1 (0x0480, which does not exist in this
+                // Explorer-style template), CDM_SETCONTROLTEXT to cmb13
+                // (0x047C, the real ComboBoxEx32 filename field),
+                // SetWindowTextA on its inner Edit child, or real
+                // character-by-character WM_CHAR input into that same Edit
+                // persist a value that survives an immediate readback --
+                // every attempt reports success (TRUE / 1, or is silently
+                // queued for WM_CHAR) yet GetDlgItemTextA/GetWindowTextA
+                // read back empty right after. Dump the live control tree
+                // for whoever picks this up.
+                std::cerr << "roundtrip dialog tree dump:\n";
+                dump_dialog_tree_diagnostic(save_dialog);
+                DeleteFileA(ansi_path);
+                return fail(process, 87,
+                            "roundtrip could not set the Save As filename");
+            }
+        }
+        if (!PostMessageW(save_dialog, kWmCommand, IDOK, 0)) {
+            DeleteFileA(ansi_path);
+            return fail(process, 88,
+                        "could not accept the roundtrip Save As dialog");
+        }
+
+        const ULONGLONG save_deadline = GetTickCount64() + 8000;
+        bool confirmed_overwrite = false;
+        bool file_ready = false;
+        DWORD saved_file_size = 0;
+        while (GetTickCount64() < save_deadline) {
+            if (GetFileAttributesA(ansi_path) != INVALID_FILE_ATTRIBUTES) {
+                const HANDLE probe = CreateFileA(
+                    ansi_path, GENERIC_READ,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                if (probe != INVALID_HANDLE_VALUE) {
+                    saved_file_size = GetFileSize(probe, nullptr);
+                    CloseHandle(probe);
+                    if (saved_file_size != INVALID_FILE_SIZE &&
+                        saved_file_size > 128) {
+                        file_ready = true;
+                        break;
+                    }
+                }
+            }
+            if (!confirmed_overwrite) {
+                const HWND confirm_dialog = find_process_window(
+                    process.dwProcessId, L"#32770", L"Confirm Save As");
+                if (confirm_dialog != nullptr &&
+                    confirm_dialog != save_dialog) {
+                    PostMessageW(confirm_dialog, kWmCommand, IDYES, 0);
+                    confirmed_overwrite = true;
+                }
+            }
+            Sleep(100);
+        }
+        if (!file_ready) {
+            log_process_windows(process.dwProcessId);
+            DeleteFileA(ansi_path);
+            return fail(process, 89,
+                        "roundtrip Save As did not produce the target .doc "
+                        "file");
+        }
+        std::cerr << "roundtrip saved '" << ansi_path
+                  << "' size=" << saved_file_size << " bytes\n";
+
+        // Step 5: tear down process 1. A successful save must have marked
+        // the document clean; any #32770 popping up after File Exit means
+        // it did not, and this mode fails loudly instead of clicking
+        // through it (see the plan's Global Constraints).
+        if (!PostMessageW(main_window, kWmCommand, kFileExit, 0)) {
+            DeleteFileA(ansi_path);
+            return fail(process, 90,
+                        "could not send File Exit after roundtrip save");
+        }
+        const HWND save_changes_prompt = wait_for_window(
+            process.hProcess, process.dwProcessId, L"#32770", nullptr, 3000);
+        if (save_changes_prompt != nullptr) {
+            wchar_t prompt_caption[256] = {};
+            GetWindowTextW(save_changes_prompt, prompt_caption,
+                          static_cast<int>(std::size(prompt_caption)));
+            char prompt_caption_ansi[256] = {};
+            WideCharToMultiByte(CP_ACP, 0, prompt_caption, -1,
+                                prompt_caption_ansi,
+                                static_cast<int>(sizeof(prompt_caption_ansi)),
+                                nullptr, nullptr);
+            std::cerr << "roundtrip unexpected dialog after File Exit "
+                        "caption='" << prompt_caption_ansi << "'\n";
+            DeleteFileA(ansi_path);
+            return fail(process, 91,
+                        "File Exit prompted a dialog after the roundtrip "
+                        "save (document was not marked clean)");
+        }
+        if (WaitForSingleObject(process.hProcess, 5000) != WAIT_OBJECT_0) {
+            TerminateProcess(process.hProcess, 0);
+            WaitForSingleObject(process.hProcess, 2000);
+        }
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+
+        // TODO(Task 2): launch process 2 (CreateProcessW on the same
+        // WORD1 binary) against ansi_path/wide_path and compare cp_mac,
+        // snapshot_bytes, ftc0, hps0, dyp0 against a fresh query of the
+        // reopened document; delete ansi_path only after that comparison.
+        DeleteFileA(ansi_path);
         return 0;
     }
     if (about_mode) {

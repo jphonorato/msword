@@ -1636,3 +1636,7 @@ add_test(NAME opus_word1_save_as_test
     COMMAND $<TARGET_FILE:opus_word1_ui_test> $<TARGET_FILE:WORD1> --save-as
 )
 set_tests_properties(opus_word1_save_as_test PROPERTIES TIMEOUT 20 LABELS "word1_startup_blocked")
+add_test(NAME opus_word1_roundtrip_test
+    COMMAND $<TARGET_FILE:opus_word1_ui_test> $<TARGET_FILE:WORD1> --roundtrip
+)
+set_tests_properties(opus_word1_roundtrip_test PROPERTIES TIMEOUT 45 LABELS "word1_startup_blocked")
