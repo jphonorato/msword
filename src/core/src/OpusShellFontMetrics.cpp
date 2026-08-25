@@ -11,15 +11,16 @@
  * Limitaciones de este primer corte, explícitas, no silenciosas:
  *
  * 1. **`ftc` -> nombre de época: tabla fija de 4 entradas, hardcodeada
- *    aquí.** El contrato declara que "el núcleo traduce" (§B2.2), pero
- *    hoy no hay ningún llamador real en Opus/ -- este primer corte asume
- *    la tabla de arranque verificada (Opus/initwin.c:1541-1583,
- *    vhsttbFont, orden Tms Rmn/Symbol/Helv/Courier = ftc 0-3) porque es
- *    la única que existe y es la misma que ya cubre
- *    OpusShellFontSubstitution. `ftc` fuera de [0,3] falla controlado.
- *    Ver 01-frontera-nucleo-shell.md, pregunta abierta #3, último párrafo,
- *    para la decisión pendiente sobre dónde debe vivir esta tabla a
- *    largo plazo.
+ *    aquí, usada solo cuando `OpusFontKey.szFace` es NULL.** El contrato
+ *    declara que "el núcleo traduce" (§B2.2); la tabla de arranque
+ *    verificada (Opus/initwin.c:1541-1583, vhsttbFont, orden Tms
+ *    Rmn/Symbol/Helv/Courier = ftc 0-3) sigue siendo la única fuente para
+ *    esos 4 `ftc` y es la misma que ya cubre OpusShellFontSubstitution.
+ *    Para fuentes en tiempo de ejecución fuera de esas 4 (ftc >= 4), el
+ *    llamador pasa el nombre real en `szFace` -- un `ftc` fuera de [0,3]
+ *    sin `szFace` sigue fallando controlado. Ver 01-frontera-nucleo-shell.md,
+ *    pregunta abierta #3, último párrafo, para la decisión pendiente
+ *    sobre dónde debe vivir esta tabla a largo plazo.
  * 2. **`catr` (negrita/cursiva) no soportado -- falla controlado, no se
  *    ignora en silencio.** QRawFont rasteriza un archivo físico tal cual;
  *    no sintetiza negrita/cursiva como hace GDI sobre estas fuentes
@@ -79,6 +80,19 @@ int MulDivRound(int a, int b, int c) {
         (static_cast<long long>(a) * b + c / 2) / c);
 }
 
+/* Nombre de fuente efectivo para esta clave: `szFace` cuando el llamador
+   lo da (fuentes en tiempo de ejecución, ftc >= 4 incluido), si no la
+   tabla fija de 4 nombres de época (limitación 1). */
+const char *FaceNameFor(const OpusFontKey *key) {
+    if (key == nullptr) {
+        return nullptr;
+    }
+    if (key->szFace != nullptr && key->szFace[0] != '\0') {
+        return key->szFace;
+    }
+    return EraNameFromFtc(key->ftc);
+}
+
 bool CanUseRawFont() {
     /* QRawFont needs a QGuiApplication. A lone QCoreApplication (or
        instance() on the wrong thread) is how WORD1 used to hang. */
@@ -111,15 +125,10 @@ QRawFont RawFontFor(const OpusFontKey *key, int *pxOut, const char **whyOut) {
         if (whyOut) *whyOut = "catr";
         return invalid;  /* limitación 2: solo con QGuiApplication */
     }
-    const char *eraName = EraNameFromFtc(key->ftc);
-    if (eraName == nullptr) {
+    const char *name = FaceNameFor(key);
+    if (name == nullptr) {
         if (whyOut) *whyOut = "ftc";
         return invalid;  /* limitación 1 */
-    }
-    const char *file = OpusShellSubstituteFontFile(eraName);
-    if (file == nullptr) {
-        if (whyOut) *whyOut = "no-file";
-        return invalid;
     }
     int px = PixelSizeFor(key);
     if (px <= 0) {
@@ -129,12 +138,43 @@ QRawFont RawFontFor(const OpusFontKey *key, int *pxOut, const char **whyOut) {
     if (pxOut != nullptr) {
         *pxOut = px;
     }
+    /* Los 4 nombres de época siguen midiéndose contra el archivo físico
+       de sustitución (§B2.3/§B2.4, el oráculo medido) -- nunca por
+       QFont::fromFont, ni siquiera cuando llegan aquí vía szFace en vez
+       de la tabla ftc. Un szFace de tiempo de ejecución que no sea uno
+       de los 4 nombres no tiene entrada de sustitución y cae al camino
+       QFont::fromFont de abajo. */
+    const char *file = OpusShellSubstituteFontFile(name);
+    if (file != nullptr) {
+        if (!CanUseRawFont()) {
+            if (whyOut) *whyOut = "no-gui-app";
+            return invalid;
+        }
+        QRawFont rf(QString::fromUtf8(file), static_cast<qreal>(px),
+                    QFont::PreferFullHinting);
+        if (!rf.isValid()) {
+            if (whyOut) *whyOut = "qrawfont-invalid";
+            return invalid;
+        }
+        if (whyOut) *whyOut = nullptr;
+        return rf;
+    }
     if (!CanUseRawFont()) {
         if (whyOut) *whyOut = "no-gui-app";
-        return invalid;
+        return invalid;  /* WORD1 debe llegar al fallback GDI */
     }
-    QRawFont rf(QString::fromUtf8(file), static_cast<qreal>(px),
-                QFont::PreferFullHinting);
+    /* Fuente en tiempo de ejecución sin archivo de sustitución conocido:
+       deja que Qt la resuelva contra las fuentes instaladas del sistema.
+       Este camino es para las pruebas del núcleo / opus_qt_shell, no
+       para WORD1 (que nunca tiene QGuiApplication, ver CanUseRawFont). */
+    QFont qf(QString::fromLatin1(name));
+    qf.setPixelSize(px);
+    qf.setHintingPreference(QFont::PreferFullHinting);
+    /* QRawFont::fromFont's 2nd param is QFontDatabase::WritingSystem, not
+       a hinting preference (that's already on `qf` above) -- the brief's
+       snippet had QFont::PreferFullHinting there, which doesn't compile
+       against this overload; default WritingSystem (Any) is correct. */
+    QRawFont rf = QRawFont::fromFont(qf);
     if (!rf.isValid()) {
         if (whyOut) *whyOut = "qrawfont-invalid";
         return invalid;
@@ -246,29 +286,39 @@ extern "C" int OpusShellCharWidths(const OpusFontKey *key, int chFirst,
         /* Same as FontMetrics: never return -1 when the only problem is
            that WORD1 has no QGuiApplication. LOADFONT treats -1 as
            matFont and the font MessageBox swallows every later
-           WM_COMMAND, including Help About. */
-        if (why != nullptr && std::strcmp(why, "no-gui-app") == 0 &&
-            key != nullptr) {
+           WM_COMMAND, including Help About.
+
+           Gated on !CanUseRawFont(), not on a specific `why` code: a
+           runtime font (szFace, ftc >= 4) with no era substitution file
+           fails RawFontFor with why=="ftc" or why=="no-gui-app"
+           depending on where it fell over, but either way WORD1 (no
+           QGuiApplication ever) must still reach the real GDI fallback
+           below instead of stopping at -1. */
+        if (!CanUseRawFont() && key != nullptr &&
+            g_char_widths_fallback != nullptr) {
             /* g_char_widths_fallback (OpusPortGdiCharWidths) builds a
                real LOGFONT with lfWeight/lfItalic from key->catr, so it
-               stays correct for bold/italic and is tried unconditionally.
-               The oracle table below has no bold/italic rows -- gate it
-               on catr == 0 so a synthesis request fails controlled
-               (Opus/LOADFONT.C:442-448's contract) instead of silently
-               answering with plain-weight widths. */
-            if (g_char_widths_fallback != nullptr &&
-                g_char_widths_fallback(key, chFirst, cch, rgdxu) == 0) {
+               stays correct for bold/italic and is tried unconditionally,
+               regardless of why. */
+            if (g_char_widths_fallback(key, chFirst, cch, rgdxu) == 0) {
                 return 0;
             }
-            if (key->catr == 0) {
-                const char *era = EraNameFromFtc(key->ftc);
-                const OracleRow *row =
-                    era != nullptr ? FindOracleRow(era, PointSizeFor(key))
-                                   : nullptr;
-                if (row != nullptr) {
-                    FillOracleWidths(row, chFirst, cch, rgdxu);
-                    return 0;
-                }
+        }
+        /* Oracle table fallback: only for the 4 era names (EraNameFromFtc,
+           not FaceNameFor -- the table has no rows for runtime szFace
+           fonts) and only plain weight (limitación 2). why=="no-gui-app"
+           specifically means RawFontFor got as far as resolving a real
+           era substitution file and only stopped for lack of a
+           QGuiApplication -- the case this table was captured for. */
+        if (why != nullptr && std::strcmp(why, "no-gui-app") == 0 &&
+            key != nullptr && key->catr == 0) {
+            const char *era = EraNameFromFtc(key->ftc);
+            const OracleRow *row =
+                era != nullptr ? FindOracleRow(era, PointSizeFor(key))
+                               : nullptr;
+            if (row != nullptr) {
+                FillOracleWidths(row, chFirst, cch, rgdxu);
+                return 0;
             }
         }
         return -1;
