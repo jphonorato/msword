@@ -14,6 +14,9 @@
 #define NOWNDCLASS
 #include "word.h"
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "OpusShellMemory.h"    /* Qt-2 B3: OpusMem* */
+#endif
 #include "doc.h"
 #include "props.h"
 #include "sel.h"
@@ -332,6 +335,79 @@ int *pfBlankPic;  /* set true if an empty picture; else ignored */
 }
 
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* H  O U R  O P U S  M E M  A L L O C */
+/* Qt-2 B3: sustitutos de OurGlobalAlloc / GlobalAlloc2 / OurGlobalReAlloc
+   (res.c), mismos helpers que ya tienen filecvt.c, etcmd.c, eldde.c y
+   DDESRVR.C.  OpusMemAlloc/OpusMemRealloc pelados perderian el rechazo de
+   bloques mayores de 64K (res.c:1843/1894) y el reintento con el area de
+   swap reducida mas SetErrorMat(matMem) (res.c:1867-1873).  GlobalAlloc2
+   (res.c:1874) es la variante que SI admite bloques mayores de 64K -- de
+   ahi HOurOpusMemAlloc2, sin la comprobacion de tamano pero con el mismo
+   reintento.  res.c es el hub y se migra al final. */
+static HANDLE HOurOpusMemAlloc2(unsigned long dwBytes, unsigned flags)
+{
+	HANDLE h;
+
+	if ((h = (HANDLE)OpusMemAlloc(dwBytes, flags)) == NULL)
+		{
+		ShrinkSwapArea();
+		if ((h = (HANDLE)OpusMemAlloc(dwBytes, flags)) == NULL)
+			SetErrorMat(matMem);
+		GrowSwapArea();
+		}
+	return h;
+}
+
+
+static HANDLE HOurOpusMemAlloc(unsigned long dwBytes, unsigned flags)
+{
+	if (dwBytes > 0x00010000L)
+		{
+		SetErrorMat(matMem);
+		return NULL;
+		}
+	return HOurOpusMemAlloc2(dwBytes, flags);
+}
+
+
+/* H  O U R  O P U S  M E M  R E A L L O C */
+/* Devuelve el mismo handle en exito (invariante de handle estable del
+   contrato, OpusShellMemory.h) o NULL en fallo. */
+static HANDLE HOurOpusMemRealloc(HANDLE h, unsigned long dwBytes, unsigned flags)
+{
+	HANDLE hNew;
+
+	if (dwBytes > 0x00010000L)
+		{
+		SetErrorMat(matMem);
+		return NULL;
+		}
+
+	if ((hNew = (HANDLE)OpusMemRealloc((OpusHandle)h, dwBytes, flags)) == NULL)
+		{
+		ShrinkSwapArea();
+		if ((hNew = (HANDLE)OpusMemRealloc((OpusHandle)h, dwBytes, flags)) == NULL)
+			SetErrorMat(matMem);
+		GrowSwapArea();
+		}
+	return hNew;
+}
+
+
+/* Los handles que este archivo produce para HDataWriteDocCps (texto,
+   imagen, RTF via rtfout2.c) salen del contrato: FWriteExtScrap los cede
+   al portapapeles del sistema con SetClipboardData, o FSendData
+   (DDESRVR.C) los postea a otro proceso con WM_DDE_DATA.  Cuando wAlloc
+   vale GMEM_MOVEABLE (caso portapapeles, cbInitial == 0) los flags Win16
+   no lo senalizan, asi que esos sitios llevan OPUS_MEM_ESCAPES explicito
+   -- ver 2026-08-11-opus-memory-p2-boundary-crossing-decision.md.
+   hDIB y hBits (FReadPict) NO lo llevan: su ciclo de vida entero es local
+   a esa funcion, verificado por grep del identificador. */
+#define opusMemFlagsEscape(w) (OPUS_MEM_ESCAPES | OpusMemFlagsFromWin16(w))
+#endif
+
+
 
 /* H  W R I T E  T E X T */
 /*  Write doc, cpFirst:cpLim to a windows handle in plain text format.
@@ -431,7 +507,11 @@ int cbInitial;
 
 		Assert (vfli.cpMac > cpNow);
 		cpNow = vfli.cpMac;
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemUnlock((OpusHandle)h);
+#else
 		GlobalUnlock( h );
+#endif
 		}
 
 	/* SUCCEEDED!  NULL-terminate the string before returning the handle */
@@ -441,14 +521,23 @@ int cbInitial;
 	if (lcbMax != lcbMac)
 		{
 		Assert (lcbMax > lcbMac);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		if ((h = HOurOpusMemRealloc(h, (unsigned long)(lcbMac),
+				opusMemFlagsEscape(wAlloc))) == NULL)
+#else
 		if ((h = OurGlobalReAlloc( h, (LONG) (lcbMac), wAlloc )) == NULL)
+#endif
 			{
 			h = hT;    /* this should never happen */
 			goto Failed;
 			}
 		}
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if ((lpch = (LPCH)OpusMemLock((OpusHandle)h)) == NULL)
+#else
 	if ((lpch = GlobalLock( h )) == NULL)
+#endif
 		goto Failed;
 
 	if (cLine == 1 && !fTableCell)
@@ -457,7 +546,11 @@ int cbInitial;
 		lcbMac -= cchEop;
 
 	lpch [lcbMac-1] = '\0';
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)h);
+#else
 	GlobalUnlock( h );
+#endif
 
 	InvalFli();
 
@@ -466,7 +559,11 @@ int cbInitial;
 Failed:
 
 	if (h != NULL)
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree((OpusHandle)h);
+#else
 		GlobalFree( h );
+#endif
 
 	InvalFli();
 
@@ -566,10 +663,19 @@ int cf; /* requested clipboard format */
 		fcFetchPic = vfcFetchPic;
 		}
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	hData = HOurOpusMemAlloc2((unsigned long)cfcPic,
+			opusMemFlagsEscape(wAlloc));
+#else
 	hData = GlobalAlloc2( wAlloc, cfcPic );
+#endif
 	if (hData == NULL)
 		goto Failed;
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if ((lpch = (LPCH)OpusMemLock((OpusHandle)hData)) == NULL)
+#else
 	if ((lpch = GlobalLock (hData)) == NULL)
+#endif
 		goto Failed;
 
 	/* pull pic bytes out of fn, fc */
@@ -584,7 +690,11 @@ int cf; /* requested clipboard format */
 		bltbx((char far *)rgch, lpch, (int)lcbCur);
 		}
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)hData);
+#else
 	GlobalUnlock (hData);
+#endif
 
 	/* Now we have the whole of picture in a windows Global handle */
 	/* See what kind of picture we have */
@@ -594,9 +704,17 @@ int cf; /* requested clipboard format */
 		default:
 			if (vpicFetch.mfp.mm >= MM_META_MAX)
 				goto Failed;
+#if defined(__GNUC__) && !defined(_MSC_VER)
+			if ( ((hDataDescriptor=HOurOpusMemAlloc(
+					(unsigned long)sizeof(METAFILEPICT),
+					opusMemFlagsEscape(wAlloc)))==NULL) ||
+					((lpch=(LPCH)OpusMemLock(
+					(OpusHandle)hDataDescriptor))==NULL))
+#else
 			if ( ((hDataDescriptor=OurGlobalAlloc(wAlloc,
 					(long)sizeof(METAFILEPICT) ))==NULL) ||
 					((lpch=GlobalLock( hDataDescriptor ))==NULL))
+#endif
 				{
 				goto Failed;
 				}
@@ -608,7 +726,11 @@ int cf; /* requested clipboard format */
 				Assert ((unsigned)(-LOWORD(lpch)) >= (unsigned)sizeof(METAFILEPICT) ||
 					(unsigned)(-LOWORD(lpch)) == 0);
 				bltbx( (LPCH) &vpicFetch.mfp, lpch, sizeof(METAFILEPICT));
+#if defined(__GNUC__) && !defined(_MSC_VER)
+				OpusMemUnlock((OpusHandle)hDataDescriptor);
+#else
 				GlobalUnlock( hDataDescriptor );
+#endif
 				}
 			break;
 
@@ -636,7 +758,11 @@ int cf; /* requested clipboard format */
 				lpfn = GetProcAddress(hGDI, MAKEINTRESOURCE(idoCreateDIBitmap));
 				Assert(lpfn != NULL);
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+				if ((lpch = (LPCH)OpusMemLock((OpusHandle)hData)) == NULL)
+#else
 				if ((lpch = GlobalLock(hData)) == NULL)
+#endif
 					{
 					goto Failed;
 					}
@@ -644,7 +770,11 @@ int cf; /* requested clipboard format */
 				if (((LPBITMAPINFOHEADER)lpch)->biCompression != BI_RGB)
 					{
 					// Don't handle DIB that is compressed yet
+#if defined(__GNUC__) && !defined(_MSC_VER)
+					OpusMemUnlock((OpusHandle)hData);
+#else
 					GlobalUnlock(hData);
+#endif
 					goto Failed;
 					}
 
@@ -659,17 +789,29 @@ int cf; /* requested clipboard format */
 					(LPBITMAPINFOHEADER)lpch, (DWORD)CBM_INIT, 
 					(LPSTR)lpBits, (LPBITMAPINFO)lpch, DIB_RGB_COLORS)) == NULL)
 					{
+#if defined(__GNUC__) && !defined(_MSC_VER)
+					OpusMemUnlock((OpusHandle)hData);
+#else
 					GlobalUnlock(hData);
+#endif
 					goto Failed;
 					}
 				}
+#if defined(__GNUC__) && !defined(_MSC_VER)
+			else if ( ((lpch=(LPCH)OpusMemLock((OpusHandle)hData))==NULL) ||
+#else
 			else if ( ((lpch=GlobalLock( hData ))==NULL) ||
+#endif
 					(vpicFetch.bm.bmBits=lpch,
 					((hDataDescriptor=
 					CreateBitmapIndirect((LPBITMAP)&vpicFetch.bm))==NULL)))
 				{
 				if (lpch != NULL)
+#if defined(__GNUC__) && !defined(_MSC_VER)
+					OpusMemUnlock((OpusHandle)hData);
+#else
 					GlobalUnlock( hData );
+#endif
 				goto Failed;
 				}
 
@@ -692,9 +834,15 @@ int cf; /* requested clipboard format */
 #endif /* XBZTEST */
 
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+			OpusMemUnlock((OpusHandle)hData);
+			OpusMemFree((OpusHandle)hData);   /* Bitmap was copied by
+					CreateBitmapIndirect, don't need it anymore */
+#else
 			GlobalUnlock( hData );
 			GlobalFree( hData );   /* Bitmap was copied by CreateBitmapIndirect,
 						don't need it anymore */
+#endif
 			hData = NULL;
 			break;
 			}
@@ -717,15 +865,29 @@ int cf; /* requested clipboard format */
 		return hDataDescriptor;
 	else
 		{
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		hReturn = HOurOpusMemAlloc2(
+				(unsigned long)(cbInitial + sizeof (HANDLE)),
+				opusMemFlagsEscape(wAlloc));
+#else
 		hReturn = GlobalAlloc2( wAlloc,
 				(long)(cbInitial + sizeof (HANDLE)) );
+#endif
 		if (hReturn != NULL)
 			{
+#if defined(__GNUC__) && !defined(_MSC_VER)
+			if ( ( lpch=(LPCH)OpusMemLock((OpusHandle)hReturn) ) != NULL )
+#else
 			if ( ( lpch=GlobalLock(hReturn) ) != NULL )
+#endif
 				{
 				bltbx( (LPCH) &hDataDescriptor, LpchIncr(lpch, cbInitial),
 						sizeof(HANDLE) );
+#if defined(__GNUC__) && !defined(_MSC_VER)
+				OpusMemUnlock((OpusHandle)hReturn);
+#else
 				GlobalUnlock( hReturn );
+#endif
 				return hReturn;
 				}
 			}
@@ -743,14 +905,26 @@ Failed:
 			}
 		else  
 			// metafile, dib in metafile
+#if defined(__GNUC__) && !defined(_MSC_VER)
+			OpusMemFree((OpusHandle)hDataDescriptor);
+#else
 			GlobalFree(hDataDescriptor);
+#endif
 		}
 
 	if (hData != NULL)
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree((OpusHandle)hData);
+#else
 		GlobalFree( hData );
+#endif
 
 	if (hReturn != NULL)
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree((OpusHandle)hReturn);
+#else
 		GlobalFree( hReturn);
+#endif
 
 	return NULL;
 }
@@ -1050,7 +1224,11 @@ int cbInitial;
 		for a null terminator. See CchReadLineExt. */
 
 	/* note: if lcb is more than 64K, our simple methods won't work--don't try */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if ((lcb = OpusMemSize((OpusHandle)hData)) > 0x00010000L)
+#else
 	if ((lcb = GlobalSize(hData)) > 0x00010000L)
+#endif
 		return fFalse;
 
 	if ((lpch = GlobalLockClip(hData)) == NULL )
@@ -1082,7 +1260,11 @@ int cbInitial;
 		lpch += cch;
 		}
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)hData);
+#else
 	GlobalUnlock (hData);
+#endif
 
 	return (fTrue);
 }
@@ -1144,7 +1326,11 @@ struct RC *prcWinMF;  /* window org/ext rc for metafiles. may be null */
 		/*  get to actual data handle address */
 		lpch += cbInitial;
 		bltbx( lpch, &hDDE, sizeof(HANDLE));
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemUnlock((OpusHandle)hData);
+#else
 		GlobalUnlock( hData );
+#endif
 		hData = hDDE;
 		}
 
@@ -1216,9 +1402,16 @@ struct RC *prcWinMF;  /* window org/ext rc for metafiles. may be null */
 			if (cBitsPix != 24)
 				cbInfoHdr += (1 << cBitsPix) * sizeof(RGBQUAD);
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+			if ((hDIB = HOurOpusMemAlloc2((unsigned long)
+				((long)cbInfoHdr + lcbBits),
+				OpusMemFlagsFromWin16(GMEM_MOVEABLE))) == NULL ||
+				(lpBitsInfo = (LPCH)OpusMemLock((OpusHandle)hDIB)) == NULL)
+#else
 			if ((hDIB = GlobalAlloc2(GMEM_MOVEABLE, 
 				(DWORD)((long)cbInfoHdr + lcbBits))) == NULL ||
 				(lpBitsInfo = GlobalLock(hDIB)) == NULL)
+#endif
 				{
 				goto ReadDone;
 				}
@@ -1240,11 +1433,19 @@ struct RC *prcWinMF;  /* window org/ext rc for metafiles. may be null */
 			if (OpusCallGetDIBits(lpfn)(PwwdWw(wwCur)->hdc, hData, 0, bm.bmHeight, (LPSTR)lpBits,
 				(LPBITMAPINFO)lpBitsInfo, DIB_RGB_COLORS) != bm.bmHeight)
 				{
+#if defined(__GNUC__) && !defined(_MSC_VER)
+				OpusMemUnlock((OpusHandle)hDIB);
+#else
 				GlobalUnlock(hDIB);
+#endif
 				goto ReadDone;
 				}
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+			OpusMemUnlock((OpusHandle)hDIB);
+#else
 			GlobalUnlock(hDIB);
+#endif
 			hData = hDIB;
 			cf = CF_DIB; 
 			// we now got a DIB, request DIB format, so it will be turned
@@ -1268,7 +1469,13 @@ LKeepGoing:
 		int bmHeight;
 		int bmBitsPixel;
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		/* hData aqui es el handle ajeno del portapapeles o el hDIB propio
+		   armado unas lineas mas arriba; el contrato enruta por IsOwn(). */
+		lpch = (LPCH)OpusMemLock((OpusHandle)hData);
+#else
 		lpch = GlobalLock(hData);
+#endif
 		picInfo.mfp.mm = MM_ANISOTROPIC; // convert a DIB to be embedded in a metafile 
 
 #define lpbc ((LPBITMAPCOREHEADER) lpch)
@@ -1279,7 +1486,11 @@ LKeepGoing:
 #endif
 		if ((cbDIBHdr = CbDIBHeader(lpbi)) == 0)
 			{
+#if defined(__GNUC__) && !defined(_MSC_VER)
+			OpusMemUnlock((OpusHandle)hData);
+#else
 			GlobalUnlock(hData);
+#endif
 			goto ReadDone;
 			}
 
@@ -1290,7 +1501,11 @@ LKeepGoing:
 	
 			if (lpbi->biCompression != BI_RGB)
 				{
+#if defined(__GNUC__) && !defined(_MSC_VER)
+				OpusMemUnlock((OpusHandle)hData);
+#else
 				GlobalUnlock(hData);
+#endif
 				goto ReadDone;
 				}
 
@@ -1313,7 +1528,11 @@ LKeepGoing:
 			}
 		else /* unknown format */
 			{
+#if defined(__GNUC__) && !defined(_MSC_VER)
+			OpusMemUnlock((OpusHandle)hData);
+#else
 			GlobalUnlock(hData);
+#endif
 			goto ReadDone;
 			}
 
@@ -1422,8 +1641,14 @@ LKeepGoing:
 				(unsigned long) picInfo.bm.bmPlanes );
 
 		/* Get the bitmap bits into a global handle */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		if ( ((hBits = HOurOpusMemAlloc2(lcbPicData,
+				OpusMemFlagsFromWin16(GMEM_MOVEABLE)))==NULL) ||
+				((lpch = (LPCH)OpusMemLock((OpusHandle)hBits)) == NULL) ||
+#else
 		if ( ((hBits = GlobalAlloc2( GMEM_MOVEABLE, lcbPicData ))==NULL) ||
 				((lpch = GlobalLock( hBits )) == NULL) ||
+#endif
 				(GetBitmapBits( hData, lcbPicData, lpch ) == 0))
 			{
 			/* Error */
@@ -1479,14 +1704,22 @@ LKeepGoing:
 			}
 		bltbx( lpmfp, (METAFILEPICT FAR *)&picInfo.mfp,
 				sizeof(METAFILEPICT));
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemUnlock((OpusHandle)hData);
+#else
 		GlobalUnlock( hData );
+#endif
 
 		if ((lpch=GlobalLockClip( picInfo.mfp.hMF ))==NULL)
 			{
 			goto ReadDone;
 			}
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		lcbPicData = OpusMemSize((OpusHandle)picInfo.mfp.hMF);
+#else
 		lcbPicData = GlobalSize( picInfo.mfp.hMF );
+#endif
 		mfp = picInfo.mfp;
 
 #ifdef BZ
@@ -1737,18 +1970,35 @@ ReadDoneFree:
 		{
 	default: 		
 		Assert (picInfo.mfp.mm < MM_META_MAX);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemUnlock((OpusHandle)picInfo.mfp.hMF);
+#else
 		GlobalUnlock( picInfo.mfp.hMF );
+#endif
 		if (cf == CF_DIB) /* get to here because a DIB turns into a metafile */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+			OpusMemUnlock((OpusHandle)hData);
+#else
 			GlobalUnlock(hData);
+#endif
 		break;
 
 	case MM_TIFF:
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemUnlock((OpusHandle)hData);
+#else
 		GlobalUnlock( hData );
+#endif
 		break;
 
 	case MM_BITMAP:
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemUnlock((OpusHandle)hBits);
+		OpusMemFree((OpusHandle)hBits);
+#else
 		GlobalUnlock( hBits );
 		GlobalFree( hBits );
+#endif
 		break;
 		}
 
@@ -1763,7 +2013,11 @@ ReadDone:
 
 	if (hDIB != NULL)
 		{
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree((OpusHandle)hDIB);
+#else
 		GlobalFree(hDIB);
+#endif
 		}
 
 	if (vmerr.fDiskFail || vmerr.fMemFail)
@@ -2073,6 +2327,16 @@ LONG *plcbMax;
 
 		Assert( *ph != hNil );
 		h = *ph;  /* to save original handle */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		if ((*ph = HOurOpusMemRealloc(*ph,
+				(unsigned long) (lcbT = CBTOPBOUND (lcb + CBDESIRED)),
+				opusMemFlagsEscape(wAlloc))) == NULL)
+			{   /* Could not expand handle. Try minimum allocation  */
+			*ph = h;
+			if ((*ph = HOurOpusMemRealloc(*ph,
+					(unsigned long) (lcbT = CBTOPBOUND(lcb)),
+					opusMemFlagsEscape(wAlloc))) == NULL)
+#else
 		if ((*ph = OurGlobalReAlloc( *ph,
 				(LONG) (lcbT = CBTOPBOUND (lcb + CBDESIRED)),
 				wAlloc )) == NULL)
@@ -2080,6 +2344,7 @@ LONG *plcbMax;
 			*ph = h;
 			if ((*ph = OurGlobalReAlloc( *ph, (LONG) (lcbT = CBTOPBOUND(lcb)),
 					wAlloc )) == NULL)
+#endif
 				{   /* Could not expand handle */
 				*ph = h;   /* So it can still be used */
 				/* leave ph, mac and max unchanged */
@@ -2096,11 +2361,21 @@ LONG *plcbMax;
 		{
 		Assert( *ph == hNil );
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		if ((*ph = HOurOpusMemAlloc((unsigned long)
+				(lcbT = CBTOPBOUND(lcb + CBDESIRED)),
+				opusMemFlagsEscape(wAlloc))) == hNil)
+			{     /* Could not get desired amount. Try minimum allocation  */
+			if ((*ph = HOurOpusMemAlloc((unsigned long)
+					(lcbT = CBTOPBOUND(lcb)),
+					opusMemFlagsEscape(wAlloc))) == hNil)
+#else
 		if ((*ph = OurGlobalAlloc( wAlloc,
 				(LONG) (lcbT = CBTOPBOUND(lcb + CBDESIRED)) )) == hNil)
 			{     /* Could not get desired amount. Try minimum allocation  */
 			if ((*ph = OurGlobalAlloc( wAlloc,
 					(LONG) (lcbT = CBTOPBOUND(lcb)))) == hNil)
+#endif
 				{   /* Could not get minimum */
 				*plcbMac = *plcbMax = 0;
 				return fFalse;
