@@ -23,6 +23,9 @@
 
 #define FONTS
 #include "word.h"
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "OpusShellMemory.h"    /* Qt-2 B3: OpusMem* */
+#endif
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
 #include "version.h"
 #include "heap.h"
@@ -230,7 +233,16 @@ int cbInitial;
 	Assert (cf == cfRTF);
 
 	/* note: if lcb is more than 64K, our simple methods won't work--don't try */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	/* Qt-2 B3: hData es ajeno -- lo entrega GetClipboardData o llega en
+	   un WM_DDE_DATA de otro proceso (ver el comentario de cabecera de
+	   esta funcion: "Used by dde and clipboard").  No lo alocamos, asi
+	   que solo Size/Unlock pasan por el contrato, que via IsOwn() los
+	   reenvia a GlobalSize/GlobalUnlock reales. */
+	if ((lcb = OpusMemSize((OpusHandle)hData)) > 0x00010000L)
+#else
 	if ((lcb = GlobalSize(hData)) > 0x00010000L)
+#endif
 		return fFalse;
 
 	if ((lpch = GlobalLockClip(hData)) == NULL )
@@ -272,7 +284,11 @@ int cbInitial;
 
 	FreeHribl(hribl);
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)hData);
+#else
 	GlobalUnlock (hData);
+#endif
 
 	return (fTrue);
 }
