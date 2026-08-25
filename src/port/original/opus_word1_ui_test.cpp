@@ -182,13 +182,47 @@ void collect_descendants_by_class(const HWND parent,
     }
 }
 
+// Read a control's text from a window owned by ANOTHER process.
+//
+// GetWindowText*/GetDlgItemText* only send WM_GETTEXT when the target
+// window belongs to the calling process. For a window in another process
+// they return whatever caption the window manager itself has cached --
+// documented Win32 behaviour ("If the target window is owned by another
+// process and does not have a caption, the return value is a null string"),
+// and Wine implements it the same way: user32 reads the wineserver's stored
+// window text instead of sending any message. That stored text is only ever
+// written by DefWindowProc's WM_SETTEXT path, which Static and Button reach,
+// but Edit/ComboBox/ComboBoxEx32 do not -- they consume WM_SETTEXT in their
+// own window procs and keep the string in a private buffer. So a
+// cross-process GetWindowTextA on an Edit ALWAYS reads back empty no matter
+// what it actually contains. WM_GETTEXT, by contrast, is a system message
+// the window manager marshals across process boundaries, so sending it
+// explicitly is the only correct way for this harness to read a control's
+// text out of WORD1.
+int read_control_text_ansi(const HWND control, char* const buffer,
+                           const int buffer_size) {
+    if (buffer == nullptr || buffer_size <= 0) {
+        return 0;
+    }
+    buffer[0] = '\0';
+    if (control == nullptr) {
+        return 0;
+    }
+    return static_cast<int>(SendMessageA(control, WM_GETTEXT,
+                                         static_cast<WPARAM>(buffer_size),
+                                         reinterpret_cast<LPARAM>(buffer)));
+}
+
 // Diagnostic helper for --roundtrip: dump every descendant of a dialog with
-// its control id, class, visibility and current text, recursively. Used
-// only on the Save As filename-set failure path (see task-1-report.md,
-// docs/superpowers/sdd/2026-08-25-doc-roundtrip/) where the real #32770
-// dialog's ComboBoxEx32 filename field does not retain a value set via
-// CDM_SETCONTROLTEXT or SetWindowTextA -- kept so whoever continues this
-// investigation gets the live control tree without re-instrumenting.
+// its control id, class, visibility and text, recursively. Used only on the
+// Save As failure paths, so a broken run reports the live control tree
+// instead of just a message. Both texts are printed on purpose: cachedText
+// is what GetWindowTextW returns cross-process (the window manager's stored
+// caption -- empty for every control that owns its own text) and wmGetText
+// is the control's real content via WM_GETTEXT. The gap between those two
+// columns is exactly what made rounds 1-2 of this work look blocked; see
+// read_control_text_ansi above and task-1-report.md in
+// docs/superpowers/sdd/2026-08-25-doc-roundtrip/.
 void dump_dialog_tree_diagnostic(const HWND parent, const int depth = 0) {
     for (HWND child = GetWindow(parent, GW_CHILD); child != nullptr;
          child = GetWindow(child, GW_HWNDNEXT)) {
@@ -207,8 +241,12 @@ void dump_dialog_tree_diagnostic(const HWND parent, const int depth = 0) {
         for (int i = 0; i < depth; ++i) {
             std::cerr << "  ";
         }
+        char live_text[256] = {};
+        read_control_text_ansi(child, live_text,
+                               static_cast<int>(std::size(live_text)));
         std::cerr << "id=" << GetDlgCtrlID(child) << " hwnd=" << child
-                  << " class='" << class_ansi << "' text='" << text_ansi
+                  << " class='" << class_ansi << "' cachedText='" << text_ansi
+                  << "' wmGetText='" << live_text
                   << "' visible=" << IsWindowVisible(child)
                   << " enabled=" << IsWindowEnabled(child) << '\n';
         dump_dialog_tree_diagnostic(child, depth + 1);
@@ -600,29 +638,6 @@ bool send_control_key(const WORD virtual_key) {
     return true;
 }
 
-bool send_shift_key(const WORD virtual_key) {
-    std::array<INPUT, 4> input{};
-    input[0].type = INPUT_KEYBOARD;
-    input[0].ki.wVk = VK_SHIFT;
-    input[1].type = INPUT_KEYBOARD;
-    input[1].ki.wVk = virtual_key;
-    input[2] = input[1];
-    input[2].ki.dwFlags = KEYEVENTF_KEYUP;
-    input[3] = input[0];
-    input[3].ki.dwFlags = KEYEVENTF_KEYUP;
-    // Same per-event delivery as send_control_key (see its comment), with
-    // Shift instead of Ctrl -- needed for uppercase letters and shifted OEM
-    // keys (e.g. the ':' on a US layout, which lives on the ';' key) when
-    // typing a real Windows path into a native dialog's Edit control.
-    for (INPUT& event : input) {
-        if (SendInput(1, &event, sizeof(INPUT)) != 1) {
-            return false;
-        }
-        Sleep(35);
-    }
-    return true;
-}
-
 bool execute_control_shortcut(const HWND pane, const WORD virtual_key) {
     return SendMessageW(pane, kWmOpusX64QuerySelection, 80,
                         kKcControl | virtual_key) != 0;
@@ -666,45 +681,6 @@ bool send_physical_text(const wchar_t* text) {
             return false;
         }
         Sleep(character == L'\r' ? 300 : 50);
-    }
-    return true;
-}
-
-// Real SendInput keyboard typing for a Windows path (drive letter, ':',
-// '\', '.', mixed-case letters, digits/hex digits) into a native dialog's
-// Edit control -- deliberately a separate helper, not a widened
-// send_physical_text: that one's alphabet is intentionally restricted to
-// a-z/0-9/space/CR for typed *document* text (Step 2 of --roundtrip and
-// every other caller), and a temp path needs punctuation and case
-// send_physical_text was never meant to produce. US keyboard layout: '\'
-// is VK_OEM_5 unshifted, ':' is VK_OEM_1 (the ';' key) shifted, '.' is
-// VK_OEM_PERIOD unshifted.
-bool send_physical_path_text(const char* text) {
-    for (const char* character = text; *character != '\0'; ++character) {
-        WORD virtual_key = 0;
-        bool shift = false;
-        if (*character >= 'a' && *character <= 'z') {
-            virtual_key = static_cast<WORD>(*character - 'a' + 'A');
-        } else if (*character >= 'A' && *character <= 'Z') {
-            virtual_key = static_cast<WORD>(*character);
-            shift = true;
-        } else if (*character >= '0' && *character <= '9') {
-            virtual_key = static_cast<WORD>(*character);
-        } else if (*character == '\\') {
-            virtual_key = VK_OEM_5;
-        } else if (*character == ':') {
-            virtual_key = VK_OEM_1;
-            shift = true;
-        } else if (*character == '.') {
-            virtual_key = VK_OEM_PERIOD;
-        } else {
-            return false;
-        }
-        if (!(shift ? send_shift_key(virtual_key)
-                    : send_virtual_key(virtual_key))) {
-            return false;
-        }
-        Sleep(50);
     }
     return true;
 }
@@ -1062,84 +1038,42 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
             std::cerr << "roundtrip found save_dialog=" << save_dialog
                       << " caption='" << dialog_caption_ansi << "'\n";
         }
-        /* CDM_SETCONTROLTEXT = WM_USER+100+4, edt1 = 0x0480 */
-        const LRESULT set_control_text_result = SendMessageA(
-            save_dialog, WM_USER + 104, 0x0480,
-            reinterpret_cast<LPARAM>(ansi_path));
+        // Set the file name. The brief's edt1 (0x0480) does not exist in
+        // this dialog: run_word95_common_file_dialog asks for OFN_EXPLORER,
+        // so Wine builds the Explorer-style template, whose filename field
+        // is cmb13 (0x047C) -- an editable ComboBoxEx32 -> ComboBox -> Edit
+        // composite. A plain WM_SETTEXT on that ComboBoxEx32 is enough: the
+        // window manager marshals WM_SETTEXT across the process boundary,
+        // and ComboBoxEx32 forwards it down to the inner Edit, which is
+        // exactly where comdlg32 reads the name from when Save is pressed.
+        //
+        // Read the value back with WM_GETTEXT, never GetDlgItemTextA: see
+        // read_control_text_ansi above for why a cross-process
+        // GetWindowText on an Edit/ComboBox always reports empty (that
+        // false negative is what made rounds 1-2 of this work look
+        // blocked -- task-1-report.md).
+        const HWND filename_field = GetDlgItem(save_dialog, 0x047C);
+        if (filename_field == nullptr) {
+            std::cerr << "roundtrip dialog tree dump:\n";
+            dump_dialog_tree_diagnostic(save_dialog);
+            DeleteFileA(ansi_path);
+            return fail(process, 87,
+                        "roundtrip Save As dialog has no cmb13 filename "
+                        "field");
+        }
+        SendMessageA(filename_field, WM_SETTEXT, 0,
+                     reinterpret_cast<LPARAM>(ansi_path));
         char filename_check[MAX_PATH] = {};
-        GetDlgItemTextA(save_dialog, 0x0480, filename_check,
-                        static_cast<int>(std::size(filename_check)));
-        std::cerr << "roundtrip CDM_SETCONTROLTEXT(edt1) result="
-                  << set_control_text_result << " filename_check='"
-                  << filename_check << "'\n";
-        if (filename_check[0] == '\0') {
-            // edt1 (0x0480) does not exist in the Explorer-style template
-            // Wine actually builds (OFN_EXPLORER is set in
-            // run_word95_common_file_dialog) -- the real filename field is
-            // cmb13 = 0x047C (1148), an editable ComboBoxEx32 ->ComboBox
-            // ->Edit. Message-based attempts to set it directly
-            // (CDM_SETCONTROLTEXT to cmb13, SetWindowTextA, and even real
-            // per-character WM_CHAR posted to the Edit) all reported
-            // success but never persisted a value past an immediate
-            // readback -- see task-1-report.md for that investigation.
-            // None of those establish real cross-process keyboard focus;
-            // this does, the same way Step 2 above types into the document
-            // pane: bring the dialog to the foreground and focus its inner
-            // Edit for real, then drive real SendInput keystrokes.
-            const HWND filename_edit =
-                find_descendant_by_class(save_dialog, L"Edit");
-            if (filename_edit != nullptr) {
-                const LONG style = GetWindowLongA(filename_edit, GWL_STYLE);
-                std::cerr << "roundtrip filename_edit style=0x" << std::hex
-                          << style << std::dec
-                          << " ES_READONLY=" << ((style & ES_READONLY) != 0)
-                          << " WS_DISABLED="
-                          << ((style & WS_DISABLED) != 0) << '\n';
-            }
-            const bool focused = filename_edit != nullptr &&
-                make_foreground_and_focus(save_dialog, filename_edit,
-                                          thread_id);
-            GUITHREADINFO post_focus_gui{};
-            post_focus_gui.cbSize = sizeof(post_focus_gui);
-            GetGUIThreadInfo(thread_id, &post_focus_gui);
-            std::cerr << "roundtrip post-focus hwndFocus="
-                      << post_focus_gui.hwndFocus
-                      << " hwndActive=" << post_focus_gui.hwndActive
-                      << " hwndCapture=" << post_focus_gui.hwndCapture
-                      << " foreground=" << GetForegroundWindow()
-                      << " filename_edit=" << filename_edit
-                      << " save_dialog=" << save_dialog << '\n';
-            const bool typed =
-                focused && send_physical_path_text(ansi_path);
-            if (typed) {
-                Sleep(200);
-            }
-            GUITHREADINFO post_type_gui{};
-            post_type_gui.cbSize = sizeof(post_type_gui);
-            GetGUIThreadInfo(thread_id, &post_type_gui);
-            std::cerr << "roundtrip post-type hwndFocus="
-                      << post_type_gui.hwndFocus
-                      << " foreground=" << GetForegroundWindow() << '\n';
-            char fallback_check[MAX_PATH] = {};
-            if (filename_edit != nullptr) {
-                GetWindowTextA(filename_edit, fallback_check,
-                              static_cast<int>(std::size(fallback_check)));
-            }
-            std::cerr << "roundtrip real-input filename_edit=" << filename_edit
-                      << " focused=" << focused << " typed=" << typed
-                      << " fallback_check='" << fallback_check << "'\n";
-            if (filename_edit == nullptr || fallback_check[0] == '\0') {
-                // BLOCKED (see task-1-report.md): neither the documented
-                // message-based approaches nor real focus + real SendInput
-                // keystrokes into the actual filename Edit persist a value
-                // that survives an immediate readback. Dump the live
-                // control tree for whoever picks this up.
-                std::cerr << "roundtrip dialog tree dump:\n";
-                dump_dialog_tree_diagnostic(save_dialog);
-                DeleteFileA(ansi_path);
-                return fail(process, 87,
-                            "roundtrip could not set the Save As filename");
-            }
+        read_control_text_ansi(filename_field, filename_check,
+                               static_cast<int>(std::size(filename_check)));
+        std::cerr << "roundtrip filename field=" << filename_field
+                  << " reads back '" << filename_check << "'\n";
+        if (lstrcmpiA(filename_check, ansi_path) != 0) {
+            std::cerr << "roundtrip dialog tree dump:\n";
+            dump_dialog_tree_diagnostic(save_dialog);
+            DeleteFileA(ansi_path);
+            return fail(process, 87,
+                        "roundtrip could not set the Save As filename");
         }
         if (!PostMessageW(save_dialog, kWmCommand, IDOK, 0)) {
             DeleteFileA(ansi_path);
@@ -1179,7 +1113,36 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
             Sleep(100);
         }
         if (!file_ready) {
+            // The brief asks for the exact dialog class/caption on this
+            // path. Word reports save failures through a plain MessageBox
+            // (class #32770, caption "Microsoft Word"), whose reason lives
+            // in a Static child -- so dump every #32770 still standing with
+            // its contents, not just the window list. That is how the one
+            // real failure seen here was identified ("Not a valid file
+            // name": Word 1.1a's FntSz rejects any path component longer
+            // than 8.3, and the Win95 shim stages saves through
+            // <WORD1.exe dir>\W95TEMP, so a checkout directory such as
+            // "msword-rt" makes every Save As fail -- see task-1-report.md).
+            std::cerr << "roundtrip save_dialog alive="
+                      << IsWindow(save_dialog) << '\n';
             log_process_windows(process.dwProcessId);
+            for (HWND top = GetTopWindow(nullptr); top != nullptr;
+                 top = GetWindow(top, GW_HWNDNEXT)) {
+                wchar_t top_class[128] = {};
+                GetClassNameW(top, top_class,
+                              static_cast<int>(std::size(top_class)));
+                if (lstrcmpW(top_class, L"#32770") != 0 ||
+                    !IsWindowVisible(top)) {
+                    continue;
+                }
+                char top_caption[256] = {};
+                read_control_text_ansi(
+                    top, top_caption,
+                    static_cast<int>(std::size(top_caption)));
+                std::cerr << "roundtrip leftover #32770 hwnd=" << top
+                          << " caption='" << top_caption << "'\n";
+                dump_dialog_tree_diagnostic(top, 1);
+            }
             DeleteFileA(ansi_path);
             return fail(process, 89,
                         "roundtrip Save As did not produce the target .doc "
