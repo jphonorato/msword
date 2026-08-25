@@ -460,6 +460,14 @@ LNewMetrics:
 #if defined(__GNUC__) && !defined(_MSC_VER)
 		if (!pfti->fPrinter && !vfPrvwDisp)
 			{
+			/* shellKey no tiene inicializador (declaracion K&R de mas
+			   arriba) y FaceNameFor() en el nucleo lee shellKey.szFace
+			   en cada llamada desde el fix de szFace -- dejar ese campo
+			   sin poner es memoria de pila indeterminada dereferenciada
+			   como puntero. Poner todo el struct a cero primero deja
+			   ademas cualquier campo futuro en un valor seguro por
+			   omision, no solo szFace. */
+			memset(&shellKey, 0, sizeof shellKey);
 			/* Camino de pantalla, paso variable: contrato Qt del shell
 			   (docs/port-qt/01-frontera-nucleo-shell.md SB2) en vez de
 			   GetCharWidth/OurGetCharWidth. ibstFont ya es el indice de
@@ -478,6 +486,21 @@ LNewMetrics:
 			   controlado (SB2.5/limitacion 2 de OpusShellFontMetrics.cpp:
 			   sin sintesis de negrita/cursiva). */
 			shellKey.catr = (fcid.fBold ? 1 : 0) | (fcid.fItalic ? 2 : 0);
+			/* Nombre real de vhsttbFont, no solo el ftc: deja que el
+			   fallback GDI (OpusPortGdiCharWidths) mida cualquier fuente
+			   de tiempo de ejecucion (ftc >= 4) en vez de fallar siempre
+			   por no estar en la tabla fija de 4 nombres de epoca (Bug 4,
+			   docs/port-linux/03-comportamiento-word1-startup-blocked.md
+			   Task 6 Septima actualizacion). szFfn es un string C con NUL
+			   pese al comentario "FFN is a funny st" de fontwin.h -- no
+			   es un Pascal st, no hace falta CchSz/CbSzOfPffn aqui. El
+			   puntero solo vive durante esta llamada a
+			   OpusShellCharWidths, no se copia a un buffer propio. */
+			{
+			struct FFN *pffn = PstFromSttb(vhsttbFont, fcid.ibstFont);
+			if (pffn != NULL)
+				shellKey.szFace = pffn->szFfn;
+			}
 			if (OpusShellCharWidths( &shellKey, chDxpMin,
 					chDxpMax - chDxpMin, rgdxuShell ) != 0)
 				{

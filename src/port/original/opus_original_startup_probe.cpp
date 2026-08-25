@@ -464,12 +464,21 @@ extern "C" int OpusPortGdiCharWidths(const OpusFontKey *key, int chFirst,
         return -1;
     }
     const char *face = nullptr;
-    switch (key->ftc) {
-        case 0: face = "Tms Rmn"; break;
-        case 1: face = "Symbol"; break;
-        case 2: face = "Helv"; break;
-        case 3: face = "Courier"; break;
-        default: return -1;
+    if (key->szFace != nullptr && key->szFace[0] != '\0') {
+        /* Runtime face from Opus/LOADFONT.C's vhsttbFont (ftc >= 4, and
+           now also ftc 0-3 -- LOADFONT fills szFace unconditionally).
+           Never guessed: if this name is wrong for the box, GDI just
+           fails CreateFontIndirectA below and this function returns -1
+           like it always did, it does not silently substitute Helv. */
+        face = key->szFace;
+    } else {
+        switch (key->ftc) {
+            case 0: face = "Tms Rmn"; break;
+            case 1: face = "Symbol"; break;
+            case 2: face = "Helv"; break;
+            case 3: face = "Courier"; break;
+            default: return -1;
+        }
     }
     HDC hdc = CreateCompatibleDC(nullptr);
     if (hdc == nullptr) {
@@ -493,7 +502,14 @@ extern "C" int OpusPortGdiCharWidths(const OpusFontKey *key, int chFirst,
     }
     lf.lfWeight = (key->catr & 1) ? FW_BOLD : FW_NORMAL;
     lf.lfItalic = (key->catr & 2) ? 1 : 0;
-    lf.lfCharSet = (key->ftc == 1) ? SYMBOL_CHARSET : ANSI_CHARSET;
+    /* Keyed on the resolved face name, not on whether szFace was used:
+       LOADFONT.C now fills szFace unconditionally, including for the era
+       fonts (ftc 0-3), so "was szFace used" no longer distinguishes the
+       era Symbol font from any other face -- comparing the name itself
+       keeps ftc==1 (era Symbol) on SYMBOL_CHARSET whether it arrived via
+       szFace or the switch above. */
+    lf.lfCharSet = (lstrcmpiA(face, "Symbol") == 0) ? SYMBOL_CHARSET
+                                                     : ANSI_CHARSET;
     lf.lfQuality = ANTIALIASED_QUALITY;
     lstrcpynA(lf.lfFaceName, face, LF_FACESIZE);
     HFONT hfont = CreateFontIndirectA(&lf);
