@@ -120,4 +120,3 @@ Do not merge to `main` in this task; leave that to the maintainer.
 - Spec coverage: Bug 4 already landed; this plan only covers the assertion the test never reached before.
 - Not a placeholder: Step 4 exists only as a measured fallback, gated on Step 3 still showing `bands=0,0` after `UpdateWindow`.
 - Forbidden files listed in Global Constraints so a later “the real bug is disp.c” does not sneak in.
-)
