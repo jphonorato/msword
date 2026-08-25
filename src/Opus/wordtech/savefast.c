@@ -2341,6 +2341,10 @@ FSaveTbls()
 						psedExcerpt->fUnk = fFalse;
 					}
 				}
+/* the cp's above went out at cbCpDisk, but the SEDs go out at native width:
+	cbSED sizes both this write and the read, so it is self consistent, but
+	struct SED's fcSepx is an FC and so is 8 bytes here and 4 on MSVC x64.
+	See the scope note beside cbCpDisk in file.h. */
 			WriteRgchToFn(fnDest, rgsedExcerpt, cbSED * isedExcerptMac);
 			if (FFileWriteError())
 				goto LReturnFail;
@@ -2818,6 +2822,8 @@ FSaveTbls()
 				((struct PRM *)&ppcdExcerpt->prm)->cfgrPrc = iprc;
 				}
 			}
+/* native width, like the SEDs above: struct PCD's fc is an FC.  cbPCD sizes
+	the write and the read, so it round trips; see file.h beside cbCpDisk. */
 		WriteRgchToFn(fnDest, rgpcdExcerpt, cbPCD * ipcdExcerptMac);
 		if (FFileWriteError())
 			goto LReturnFail;
@@ -2910,7 +2916,10 @@ CP      cpCorrect;
 		cbRgcp = (iMac + 1) * cbCpDisk;
 		WriteRgcpToFn(fnDest, hprgcp, iMac + 1);
 
-		/* write rgfoo */
+		/* write rgfoo, at native width: pplc->cb sizes both this and the
+			read in ReadIntoExtPlc, so every foo type round trips, but the
+			ones holding an FC (SED, PCD) are wider here than on MSVC x64.
+			See the scope note beside cbCpDisk in file.h. */
 		hpchFoo = &hprgcp[pplc->iMax];
 		cbRgfoo = pplc->cb * iMac;
 		WriteHprgchToFn(fnDest, hpchFoo, cbRgfoo);

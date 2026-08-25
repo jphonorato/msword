@@ -1695,7 +1695,10 @@ uns cbTotal;
 	Win(StartUMeas(umScanFnForBytes));
 	/* On file a plc is ccp cp's of cbCpDisk bytes followed by ccp-1 foos;
 		in memory the cp's are sizeof(CP) wide and the foos start after
-		them, so the two runs are read separately. */
+		them, so the two runs are read separately.  The foo run is moved at
+		native width -- pplc->cb sizes it here and in QuicksavePlc alike --
+		which round trips but is not the MSVC x64 layout for the foo types
+		holding an FC.  See the scope note beside cbCpDisk in file.h. */
 	ccp = (uns)(((long)cbTotal - cbCpDisk) / (long)(pplc->cb + cbCpDisk)) + 1;
 	ReadRgcpFromFn(fn, hprgcp, ccp);
 	if (pplc->cb > 0)

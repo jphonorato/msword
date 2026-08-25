@@ -935,12 +935,45 @@ int ibpDelete;
 /* P A C K E D   F I B   A N D   P L C   I / O */
 
 /* In memory an FC or a CP is the native long, which is 8 bytes wide in a
-	64 bit build.  On file both have always been 4 bytes, as has every other
-	FIB field, so the in memory FIB cannot be blitted to or from a file page:
-	it does not even fit in a sector.  The routines below are the only place
-	that knows the on file layout.  They are not conditional on the build --
-	where long is already 4 bytes they produce exactly the bytes the old
-	blits produced, so the file format does not change. */
+	64 bit build.  That makes the in memory FIB larger than a sector, so it
+	cannot be blitted to or from a file page at all.  The routines below are
+	the only place that knows the on file layout.
+
+	What they write is one 4 byte word per FIB field.  That is NOT the 1990
+	16 bit layout -- there uns, PN and int were 2 bytes and only FC and CP
+	were 4 -- it is the layout the MSVC x64 build of this same source
+	produces natively, which is the oracle this port is measured against.
+	They are deliberately not conditional on the build: where long is
+	already 4 bytes, sizeof(struct FIB) is 420 with no padding and these
+	routines emit byte for byte what the old blit emitted, so the Windows
+	path keeps its format and both paths agree.
+
+	Scope note -- what is unified and what is not.  The FIB and the cp
+	arrays of a PLC go out at 4 bytes per field.  The *foo records* of a
+	PLC (struct SED's fcSepx, struct PCD's fc) are still written at native
+	width, as are the FKPs, whose rgfc array and cbFkp both derive from
+	sizeof(FC) (Opus/wordtech/fkp.h) and which are read straight off a
+	cache page.  Those are self consistent -- the same constant sizes the
+	read and the write, so nothing is broken today -- but they do mean a
+	.doc written here is not byte compatible with one written by the MSVC
+	x64 build.  Closing that gap needs fkp.h/inssubs.c/fetch.c, outside
+	the file set this change was authorized for.  Do not read the FIB and
+	cp work below as having achieved cross build file compatibility.
+
+	Every range guarantee these routines rely on is checked at compile
+	time (see the typedefs below): Assert() is a no-op unless ASSERTS is
+	defined, and this build does not define it. */
+
+/* Directive: the packed FIB must fit in one sector.  A negative array size
+	is a hard compile error, so this cannot silently regress no matter how
+	the build is configured. */
+typedef char cbFibDiskFitsInSector[(cbFibDisk <= cbSector) ? 1 : -1];
+
+/* And an fc or a cp always fits in the 4 bytes a packed field gives it:
+	fcMax caps a document at 32K sectors (16MB) and cpWarnTooBig follows
+	fcMax, both far below 0x7fffffff.  FFileWriteError() enforces fcMax at
+	run time during a save (eidFcTooBig). */
+typedef char fcMaxFitsInDiskWord[(fcMax <= 2147483647L) ? 1 : -1];
 
 /* %%Function:PackDiskL %%Owner:port */
 /* store l as a 4 byte little endian quantity at hpch */
@@ -963,10 +996,13 @@ CHAR HUGE *hpch;
 {
 	unsigned long ul;
 
-	ul = ((unsigned long)hpch[0]) |
-			(((unsigned long)hpch[1]) << 8) |
-			(((unsigned long)hpch[2]) << 16) |
-			(((unsigned long)hpch[3]) << 24);
+	/* mask each byte: under OPUS_X64 CHAR comes from the Win32 headers as
+		plain char, so it is only unsigned because the build passes
+		-funsigned-char (/J).  Do not let this file depend on that flag. */
+	ul = ((unsigned long)(hpch[0] & 0xff)) |
+			(((unsigned long)(hpch[1] & 0xff)) << 8) |
+			(((unsigned long)(hpch[2] & 0xff)) << 16) |
+			(((unsigned long)(hpch[3] & 0xff)) << 24);
 	/* where long is wider than 4 bytes this fills the high bytes in; where
 		it is exactly 4 bytes the mask is 0 and the cast does the work. */
 	if (ul & 0x80000000L)
@@ -1019,10 +1055,17 @@ int fPack;
 		if (fPack)
 			{
 			l = *(FC *)pb;
-			/* a real fc or cp never needs more than 4 bytes; if one does,
-				something upstream is broken and we must not truncate it
-				quietly. */
-			Assert(l >= -2147483647L - 1L && l <= 2147483647L);
+			/* An fc or a cp past 4 bytes means something upstream broke the
+				fcMax bound (see the compile time check at the top of this
+				block), and truncating it here would corrupt the file
+				silently.  Fail the save the way every other write error in
+				this layer does; Assert alone would not, it is compiled out
+				unless ASSERTS is defined. */
+			if (l < -2147483647L - 1L || l > 2147483647L)
+				{
+				Assert(fFalse);
+				vmerr.fDiskWriteErr = fTrue;
+				}
 			PackDiskL(hpch + ib, l);
 			}
 		else
@@ -1208,7 +1251,17 @@ void PackFib(pfib, hpch)
 struct FIB *pfib;
 CHAR HUGE *hpch;
 {
-	CbBltFibPacked(pfib, hpch, cbFibDisk, fTrue);
+	/* cwFibDisk is a hand kept count of the fields in struct FIB, and the
+		file header is sized from it.  If somebody adds a FIB field without
+		bumping it, the walk asks for more room than cbFibDisk gives and the
+		trailing fields are dropped -- a fib we could not read back.  Test
+		the walk's own answer and fail the save rather than write it; Assert
+		is compiled out unless ASSERTS is defined, so it cannot do this. */
+	if (CbBltFibPacked(pfib, hpch, cbFibDisk, fTrue) != cbFibDisk)
+		{
+		Assert(fFalse);
+		vmerr.fDiskWriteErr = fTrue;
+		}
 }
 
 
@@ -1256,10 +1309,14 @@ uns ccp;
 		ccpT = (int)min(ccp, (uns)ccpDiskBuf);
 		for (i = 0; i < ccpT; i++)
 			{
-			/* a cp that does not fit on file means a bug upstream; fail
-				loudly rather than truncate */
-			Assert(hprgcp[i] >= -2147483647L - 1L &&
-					hprgcp[i] <= 2147483647L);
+			/* Same bound, and the same reason for a real test instead of an
+				Assert, as IbBltFibLong above: a cp that does not fit on file
+				would be truncated silently and corrupt the plc. */
+			if (hprgcp[i] < -2147483647L - 1L || hprgcp[i] > 2147483647L)
+				{
+				Assert(fFalse);
+				vmerr.fDiskWriteErr = fTrue;
+				}
 			PackDiskL(&rgb[i * cbCpDisk], (long)hprgcp[i]);
 			}
 		WriteRgchToFn(fn, rgb, (uns)(ccpT * cbCpDisk));
