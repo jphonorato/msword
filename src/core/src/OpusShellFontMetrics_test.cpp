@@ -88,6 +88,23 @@ int main(int argc, char **argv) {
               "OpusShellCharWidths(Helv, ps=0) ancho degenerado");
     }
 
+    /* szFace: ftc >= 4 (fuera de la tabla de 4 nombres de época) mide si
+       trae szFace (camino QFont::fromFont, ver RawFontFor), y sigue
+       fallando controlado si no lo trae. */
+    {
+        OpusFontKey key{4, 24, 0, "Liberation Sans"};
+        unsigned short w = 0xFFFF;
+        Check(OpusShellCharWidths(&key, 'A', 1, &w) == 0,
+              "ftc=4 szFace=Liberation Sans deberia medir");
+        Check(w > 0 && w != 0xFFFF, "Liberation Sans ancho degenerado");
+    }
+    {
+        OpusFontKey key{4, 24, 0, nullptr};
+        unsigned short w = 0;
+        Check(OpusShellCharWidths(&key, 'A', 1, &w) != 0,
+              "ftc=4 sin szFace debe seguir fallando controlado");
+    }
+
     /* Falla controlada: ftc fuera de rango, catr no soportado, args
        invalidos -- ninguno debe abortar ni devolver 0 exito. */
     {

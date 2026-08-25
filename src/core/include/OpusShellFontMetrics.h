@@ -15,11 +15,13 @@
  * QRawFont. Ninguna de las dos funciones de este contrato expone un tipo
  * de Qt ni de Win32.
  *
- * Implementación: src/core/src/OpusShellFontMetrics.cpp. Cubre hoy solo
- * los 4 `ftc` del contrato de sustitución (OpusShellFontSubstitution.h) --
- * ver el comentario de cabecera de la implementación para el resto de
- * limitaciones de este primer corte (sin síntesis de negrita/cursiva,
- * resolución de pantalla fija a 96 ppp).
+ * Implementación: src/core/src/OpusShellFontMetrics.cpp. Cubre los 4
+ * `ftc` del contrato de sustitución (OpusShellFontSubstitution.h) cuando
+ * `szFace` es NULL; un `szFace` no NULL es la traducción que el núcleo
+ * usa para fuentes en tiempo de ejecución (más allá de los 4 nombres de
+ * época) -- ver el comentario de cabecera de la implementación para el
+ * resto de limitaciones de este primer corte (sin síntesis de
+ * negrita/cursiva, resolución de pantalla fija a 96 ppp).
  */
 
 #ifdef __cplusplus
@@ -34,6 +36,7 @@ typedef struct OpusFontKey {
     int ftc;    /* código de tipografía */
     int ps;     /* tamaño en medios puntos, como en FTI */
     int catr;   /* atributos: negrita, cursiva, ... */
+    const char *szFace; /* optional ANSI face from vhsttbFont; NULL => EraNameFromFtc(ftc) */
 } OpusFontKey;
 
 typedef struct OpusFontMetrics {
