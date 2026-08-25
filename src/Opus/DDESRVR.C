@@ -4,6 +4,9 @@
 
 #include "word.h"
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "OpusShellMemory.h"    /* Qt-2 B3: OpusMem* */
+#endif
 #include "heap.h"
 #include "dde.h"
 #include "doc.h"
@@ -45,6 +48,61 @@ csconst CHAR stSystemDde[] = St("System");
 WCompSt ();
 
 #define cchDdeLinkBkmkBase 9   /* includes terminator */
+
+
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* H  O U R  O P U S  M E M  A L L O C */
+/* Qt-2 B3: sustituto de OurGlobalAlloc (res.c), mismo helper que ya
+   tienen filecvt.c y eldde.c.  Reproduce los dos comportamientos que
+   OpusMemAlloc pelado no tiene: rechazo de bloques mayores de 64K
+   (res.c:1843) y reintento con el area de swap reducida mas
+   SetErrorMat(matMem) (res.c:1867-1873).  res.c se migra al final. */
+static HANDLE HOurOpusMemAlloc(unsigned long dwBytes, unsigned flags)
+{
+	HANDLE h;
+
+	if (dwBytes > 0x00010000L)
+		{
+		SetErrorMat(matMem);
+		return NULL;
+		}
+
+	if ((h = (HANDLE)OpusMemAlloc(dwBytes, flags)) == NULL)
+		{
+		ShrinkSwapArea();
+		if ((h = (HANDLE)OpusMemAlloc(dwBytes, flags)) == NULL)
+			SetErrorMat(matMem);
+		GrowSwapArea();
+		}
+	return h;
+}
+
+
+/* H  O U R  O P U S  M E M  R E A L L O C */
+/* Qt-2 B3: sustituto de OurGlobalReAlloc (res.c:1883), mismo helper que
+   etcmd.c y eldde.c.  Devuelve el mismo handle en exito (invariante de
+   handle estable del contrato) o NULL en fallo. */
+static HANDLE HOurOpusMemRealloc(HANDLE h, unsigned long dwBytes, unsigned flags)
+{
+	HANDLE hNew;
+
+	if (dwBytes > 0x00010000L)
+		{
+		SetErrorMat(matMem);
+		return NULL;
+		}
+
+	if ((hNew = (HANDLE)OpusMemRealloc((OpusHandle)h, dwBytes, flags)) == NULL)
+		{
+		ShrinkSwapArea();
+		if ((hNew = (HANDLE)OpusMemRealloc((OpusHandle)h, dwBytes, flags)) == NULL)
+			SetErrorMat(matMem);
+		GrowSwapArea();
+		}
+	return hNew;
+}
+#endif
+
 
 /* F  S E R V E R  D D E  M S G */
 /*  Handle messages that are destined for a channel on which we are
@@ -98,7 +156,11 @@ LExeNACK:
 
 			if (!FPostDdeDcl (dcl, WM_DDE_ACK, das, wHigh))
 				{
+#if defined(__GNUC__) && !defined(_MSC_VER)
+				OpusMemFree((OpusHandle)wHigh);
+#else
 				GlobalFree (wHigh);
+#endif
 
 				if (PdcldDcl(dcl)->fTermReceived && !PdcldDcl(dcl)->fExecuting)
 					/* channel destroyed in course of EXECUTE */
@@ -144,7 +206,11 @@ LExeNACK:
 					}
 				}
 			dms = *lpdms;
+#if defined(__GNUC__) && !defined(_MSC_VER)
+			OpusMemUnlock((OpusHandle)wLow);
+#else
 			GlobalUnlock (wLow);
+#endif
 			if (doc != docSystem && 
 					(ibkmk = IbkmkFromDclItem (dcl, wHigh)) != ibkmkNil)
 				/*  we have some place to put the data */
@@ -195,10 +261,18 @@ LNackPoke:
 				{
 LNoAckPoke:
 				DeleteAtom (wHigh);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+				OpusMemFree((OpusHandle)wLow);
+#else
 				GlobalFree (wLow);
+#endif
 				}
 			else  if (das == dasACK && dms.fRelease)
+#if defined(__GNUC__) && !defined(_MSC_VER)
+				OpusMemFree((OpusHandle)wLow);
+#else
 				GlobalFree (wLow);
+#endif
 			break;
 			}
 
@@ -223,7 +297,11 @@ LNoAckPoke:
 					{
 					/* free the data */
 					Assert (ddli.hData != NULL);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+					OpusMemFree((OpusHandle)ddli.hData);
+#else
 					GlobalFree (ddli.hData);
+#endif
 					ddli.hData = NULL;
 					}
 				if (!das.fAck && das.fBusy)
@@ -270,7 +348,11 @@ LNoAckPoke:
 				return fTrue;
 				}
 			dms = *lpdms;
+#if defined(__GNUC__) && !defined(_MSC_VER)
+			OpusMemUnlock((OpusHandle)wLow);
+#else
 			GlobalUnlock (wLow);
+#endif
 
 			/*  if item exists and we can render in cf, set up advise */
 			/*  (we do not support an ADVISE on the system topic) */
@@ -278,7 +360,11 @@ LNoAckPoke:
 					FRenderDocItemCf (doc, wHigh, dms.cf) &&
 					FAdviseItem (dcl, wHigh, dms.cf, dms.fAck, dms.fNoData))
 				{
+#if defined(__GNUC__) && !defined(_MSC_VER)
+				OpusMemFree((OpusHandle)wLow);
+#else
 				GlobalFree (wLow);
+#endif
 				das = dasACK;
 				}
 
@@ -287,7 +373,11 @@ LNoAckPoke:
 				{
 				DeleteAtom (wHigh);
 				if (das == dasNACK)
+#if defined(__GNUC__) && !defined(_MSC_VER)
+					OpusMemFree((OpusHandle)wLow);
+#else
 					GlobalFree (wLow);
+#endif
 				}
 			break;
 			}
@@ -493,12 +583,29 @@ HRenderClipLink ()
 		}
 
 	cch = 0;
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	/* Qt-2 B3: este handle sale del contrato -- HDataWriteDocCps
+	   (CLIPBRD2.C) lo devuelve o bien a FWriteExtScrap, que lo cede al
+	   portapapeles del sistema con SetClipboardData, o bien a FSendData,
+	   que lo postea a otro proceso con WM_DDE_DATA.  Los flags Win16
+	   originales (GMEM_MOVEABLE plano) no lo senalizan, de ahi
+	   OPUS_MEM_ESCAPES -- ver p2-boundary-crossing-decision.md. */
+	if ((hData = HOurOpusMemAlloc((unsigned long)
+			(CchSz(szApp)+CchSz(szTopic)+CchSz(szBkmk)+1),
+			OPUS_MEM_ESCAPES | OpusMemFlagsFromWin16(GMEM_MOVEABLE))) == NULL ||
+			(lpch = GlobalLockClip (hData)) == NULL)
+#else
 	if ((hData = OurGlobalAlloc(GMEM_MOVEABLE, (DWORD)
 			(CchSz(szApp)+CchSz(szTopic)+CchSz(szBkmk)+1))) == NULL ||
 			(lpch = GlobalLockClip (hData)) == NULL)
+#endif
 		{
 		if (hData != NULL)
+#if defined(__GNUC__) && !defined(_MSC_VER)
+			OpusMemFree((OpusHandle)hData);
+#else
 			GlobalFree (hData);
+#endif
 		DdeDbgCommSz ("HRenderClipLink: render unsuccessful");
 		return NULL;
 		}
@@ -511,7 +618,11 @@ HRenderClipLink ()
 	cch += cchT;
 	lpch [cch] = '\0';
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)hData);
+#else
 	GlobalUnlock (hData);
+#endif
 
 	DdeDbgCommSz ("HRenderClipLink: render successful");
 
@@ -830,7 +941,11 @@ ATOM atomItem;
 		if ((lpch = GlobalLockClip (hData)) == NULL)
 			goto LFailed;
 		bltbx ((LPSTR)&dms, lpch, cbDMS);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemUnlock((OpusHandle)hData);
+#else
 		GlobalUnlock (hData);
+#endif
 		}
 	else
 		hData = NULL; /* send null if they ask for no data */
@@ -842,7 +957,11 @@ ATOM atomItem;
 LFailed:
 		/* message could not be sent, free data. caller frees atom */
 		if (hData != NULL)
+#if defined(__GNUC__) && !defined(_MSC_VER)
+			OpusMemFree((OpusHandle)hData);
+#else
 			GlobalFree (hData);
+#endif
 		return fFalse;
 		}
 
@@ -875,7 +994,12 @@ int sti;
 	int ich = cbDMS, cch = 1 + cbDMS;
 	CHAR st [cchMaxSt];
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if ((h = HOurOpusMemAlloc((unsigned long)(DWORD)(cch),
+			OpusMemFlagsFromWin16(GMEM_DDE))) == NULL)
+#else
 	if ((h = OurGlobalAlloc(GMEM_DDE, (DWORD)(cch))) == NULL)
+#endif
 		goto LFailed;
 
 	switch (sti)
@@ -942,13 +1066,21 @@ int sti;
 	if ((lpch = GlobalLockClip (h)) == NULL)
 		goto LFailed;
 	lpch [ich] = 0;
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)h);
+#else
 	GlobalUnlock (h);
+#endif
 
 	return h;
 
 LFailed:
 	if (h != NULL)
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree((OpusHandle)h);
+#else
 		GlobalFree (h);
+#endif
 	return NULL;
 }
 
@@ -1003,8 +1135,14 @@ CHAR *st;
 	HANDLE h;
 	BOOL fAddTab = (*pich > cbDMS ? 1 : 0);
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if ((h = HOurOpusMemRealloc(*ph,
+			(unsigned long)(uns)(*pcch += (*st + fAddTab)),
+			OpusMemFlagsFromWin16(GMEM_DDE))) == NULL)
+#else
 	if ((h = OurGlobalReAlloc(*ph, (long)(uns)(*pcch += (*st + fAddTab)), 
 			GMEM_DDE)) == NULL)
+#endif
 		return fFalse;
 	*ph = h;
 
@@ -1016,7 +1154,11 @@ CHAR *st;
 	bltbx ((CHAR FAR *)st+1, (CHAR FAR *)&lpch [*pich], *st);
 	*pich += *st;
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)h);
+#else
 	GlobalUnlock (h);
+#endif
 	return fTrue;
 }
 
