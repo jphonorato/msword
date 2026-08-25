@@ -14,6 +14,9 @@
 #define NOWNDCLASS
 #include "word.h"
 DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+#include "OpusShellMemory.h"    /* Qt-2 B3: OpusMem* */
+#endif
 #include "doc.h"
 #include "props.h"
 #include "sel.h"
@@ -615,7 +618,15 @@ HANDLE hps;
 		rcT.ypTop = lpps->rcPaint.top;
 		rcT.xpRight = lpps->rcPaint.right;
 		rcT.ypBottom = lpps->rcPaint.bottom;
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		/* Qt-2 B3: hps y hrc los entrega el sistema con
+		   WM_PAINTCLIPBOARD / WM_SIZECLIPBOARD -- handles ajenos, no los
+		   alocamos: solo su Unlock pasa por el contrato, que via IsOwn()
+		   lo reenvia al GlobalUnlock real. */
+		OpusMemUnlock((OpusHandle)hps);
+#else
 		GlobalUnlock( hps );
+#endif
 		if (FSetDcAttribs( pwwd->hdc = hdc, dccDoc ))
 			{   /* Paint the clipboard */
 			InvalWwRc(vwwClipboard, &rcT);
@@ -656,7 +667,11 @@ HANDLE  hrc;
 	rc.ypTop = lprc->top;
 	rc.xpRight = lprc->right;
 	rc.ypBottom = lprc->bottom;
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)hrc);
+#else
 	GlobalUnlock( hrc );
+#endif
 
 /* NULL rectangle means no more displaying until we get a nonnull size */
 
