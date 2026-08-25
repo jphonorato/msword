@@ -2,6 +2,35 @@
 /* this file is #include'd into rtfout.c (broken up for SLM's sake) */
 
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+/* H  O U R  O P U S  M E M  R E A L L O C */
+/* Qt-2 B3: sustituto de OurGlobalReAlloc (res.c:1883), mismo helper que
+   filecvt.c, etcmd.c, eldde.c, DDESRVR.C y CLIPBRD2.C.  Reproduce el
+   rechazo de bloques mayores de 64K y el reintento con el area de swap
+   reducida; res.c es el hub y se migra al final.  Devuelve el mismo
+   handle en exito (invariante de handle estable del contrato) o NULL. */
+static HANDLE HOurOpusMemRealloc(HANDLE h, unsigned long dwBytes, unsigned flags)
+{
+	HANDLE hNew;
+
+	if (dwBytes > 0x00010000L)
+		{
+		SetErrorMat(matMem);
+		return NULL;
+		}
+
+	if ((hNew = (HANDLE)OpusMemRealloc((OpusHandle)h, dwBytes, flags)) == NULL)
+		{
+		ShrinkSwapArea();
+		if ((hNew = (HANDLE)OpusMemRealloc((OpusHandle)h, dwBytes, flags)) == NULL)
+			SetErrorMat(matMem);
+		GrowSwapArea();
+		}
+	return hNew;
+}
+#endif
+
+
 /*  %%Function:  DumpParaProps  %%Owner:  bobz       */
 
 NATIVE DumpParaProps(prebl, ppch, ppap, pfBracketProp, pfBracketBroken)
@@ -894,8 +923,18 @@ int cbInitial;
 	if (rhpcchw.lcbMax != rhpcchw.lcbMac)
 		{
 		Assert (rhpcchw.lcbMax > rhpcchw.lcbMac);
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		/* Qt-2 B3: el handle nace en FAssureHCbGlob (CLIPBRD2.C) con
+		   OPUS_MEM_ESCAPES porque sale al portapapeles del sistema o a
+		   otro proceso via WM_DDE_DATA; el realloc enruta por IsOwn(), no
+		   por estos flags. */
+		if ((h = HOurOpusMemRealloc(h, (unsigned long)(rhpcchw.lcbMac),
+				OPUS_MEM_ESCAPES |
+				OpusMemFlagsFromWin16(rhpcchw.wAlloc))) == NULL)
+#else
 		if ((h = OurGlobalReAlloc( h, (LONG) (rhpcchw.lcbMac),
 				rhpcchw.wAlloc )) == NULL)
+#endif
 			{
 			h = rhpcchw.h; /* should never happen, making smaller */
 			goto Failed;
@@ -906,13 +945,21 @@ int cbInitial;
 		goto Failed;
 
 	lpch [rhpcchw.lcbMac - 1] = '\0';
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)h);
+#else
 	GlobalUnlock( h );
+#endif
 	return h;
 
 Failed:
 
 	if (h != hNil)
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree((OpusHandle)h);
+#else
 		GlobalFree( h );
+#endif
 
 	return hNil;
 }
@@ -1075,7 +1122,11 @@ int cch;
 
 	bltbx( (LPCH) pch, lpch + prhpcchw->lcbMac-cch-1, cch );
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	OpusMemUnlock((OpusHandle)h);
+#else
 	GlobalUnlock( h );
+#endif
 
 	prhpcchw->h = h;
 
@@ -1089,7 +1140,11 @@ Failed:
 	SetErrorMat( matMem );
 
 	if (h != hNil)
+#if defined(__GNUC__) && !defined(_MSC_VER)
+		OpusMemFree((OpusHandle)h);
+#else
 		GlobalFree( h );
+#endif
 
 	prhpcchw->h = hNil;
 }
