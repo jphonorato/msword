@@ -1828,6 +1828,14 @@ int doc, stc;
 /* O U R  G L O B A L  A L L O C */
 /* Perform a GlobalAlloc.  if it fails reduce our swap area and try again.
    reset swap area when done.
+
+   Qt-2 B3 / 2026-08-25: this hub is NOT migrated to OpusShellMemory.
+   Linux consumers that were heap (A/B1/B2/B3) now call local
+   HOurOpusMemAlloc* helpers. The two remaining live OurGlobalAlloc
+   call sites (eldde.c hData DRVDATA and hPlaybackHook) are category D
+   (GMEM_FIXED|GMEM_LOWER + selector APIs). Routing them through
+   OpusMemAlloc would force GMEM_MOVEABLE in the passthrough table and
+   is forbidden by D-2. MSVC path unchanged.
 */
 /* %%function: OurGlobalAlloc %%owner: peterj */
 HANDLE OurGlobalAlloc(wFlags, dwBytes)

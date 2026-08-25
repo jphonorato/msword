@@ -22,6 +22,18 @@ Las filas 1/2/4 de §7 y las opciones "-a"/"-c" por categoría (B1-a, B1-c, B2-a
 
 **Próximo paso:** diseño del mecanismo de passthrough en detalle, antes de tocar `OpusShellMemory.h`/`.cpp` — ver `docs/superpowers/specs/2026-08-11-opus-memory-passthrough-design.md`.
 
+### Addendum 2026-08-25 — lote final de `res.c`: no aplica
+
+**Quién decide:** arquitecto (Grok), tras el reporte de ejecución de lotes 1–5 (`1cd1b93..9580a56`).
+
+Los consumidores no-D de `OurGlobalAlloc` / `GlobalAlloc2` / `OurGlobalReAlloc` ya están migrados, cada uno con helper local que reproduce el rechazo >64K y el reintento `ShrinkSwapArea` (más `HOurOpusMemAlloc2` en `CLIPBRD2.C` para la variante que sí admite >64K). El propósito de secuencia de R-4 —convertir el hub en primer dominó para migrar TUs en cualquier orden— está cumplido por esa vía, no por tocar `res.c`.
+
+En Linux quedan **exactamente dos** llamadas vivas a `OurGlobalAlloc`, ambas Categoría D en `eldde.c:1492` (`hData` DRVDATA) y `:1494` (`hPlaybackHook`), flags `GMEM_FIXED|GMEM_LOWER`. `OurGlobalReAlloc` y `GlobalAlloc2` no tienen otros consumidores vivos fuera de esas dos (vía `OurGlobalAlloc`) y de las ramas `#else` MSVC.
+
+**No se migra `res.c`.** D-2 sigue vigente: esos bloques no son heap nativo (`GetCodeHandle`, `AllocSelector` / `PrestoChangoSelector`, “don't need to unlock, it's fixed”). Encaminarlos por `OpusMemAlloc` **no es idéntico**: `OpusMemFlagsFromWin16` ignora `GMEM_FIXED`, y `ReconstructWin16Flags` en `opus_mem_passthrough.cpp` fuerza `GMEM_MOVEABLE` siempre. Un `hPlaybackHook` MOVEABLE en lugar de FIXED cambia el contrato con el selector y con el comentario de no-unlock. Eso basta para rechazar la ruta “foreign y listo”.
+
+`res.c` queda como asignador de D en Linux y como implementación original del path MSVC. El lote final de esta migración se cierra sin commit de código en el hub. Destino de D: `OpusShellSpine` (`hPlaybackHook`/`hCode`) y `OpusShellFontMetrics` (`hfontPhy` en `idle.c`/`LOADFONT.C`), cuando esos contratos los reescriban — no un wrap de heap.
+
 ---
 
 ## 1. Censo verificado (2026-08-11, HEAD `2a36b1a`)
