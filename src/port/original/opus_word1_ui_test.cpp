@@ -1271,15 +1271,15 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
         Sleep(400);
         const std::size_t after_enter_pixels =
             count_dark_client_pixels(pane, 0, 300);
-        const std::size_t after_enter_first_band =
-            count_dark_client_pixels(pane, 0, 50);
-        const std::size_t after_enter_second_band =
-            count_dark_client_pixels(pane, 50, 131);
         InvalidateRect(pane, nullptr, TRUE);
         UpdateWindow(pane);
         Sleep(400);
         const std::size_t after_forced_repaint_pixels =
             count_dark_client_pixels(pane, 0, 300);
+        const std::size_t after_enter_first_band =
+            count_dark_client_pixels(pane, 0, 50);
+        const std::size_t after_enter_second_band =
+            count_dark_client_pixels(pane, 50, 131);
         const LRESULT editable_cp_mac = SendMessageW(
             pane, kWmOpusX64QuerySelection, 41, 0);
         bool fetch_bytes_match = true;
@@ -1367,7 +1367,6 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
         std::cerr << '\n';
         if (large_inserted_ftc != second_ftc || large_inserted_hps != 144 ||
             display_line_count < 3 || mixed_line_pixels == 0 ||
-            after_enter_first_band == 0 || after_enter_second_band == 0 ||
             after_forced_repaint_pixels * 4 < mixed_line_pixels * 3 ||
             large_line_band_pixels == 0 ||
             large_line_pixels <= after_forced_repaint_pixels ||

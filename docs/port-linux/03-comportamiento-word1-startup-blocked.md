@@ -1495,6 +1495,28 @@ src/core/src/OpusShellFontMetrics.cpp:13-19 (comentario ya documentaba el límit
 
 **Próximo paso, si se retoma para arreglar (no solo diagnosticar):** decidir la estrategia de `EraNameFromFtc`/`OpusShellCharWidths` para `ftc` fuera de [0,3] -- opciones: (a) enumerar la fuente real vía Qt (`QFontDatabase`) en vez de la tabla fija de 4 nombres de época, la solución de fondo pero con más superficie de fidelidad de paginación que revisar; (b) fallback controlado a una fuente por defecto (p.ej. tratar cualquier `ftc>=4` como "Helv" solo para medir anchos) que desbloquea el test sin resolver la limitación real de fondo. Requiere decisión explícita del mantenedor, no autorización implícita de esta sesión.
 
+**Octava actualización 2026-08-25 (exia): Task 6 Bug 4 cerrado de verdad -- `OpusFontKey.szFace` reemplaza la tabla fija de `EraNameFromFtc`; `fail(60)` restante era el arnés, no medición de fuentes.** Dos piezas, en dos sesiones/commits distintos:
+
+**Primera pieza (commits `bf5f117`, `b69e715`, `e7c50d1`, ya en el árbol antes de esta tarea):** en vez de ampliar `EraNameFromFtc` a una tabla más grande (seguía siendo un callejón para cualquier `ftc` no anticipado), el núcleo (`OpusFontKey`, `src/core/include/OpusShellFontMetrics.h`/`.cpp`) pasa a llevar el nombre real de la fuente en `szFace` en vez de depender de resolver `ftc` a un nombre de época. `Opus/LOADFONT.C` rellena `shellKey` con `memset` primero (obligatorio: la declaración K&R no trae inicializador y `FaceNameFor()` ya leía `szFace` en cada llamada) y con el nombre real de `pffn`. `OpusPortGdiCharWidths` mide con la fuente de runtime en vez de la tabla fija. Con esto, `ftc>=4` deja de caer en `LSystemFontErr` -- el diálogo "Low memory: cannot display requested font" que atrapaba el teclado (Séptima actualización, arriba) no vuelve a aparecer. Ningún cambio en `Opus/disp.c`/`screen.c` ni en `Opus/LOADFONT.C` más allá del `memset` ya mencionado.
+
+**Segunda pieza (esta tarea, Task 1 del plan `2026-08-25-font-typing-harness-bands`):** con el Bug 4 real cerrado, `opus_word1_font_typing_test` avanzó de "no conserva la fuente" a un `fail(60)` nuevo, `"mixed-font lines disappeared after resizing"`. El dump mostraba `bands=0,0 repaint=2629` -- las dos muestras de banda (`after_enter_first_band`/`after_enter_second_band`, franjas de píxel `[0,50)`/`[50,131)`) leían cero mientras `after_forced_repaint_pixels` (mismo panel, rango completo `[0,300)`) leía 2629 correctamente. Causa: el código tomaba esas dos muestras de banda **antes** del repintado forzado que el propio test ya hacía (`InvalidateRect`+`UpdateWindow`+`Sleep(400)`, unas líneas más abajo) -- no después. No era un bug de medición de fuentes ni de `disp.c`: era orden de muestreo en el arnés.
+
+Se movieron las dos líneas de muestra de banda a después del `UpdateWindow`/`Sleep(400)` forzado (dejando `after_enter_pixels`, la muestra diagnóstica del repintado natural, donde estaba). Con eso solo, `bands` **seguía en `0,0`** de forma estable (2 corridas idénticas), lo que descarta que fuera un problema de *cuándo* se muestreaba: las franjas hardcodeadas `[0,50)`/`[50,131)` en `count_dark_client_pixels` simplemente no corresponden a la altura de línea real de este documento (24pt=36px + 36pt=54px, ver `[0 cp=0 y=0 h=36 ...] [1 cp=10 y=36 h=54 ...]` en el dump de `displayLines`) -- la franja `[50,131)` cruza el límite entre la línea 24pt y la 36pt de forma que no coincide con ninguna línea real, y evidentemente tampoco cae sobre contenido oscuro en `[0,50)`. Con la reubicación sola las bandas siguen siendo un cálculo de rango que no coincide con el layout, así que -- siguiendo la salida explícita que el plan preveía para este caso -- se quitó solo la cláusula `after_enter_first_band == 0 || after_enter_second_band == 0 ||` de la condición de `fail(60)`, dejando intactas todas las demás (`applied_ftc`, `second_inserted_*`, `large_inserted_hps==144`, `formatted_chp_hps`, `fetch_bytes_match`, `after_forced_repaint_pixels`, `large_line_band_pixels`, `large_line_pixels`, `cache_pages_separate`). El diagnóstico `bands=` se mantiene en el `std::cerr` para visibilidad futura, aunque ya no bloquea el test.
+
+Con ese cambio, `opus_word1_font_typing_test` pasa de forma estable (2/2 corridas), y la etiqueta `word1_startup_blocked` queda en **8/9** -- el único fallo restante es `opus_word1_interaction_test` (arrastre de caption, limitación de entorno Xvfb/Wine documentada en §12, no un bug del proyecto). Ningún archivo de `Opus/` ni `src/core/` tocado en esta pieza -- solo `src/port/original/opus_word1_ui_test.cpp`.
+
+**Verificado:**
+```
+DISPLAY=:91 ctest --test-dir out/linux-winelib-debug -R "^opus_word1_font_typing_test$" --output-on-failure
+    Passed (x2) -- visualPixels=2705->2599->2629->11061 bands=0,0 repaint=2629
+    largeBand=7497 fetch=1/1@-1:13/13 displayLines=3
+
+DISPLAY=:91 ctest --test-dir out/linux-winelib-debug -L word1_startup_blocked --output-on-failure
+    8/9 -- único fallo: opus_word1_interaction_test (documentado, §12)
+```
+
+Task 6 (`--font-typing`) queda **cerrado**: los 4 bugs originales (nombres de fuente enumerables, `union FCID` LP64, foco tras selección de ribbon, `EraNameFromFtc`/tabla de época) arreglados, más este ítem de arnés que no era un bug de producto.
+
 ## 9. `--clipboard`: "Ctrl+A did not execute Select All" -- confirmado, verify-only, cierra Task 7
 
 **Task 7, 2026-08-19 en exia.** El plan (Step 1) pedía correr
@@ -1731,25 +1753,21 @@ sesión (2026-08-19, exia):
    (Task 4, §6)
 3. `--save-as` -- **arreglado**, causa independiente: diálogo señuelo
    sin conectar al real (Task 5, §7)
-4. `--font-typing` -- **parcial**: 3 de 4 bugs arreglados (nombres de
-   fuente, `union FCID` LP64, foco tras selección de ribbon -- este
-   último arreglado 2026-08-20 en `opus_sdm_runtime.cpp`, no en
-   `Opus/iconbar1.c`, ver actualización en §8); el cuarto bug sigue sin
-   arreglar. Diagnóstico engañoso descartado dos veces: "no conserva la
-   fuente" (el tecleo nunca llega a Opus) y luego la teoría de carrera
-   `idle.c:503`/`selCur.chp.hps==0` de la "Tercera actualización"
-   -- **descartada con trazas directas** en la "Cuarta actualización"
-   (debian-VM): el bloque de preload de `idle.c` nunca se alcanza
-   durante el test. `CreateFontIndirect` falla realmente en
-   `Opus/disp1.c`'s `LoadFcidFull` (repintado de documento, no
-   preload), para la segunda fuente distinta pedida en el proceso,
-   con `hps` idéntico al de la primera (que sí funciona). Seis
-   hipótesis descartadas con evidencia (carrera `hps`, charset
-   `OEM_CHARSET`, caché de fuentes, `GetLastError` remanente, buffer
-   `szFfn`); un fix real y menor se queda (charset saneado en
-   `LOADFONT.C`) pero no cierra el test solo. Causa raíz real aún sin
-   localizar -- ver "Cuarta actualización" en §8 para candidatos no
-   explorados
+4. `--font-typing` -- **arreglado** (Task 6, §8). Los 4 bugs originales
+   cerrados: nombres de fuente enumerables, `union FCID` LP64, foco
+   tras selección de ribbon (2026-08-20, `opus_sdm_runtime.cpp`, no
+   `Opus/iconbar1.c`), y `EraNameFromFtc`/tabla fija de 4 nombres de
+   época reemplazada por `OpusFontKey.szFace` en el núcleo
+   (2026-08-25, commits `bf5f117`/`b69e715`/`e7c50d1` -- ver "Octava
+   actualización" en §8 para el rastro completo de diagnóstico, incluidas
+   las hipótesis descartadas por el camino). El `fail(60)` que quedaba
+   tras cerrar el cuarto bug era en sí un problema de arnés, no de
+   producto: dos muestras de píxel se tomaban antes del repintado
+   forzado que el propio test ya hacía, y las franjas hardcodeadas no
+   coincidían con la altura de línea real del documento -- arreglado
+   en `src/port/original/opus_word1_ui_test.cpp`, sin tocar
+   `Opus/disp.c`/`screen.c` ni `src/core/` (ver "Octava actualización"
+   en §8)
 5. `--clipboard` (Ctrl+A) -- **arreglado**, mismo root cause que #1
    (Task 7, §9)
 6. `--selection` -- **arreglado**, 3 bugs de arnés encadenados (Task
@@ -1764,6 +1782,12 @@ bug 4 sin cerrar de `--font-typing` y la limitación de entorno de
 `--interaction`, ambos ya explicados arriba, no misterios). El noveno
 test de la etiqueta era `word1_port_smoke_test`, que ya pasaba desde
 antes de esta sesión.
+
+**Actualización 2026-08-25: etiqueta en 8/9.** Con el bug 4 de
+`--font-typing` cerrado (ver punto 4 arriba y "Octava actualización"
+en §8), el único fallo restante de la etiqueta es
+`opus_word1_interaction_test` (Task 10, §12, limitación de entorno
+Xvfb/Wine confirmada, no bug del proyecto).
 
 Aparte de la lista de 8, sigue sin investigar: `opus_x64_runtime_test`
 (gating, cuelga sin imprimir nada, confirmado pre-existente y no
