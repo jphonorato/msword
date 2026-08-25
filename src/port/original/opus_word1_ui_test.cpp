@@ -74,6 +74,38 @@ bool wide_contains(const wchar_t* haystack, const wchar_t* needle) {
     return false;
 }
 
+// ASCII-only case folding for the loop below. Same -fshort-wchar reason as
+// wide_contains: towlower/CharLowerW-on-a-single-code-unit would be fine but
+// a manual fold keeps this TU free of any wide-char library dependency.
+wchar_t wide_lower_ascii(const wchar_t value) {
+    return (value >= L'A' && value <= L'Z')
+               ? static_cast<wchar_t>(value - L'A' + L'a')
+               : value;
+}
+
+// Case-insensitive wide_contains. Needed for window captions carrying a file
+// name: Word 1.x upper-cases the document name it puts in the frame caption
+// (DOS 8.3 convention), so "...\\TEMP\\OPRT0128.DOC" has to match a base name
+// the caller derived from the lower-case path it typed into Save As.
+bool wide_contains_i(const wchar_t* haystack, const wchar_t* needle) {
+    if (haystack == nullptr || needle == nullptr || *needle == L'\0') {
+        return needle != nullptr && *needle == L'\0';
+    }
+    for (const wchar_t* start = haystack; *start != L'\0'; ++start) {
+        const wchar_t* h = start;
+        const wchar_t* n = needle;
+        while (*h != L'\0' && *n != L'\0' &&
+               wide_lower_ascii(*h) == wide_lower_ascii(*n)) {
+            ++h;
+            ++n;
+        }
+        if (*n == L'\0') {
+            return true;
+        }
+    }
+    return false;
+}
+
 BOOL CALLBACK find_window_callback(const HWND window, const LPARAM value) {
     auto& search = *reinterpret_cast<WindowSearch*>(value);
     // search.process_id comes from CreateProcessW's PROCESS_INFORMATION,
@@ -1295,7 +1327,7 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
                     wchar_t caption[512] = {};
                     GetWindowTextW(main_window2, caption,
                                    static_cast<int>(std::size(caption)));
-                    if (wide_contains(caption, base_name)) {
+                    if (wide_contains_i(caption, base_name)) {
                         command_line_open_worked = true;
                         break;
                     }
@@ -1452,7 +1484,7 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
                 wchar_t caption[512] = {};
                 GetWindowTextW(main_window2, caption,
                                static_cast<int>(std::size(caption)));
-                if (wide_contains(caption, base_name)) {
+                if (wide_contains_i(caption, base_name)) {
                     dialog_open_worked = true;
                     break;
                 }
