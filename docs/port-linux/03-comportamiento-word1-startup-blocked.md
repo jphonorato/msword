@@ -1772,6 +1772,190 @@ sesión (`apt`, con autorización): `twm` (descartado, crashea sin
 `xfonts-base` que también se instaló), `openbox` (usado para la
 réplica).
 
+## 13. `--roundtrip`: proceso 2 abre el diálogo real, pero el `.doc` que Word 1.1a acaba de guardar no lo puede reabrir -- bloqueado, causa fuera del arnés
+
+**Task 2 del plan `docs/superpowers/plans/2026-08-25-doc-roundtrip.md`,
+2026-08-25 en `/home/pablo/mswordrt` (worktree `doc-roundtrip`),
+`DISPLAY=:91`.** Continúa el mismo bloque `if (roundtrip_mode)` que
+Task 1 dejó con un `TODO`: lanzar un segundo proceso `WORD1` contra el
+`.doc` que el primero acaba de guardar y comparar `cpMac`, el
+contenido byte a byte (consulta 69), `ftc0`, `hps0` y `dypLine`
+(consulta 55) contra la instantánea tomada antes de guardar. **No
+pasa** -- pero no por el arnés: el propio `WORD1` no puede reabrir un
+`.doc` que acaba de escribir con su propio Save As, ni por línea de
+comando ni por el diálogo real. Ver "Causa raíz" abajo.
+
+**Qué se implementó (funciona correctamente hasta donde llega):**
+
+- **Paso 1 -- lanzar el proceso 2.** Mismo `CreateProcessW` que el
+  proceso 1, con `wide_path` (la ruta que el Paso 3 de Task 1 generó)
+  como segundo argumento. **Deliberadamente sin comillas**, a
+  diferencia del ejemplo literal del brief: `Opus/initwin.c`
+  (`FInitPart1`) parte `lpszCmdLine` por espacios en blanco sin
+  entender comillas en absoluto, así que un argumento entrecomillado
+  sin espacios internos se cuela con las comillas literales pegadas al
+  nombre de archivo -- confirmado probando ambas formas, mismo
+  resultado en las dos (ver "Causa raíz"). Se recupera el PID desde la
+  ventana con el mismo workaround que el proceso 1 (PID cero de
+  `CreateProcessW` para binarios Winelib externos, documentado en
+  §25 de `01-diagnostico-heap-corruption-arranque.md`).
+- **Detección de apertura por línea de comando:** se espera hasta 8 s
+  a que la ventana de clase `OpusApp` (no clase `nullptr`: un intento
+  fallido deja un `MessageBoxA` -- también clase `#32770`, también con
+  caption `"Microsoft Word"`, el mismo `szAppTitle` que usa
+  `CreateWindow` para `vhwndApp` -- que una búsqueda sin filtro de
+  clase puede confundir con la ventana real) tenga en su título tanto
+  `"Microsoft Word"` como el nombre base del archivo sin extensión
+  (`oprtNNNN`, extraído de `wide_path`). **No ocurre**: la apertura por
+  línea de comando no tuvo efecto en ninguna de las corridas.
+- **Fallback a File > Open:** al fallar la línea de comando, queda un
+  `MessageBoxA` modal "Cannot open document" (`Opus/open.c`,
+  `DocOpenStDof`, `eidCantOpen`) trabado en pantalla -- aparece durante
+  `FInitPart2`/`FInitArgs`, antes de que `vfInitializing` se limpie y
+  antes de que `ElNewFile` cree el documento en blanco, así que nada
+  del arranque posterior a ese punto ha corrido todavía. Se lo
+  descarta (`WM_COMMAND`/`IDOK` a su botón OK, id 1) y se espera a que
+  la app llegue al estado ocioso normal `"Microsoft Word - Document1"`
+  antes de mandar `File > Open`. Con eso resuelto, el diálogo real
+  `#32770` aparece, se localiza el campo de nombre (`ComboBoxEx32`
+  `cmb13`/`0x047C`, igual que Task 1 en Save As -- mismo `OFN_EXPLORER`,
+  confirmado también del lado de `kIddOpen` en
+  `run_word95_common_file_dialog`), se fija la ruta con `WM_SETTEXT` y
+  se verifica con `read_control_text_ansi` (lee de vuelta la ruta
+  completa correcta), y se acepta con `IDOK`. **Todo este mecanismo de
+  automatización funciona**: el diálogo aparece, el campo se rellena y
+  se lee correctamente, el `IDOK` se entrega. El fallo ocurre después,
+  dentro de Word mismo.
+- **Paso 2 (comparación) y Paso 3 (limpieza):** implementados
+  completos -- reenfoque de `OpusWwd` vía `make_foreground_and_focus`,
+  relectura de las consultas 41/69/51/52/55, comparación campo por
+  campo contra `cp_mac`/`snapshot_bytes`/`ftc0`/`hps0`/`dyp0`
+  guardados por Task 1, con un código de fallo distinto por campo
+  (`cpMac`=103, `byte@N`=104, `ftc`=105, `hps`=106, `dypLine`=107) y
+  `TerminateProcess` + `DeleteFileA` en cada camino de salida. No se
+  llega a ejercitar en una corrida exitosa porque el Paso 1 nunca
+  entrega un documento cargado -- el fallo real (código 100, "roundtrip
+  File Open did not load the target document") ocurre antes.
+
+**Causa raíz (no es un bug del arnés):** tanto la apertura por línea
+de comando como el diálogo interactivo terminan en el mismo
+`MessageBoxA` "Cannot open document" -- el propio Word 1.1a rechaza el
+archivo que su propio Save As acaba de escribir, exactamente igual sin
+importar el mecanismo usado para pedir la apertura. Se investigó con
+tres líneas de evidencia:
+
+1. **Reproducción cruzada:** se probó la línea de comando con
+   `wide_path` entre comillas (como muestra el brief) y sin comillas
+   (la forma final, elegida porque el parser de `initwin.c` no quita
+   comillas). Ambas formas fallan igual, descartando el formato del
+   argumento como causa.
+2. **Rastreo del código:** `Opus/open.c` `DocOpenStDof` llama a
+   `Opus/create.c` `FnOpenSt`, que inicializa `*pfose = foseCantOpenAny`
+   al entrar y solo lo cambia a otro valor en ramas específicas
+   (creación de archivo, `FAccessFn`, `fOstNativeOnly`). Ninguna de
+   esas ramas aplica para una apertura simple sin esas flags, así que
+   cualquier fallo dentro de `FnOpenSt` que no toque `*pfose`
+   explícitamente dejo el valor por defecto, y
+   `fose <= foseBadFile` en `DocOpenStDof` salta directo a
+   `eidCantOpen` sin pasar por el fallback de `dofCmdNewOpen`
+   (`DocDoCmdNewOpen`) -- consistente con lo observado.
+3. **Inspección del archivo guardado:** se capturó una copia del
+   `.doc` de 2417 bytes antes de que el propio test lo borrara
+   (interceptando el archivo en
+   `~/.wine/drive_c/users/pablo/AppData/Local/Temp/` mientras corría
+   el test). Los primeros bytes:
+
+   ```
+   9b a5 00 00 21 00 00 00 b1 20 00 00 02 00 00 00
+   ```
+
+   Decodificando `struct FIB` (`Opus/wordtech/file.h`) con `int`
+   (4 bytes en este build) para `wIdent`/`nFib`/`nProduct`/`nLocale`:
+   `wIdent=0xa59b` (correcto, `wMagic`) y `nFib=33` -- coincide
+   exactamente con `nFibCurrent` (`#define nFibCurrent 33`,
+   `Opus/wordtech/file.h:94`). Pero `Opus/wordtech/word.h` declara
+   `typedef long CP;` y `typedef long FC;`, y en este build nativo
+   x86-64 (LP64) `long` mide 8 bytes -- 4 bytes más que en el Win16/
+   Win32 original para el que se diseñó el formato de archivo. Mezclar
+   campos `int`/`unsigned` de 4 bytes con campos `FC`/`CP` de 8 bytes
+   (que además exigen alineación de 8 bytes en x86-64) produce un
+   `struct FIB` cuyo layout en memoria -- y por lo tanto en disco, si
+   la escritura vuelca la estructura tal cual -- no coincide con el
+   formato empaquetado del Word 1.x original. Esto es coherente con
+   que la ruta de apertura falle más adelante, al leer las tablas PLC
+   (`fcPlcfbteChpx`/`cbPlcfbteChpx` vía `HplcReadPlcf`, dentro de la
+   rama "native format" de `FnOpenSt`) con desplazamientos corridos
+   por el padding de alineación.
+
+   Se intentó confirmar el punto exacto de fallo con `gdb` (breakpoints
+   en `FnOpenSt`/`FNativeFormat`, arrancando `WORD1.exe.so` con un
+   argumento de archivo), pero el proceso recibe un `SIGSEGV` real
+   antes de llegar a los breakpoints incluso con
+   `handle SIGSEGV nostop noprint pass` -- Wine parece depender de
+   señales para su propia inicialización de forma incompatible con
+   correr el binario desde el arranque bajo un debugger nativo. No se
+   insistió más: la evidencia de (1) y (2) ya converge en una causa
+   consistente sin necesitar el punto exacto de la línea.
+
+**Por qué esto queda fuera del alcance de Task 2:** arreglar esto
+requeriría tocar código de formato de archivo bajo `src/Opus/`
+(árbol restringido, cambios necesitan autorización explícita según
+`CLAUDE.md`) -- probablemente `Opus/wordtech/word.h` (los `typedef`
+de `CP`/`FC`/`PN`) y/o la lógica de lectura/escritura de FIB en
+`Opus/create.c`/`Opus/save.c`, no el arnés de UI
+(`opus_word1_ui_test.cpp`). Esto también cae directo en el criterio de
+parada del brief de Task 2: "command-line file-open genuinely doesn't
+work AND driving #32770 'Open' also doesn't" -- ambos caminos fallan,
+y no por cómo el arnés maneja la UI (el diálogo se abre, el campo se
+rellena y se lee correctamente, `IDOK` se entrega) sino por algo
+interno a Word mismo.
+
+**Los cuatro números capturados antes de guardar** (instantánea de
+Task 1, nunca confirmados contra una relectura porque la reapertura no
+llega a completarse): `cpMac=21`, `ftc0=20`, `hps0=0`, `dyp0=16`. El
+archivo guardado midió 2417 bytes en todas las corridas. **Esto no es
+una comparación de fidelidad de paginación byte-a-byte contra un build
+MSVC de Windows** -- ese no es el objetivo de este test en absoluto,
+que compara el mismo binario `WORD1` contra sí mismo, dos veces; y en
+el estado actual, ni siquiera esa comparación consigo mismo se puede
+completar.
+
+**Verificado (corrida reproducible, tres veces):**
+```
+$ DISPLAY=:91 ctest --test-dir /home/pablo/mswordrt/out/linux-winelib-debug \
+    -R '^opus_word1_roundtrip_test$' --output-on-failure
+...
+roundtrip snapshot cpMac=21 ftc0=20 hps0=0 dyp0=16
+roundtrip target path='C:\users\pablo\AppData\Local\Temp\oprt0120.doc' wideLength=46
+roundtrip found save_dialog=0x10128 caption='Save As'
+roundtrip filename field=0x1013e reads back 'C:\users\pablo\AppData\Local\Temp\oprt0120.doc'
+roundtrip saved 'C:\users\pablo\AppData\Local\Temp\oprt0120.doc' size=2417 bytes
+roundtrip process 2 watching for base name 'oprt0120'
+roundtrip process 2 command-line open did not take effect (title still lacks the base name); falling back to File > Open
+roundtrip dismissing stray dialog hwnd=0x3008e after failed command-line open
+  id=1 hwnd=0x200d4 class='Button' cachedText='OK' wmGetText='OK' visible=1 enabled=1
+  id=65535 hwnd=0x200ca class='Static' cachedText='Cannot open document' wmGetText='Cannot open document' visible=1 enabled=1
+roundtrip open filename field=0x2010e reads back 'C:\users\pablo\AppData\Local\Temp\oprt0120.doc'
+window class='OpusApp' caption='Microsoft Word - Document1' visible=1 enabled=1
+roundtrip leftover #32770 hwnd=0x400d6 caption='Microsoft Word'
+  id=1 hwnd=0x300b6 class='Button' cachedText='OK' wmGetText='OK' visible=1 enabled=1
+  id=65535 hwnd=0x30124 class='Static' cachedText='Cannot open document' wmGetText='Cannot open document' visible=1 enabled=1
+roundtrip File Open did not load the target document
+
+0% tests passed, 1 tests failed out of 1
+```
+
+`opus_word1_save_as_test` sigue pasando (no se tocó ese código), y la
+corrida completa de la etiqueta da **8/10**: los dos fallos son
+`--interaction` (§12, límite de entorno ya documentado) y
+`--roundtrip` (este ítem, bloqueado por la causa de arriba, no por el
+entorno). No quedan archivos `oprt*.doc` sueltos en ninguna corrida:
+`DeleteFileA(ansi_path)` se ejecuta en cada camino de salida del
+bloque, incluidos todos los nuevos códigos de fallo de este ítem.
+
+Archivo: `src/port/original/opus_word1_ui_test.cpp` (Pasos 1-3
+completos del plan, códigos de fallo 92-108).
+
 ## Resumen
 
 Los 8 ítems de comportamiento de la lista original de §26 de
