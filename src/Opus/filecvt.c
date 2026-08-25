@@ -1007,6 +1007,34 @@ static HANDLE HOurOpusMemAlloc(unsigned long dwBytes, unsigned flags)
 		}
 	return h;
 }
+
+
+/* H  O U R  O P U S  M E M  R E A L L O C */
+/* Qt-2 B3: sustituto de OurGlobalReAlloc (res.c:1883), mismo helper que
+   etcmd.c, eldde.c, DDESRVR.C, CLIPBRD2.C y rtfout2.c.  Reproduce el
+   rechazo de bloques mayores de 64K (res.c:1894) y el reintento con el
+   area de swap reducida (res.c:1900-1906); res.c es el hub y se migra al
+   final.  Devuelve el mismo handle en exito (invariante de handle
+   estable del contrato, OpusShellMemory.h) o NULL en fallo. */
+static HANDLE HOurOpusMemRealloc(HANDLE h, unsigned long dwBytes, unsigned flags)
+{
+	HANDLE hNew;
+
+	if (dwBytes > 0x00010000L)
+		{
+		SetErrorMat(matMem);
+		return NULL;
+		}
+
+	if ((hNew = (HANDLE)OpusMemRealloc((OpusHandle)h, dwBytes, flags)) == NULL)
+		{
+		ShrinkSwapArea();
+		if ((hNew = (HANDLE)OpusMemRealloc((OpusHandle)h, dwBytes, flags)) == NULL)
+			SetErrorMat(matMem);
+		GrowSwapArea();
+		}
+	return hNew;
+}
 #endif
 
 
@@ -1448,8 +1476,13 @@ int nUnused;
 	CP cpEffective;
 	int roo;
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if (HOurOpusMemRealloc(vpexcr->ghBuff, (unsigned long)cchRTFPassMax,
+			OpusMemFlagsFromWin16(GMEM_MOVEABLE)) == NULL)
+#else
 	if (OurGlobalReAlloc(vpexcr->ghBuff, (DWORD)cchRTFPassMax, 
 			GMEM_MOVEABLE) == NULL)
+#endif
 		return fceNoMemory;
 
 	fcMac = (*hfcb)->cbMac;
@@ -1593,7 +1626,12 @@ HANDLE ghsz;
 
 	cbsz = CchSz(sz);
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if (!HOurOpusMemRealloc(ghsz, (unsigned long)cbsz,
+			OpusMemFlagsFromWin16(GMEM_MOVEABLE)))
+#else
 	if (!OurGlobalReAlloc(ghsz, (DWORD)cbsz, GMEM_MOVEABLE))
+#endif
 		return fFalse;
 
 #if defined(__GNUC__) && !defined(_MSC_VER)
@@ -1620,7 +1658,12 @@ HANDLE ghsz;
 {
 	char far *lpsz;
 
+#if defined(__GNUC__) && !defined(_MSC_VER)
+	if (!HOurOpusMemRealloc(ghsz, (unsigned long)(st[0] + 1),
+			OpusMemFlagsFromWin16(GMEM_MOVEABLE)))
+#else
 	if (!OurGlobalReAlloc(ghsz, (DWORD)(st[0] + 1), GMEM_MOVEABLE))
+#endif
 		return fFalse;
 
 #if defined(__GNUC__) && !defined(_MSC_VER)
