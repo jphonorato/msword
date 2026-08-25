@@ -1276,10 +1276,47 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
         Sleep(400);
         const std::size_t after_forced_repaint_pixels =
             count_dark_client_pixels(pane, 0, 300);
-        const std::size_t after_enter_first_band =
-            count_dark_client_pixels(pane, 0, 50);
-        const std::size_t after_enter_second_band =
-            count_dark_client_pixels(pane, 50, 131);
+        /* Client-y offset from document layout y=0 to this pane's client
+           pixel coordinates (i.e. the page top margin), measured directly
+           at this exact point in the test with a temporary 5px sweep of
+           count_dark_client_pixels() over [120,240):
+             sweep5=120:0 125:0 130:0 135:0 140:21 145:14 150:29 155:169
+             160:140 165:112 170:97 175:0 180:3 185:61 190:118 195:512
+             200:287 205:313 210:276 215:402 220:0 225:3 230:0 235:18
+           and the layout geometry queried at the same instant (query
+           codes 30/32/33, same as the displayLines diagnostic below):
+             probeLines=3 [0 y=0 h=36] [1 y=36 h=54] [2 y=90 h=16]
+           Dark pixels begin at client y=140 and the line 0/line 1 gap
+           falls at client y=175-180 -- both match layout y=0/h=36 (line
+           0) and y=36/h=54 (line 1) exactly under offset=140: line 0 ->
+           client [140,176), line 1 -> client [176,230). A second,
+           independent sweep taken later (after typing the 144hps large
+           line) reproduces the identical [140,220) shape for these same
+           two lines and shows the large line's own content beginning at
+           client y=230, matching its layout y=90 + this same 140px
+           offset. Both sweeps are recorded verbatim in
+           docs/port-linux/03-comportamiento-word1-startup-blocked.md §8. */
+        constexpr int kPageTopMarginY = 140;
+        const LRESULT early_display_line_count = SendMessageW(
+            pane, kWmOpusX64QuerySelection, 30, 0);
+        std::size_t after_enter_first_band = 0;
+        std::size_t after_enter_second_band = 0;
+        if (early_display_line_count >= 2) {
+            const LRESULT line0_y = SendMessageW(
+                pane, kWmOpusX64QuerySelection, 32, 0);
+            const LRESULT line0_h = SendMessageW(
+                pane, kWmOpusX64QuerySelection, 33, 0);
+            const LRESULT line1_y = SendMessageW(
+                pane, kWmOpusX64QuerySelection, 32, 1);
+            const LRESULT line1_h = SendMessageW(
+                pane, kWmOpusX64QuerySelection, 33, 1);
+            after_enter_first_band = count_dark_client_pixels(
+                pane, kPageTopMarginY + static_cast<int>(line0_y),
+                kPageTopMarginY + static_cast<int>(line0_y + line0_h));
+            after_enter_second_band = count_dark_client_pixels(
+                pane, kPageTopMarginY + static_cast<int>(line1_y),
+                kPageTopMarginY + static_cast<int>(line1_y + line1_h));
+        }
         const LRESULT editable_cp_mac = SendMessageW(
             pane, kWmOpusX64QuerySelection, 41, 0);
         bool fetch_bytes_match = true;
@@ -1367,6 +1404,7 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
         std::cerr << '\n';
         if (large_inserted_ftc != second_ftc || large_inserted_hps != 144 ||
             display_line_count < 3 || mixed_line_pixels == 0 ||
+            after_enter_first_band == 0 || after_enter_second_band == 0 ||
             after_forced_repaint_pixels * 4 < mixed_line_pixels * 3 ||
             large_line_band_pixels == 0 ||
             large_line_pixels <= after_forced_repaint_pixels ||
