@@ -600,6 +600,29 @@ bool send_control_key(const WORD virtual_key) {
     return true;
 }
 
+bool send_shift_key(const WORD virtual_key) {
+    std::array<INPUT, 4> input{};
+    input[0].type = INPUT_KEYBOARD;
+    input[0].ki.wVk = VK_SHIFT;
+    input[1].type = INPUT_KEYBOARD;
+    input[1].ki.wVk = virtual_key;
+    input[2] = input[1];
+    input[2].ki.dwFlags = KEYEVENTF_KEYUP;
+    input[3] = input[0];
+    input[3].ki.dwFlags = KEYEVENTF_KEYUP;
+    // Same per-event delivery as send_control_key (see its comment), with
+    // Shift instead of Ctrl -- needed for uppercase letters and shifted OEM
+    // keys (e.g. the ':' on a US layout, which lives on the ';' key) when
+    // typing a real Windows path into a native dialog's Edit control.
+    for (INPUT& event : input) {
+        if (SendInput(1, &event, sizeof(INPUT)) != 1) {
+            return false;
+        }
+        Sleep(35);
+    }
+    return true;
+}
+
 bool execute_control_shortcut(const HWND pane, const WORD virtual_key) {
     return SendMessageW(pane, kWmOpusX64QuerySelection, 80,
                         kKcControl | virtual_key) != 0;
@@ -643,6 +666,45 @@ bool send_physical_text(const wchar_t* text) {
             return false;
         }
         Sleep(character == L'\r' ? 300 : 50);
+    }
+    return true;
+}
+
+// Real SendInput keyboard typing for a Windows path (drive letter, ':',
+// '\', '.', mixed-case letters, digits/hex digits) into a native dialog's
+// Edit control -- deliberately a separate helper, not a widened
+// send_physical_text: that one's alphabet is intentionally restricted to
+// a-z/0-9/space/CR for typed *document* text (Step 2 of --roundtrip and
+// every other caller), and a temp path needs punctuation and case
+// send_physical_text was never meant to produce. US keyboard layout: '\'
+// is VK_OEM_5 unshifted, ':' is VK_OEM_1 (the ';' key) shifted, '.' is
+// VK_OEM_PERIOD unshifted.
+bool send_physical_path_text(const char* text) {
+    for (const char* character = text; *character != '\0'; ++character) {
+        WORD virtual_key = 0;
+        bool shift = false;
+        if (*character >= 'a' && *character <= 'z') {
+            virtual_key = static_cast<WORD>(*character - 'a' + 'A');
+        } else if (*character >= 'A' && *character <= 'Z') {
+            virtual_key = static_cast<WORD>(*character);
+            shift = true;
+        } else if (*character >= '0' && *character <= '9') {
+            virtual_key = static_cast<WORD>(*character);
+        } else if (*character == '\\') {
+            virtual_key = VK_OEM_5;
+        } else if (*character == ':') {
+            virtual_key = VK_OEM_1;
+            shift = true;
+        } else if (*character == '.') {
+            virtual_key = VK_OEM_PERIOD;
+        } else {
+            return false;
+        }
+        if (!(shift ? send_shift_key(virtual_key)
+                    : send_virtual_key(virtual_key))) {
+            return false;
+        }
+        Sleep(50);
     }
     return true;
 }
@@ -1013,72 +1075,65 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
         if (filename_check[0] == '\0') {
             // edt1 (0x0480) does not exist in the Explorer-style template
             // Wine actually builds (OFN_EXPLORER is set in
-            // run_word95_common_file_dialog) -- the filename field is
-            // cmb13 = 0x047C (1148), an editable ComboBoxEx32. Retarget
-            // CDM_SETCONTROLTEXT there first.
-            constexpr WPARAM kCmb13 = 0x047C;
-            const LRESULT cmb13_result = SendMessageA(
-                save_dialog, WM_USER + 104, kCmb13,
-                reinterpret_cast<LPARAM>(ansi_path));
-            GetDlgItemTextA(save_dialog, static_cast<int>(kCmb13),
-                            filename_check,
-                            static_cast<int>(std::size(filename_check)));
-            std::cerr << "roundtrip CDM_SETCONTROLTEXT(cmb13) result="
-                      << cmb13_result << " filename_check='" << filename_check
-                      << "'\n";
-        }
-        if (filename_check[0] == '\0') {
-            // Per the plan brief's documented fallback: find a child Edit
-            // and SetWindowTextA it directly.
+            // run_word95_common_file_dialog) -- the real filename field is
+            // cmb13 = 0x047C (1148), an editable ComboBoxEx32 ->ComboBox
+            // ->Edit. Message-based attempts to set it directly
+            // (CDM_SETCONTROLTEXT to cmb13, SetWindowTextA, and even real
+            // per-character WM_CHAR posted to the Edit) all reported
+            // success but never persisted a value past an immediate
+            // readback -- see task-1-report.md for that investigation.
+            // None of those establish real cross-process keyboard focus;
+            // this does, the same way Step 2 above types into the document
+            // pane: bring the dialog to the foreground and focus its inner
+            // Edit for real, then drive real SendInput keystrokes.
             const HWND filename_edit =
                 find_descendant_by_class(save_dialog, L"Edit");
+            if (filename_edit != nullptr) {
+                const LONG style = GetWindowLongA(filename_edit, GWL_STYLE);
+                std::cerr << "roundtrip filename_edit style=0x" << std::hex
+                          << style << std::dec
+                          << " ES_READONLY=" << ((style & ES_READONLY) != 0)
+                          << " WS_DISABLED="
+                          << ((style & WS_DISABLED) != 0) << '\n';
+            }
+            const bool focused = filename_edit != nullptr &&
+                make_foreground_and_focus(save_dialog, filename_edit,
+                                          thread_id);
+            GUITHREADINFO post_focus_gui{};
+            post_focus_gui.cbSize = sizeof(post_focus_gui);
+            GetGUIThreadInfo(thread_id, &post_focus_gui);
+            std::cerr << "roundtrip post-focus hwndFocus="
+                      << post_focus_gui.hwndFocus
+                      << " hwndActive=" << post_focus_gui.hwndActive
+                      << " hwndCapture=" << post_focus_gui.hwndCapture
+                      << " foreground=" << GetForegroundWindow()
+                      << " filename_edit=" << filename_edit
+                      << " save_dialog=" << save_dialog << '\n';
+            const bool typed =
+                focused && send_physical_path_text(ansi_path);
+            if (typed) {
+                Sleep(200);
+            }
+            GUITHREADINFO post_type_gui{};
+            post_type_gui.cbSize = sizeof(post_type_gui);
+            GetGUIThreadInfo(thread_id, &post_type_gui);
+            std::cerr << "roundtrip post-type hwndFocus="
+                      << post_type_gui.hwndFocus
+                      << " foreground=" << GetForegroundWindow() << '\n';
             char fallback_check[MAX_PATH] = {};
-            const BOOL set_text_result =
-                filename_edit != nullptr
-                    ? SetWindowTextA(filename_edit, ansi_path)
-                    : FALSE;
             if (filename_edit != nullptr) {
                 GetWindowTextA(filename_edit, fallback_check,
                               static_cast<int>(std::size(fallback_check)));
             }
-            std::cerr << "roundtrip fallback filename_edit=" << filename_edit
-                      << " set_text_result=" << set_text_result
+            std::cerr << "roundtrip real-input filename_edit=" << filename_edit
+                      << " focused=" << focused << " typed=" << typed
                       << " fallback_check='" << fallback_check << "'\n";
-            if (filename_edit != nullptr && fallback_check[0] == '\0') {
-                // The bulk SetWindowTextA above did not stick; try real
-                // character-by-character WM_CHAR input instead, since that
-                // exercises the Edit control's normal typing path rather
-                // than a possibly-overridden WM_SETTEXT handler on the
-                // ComboBoxEx32 it lives in. WM_CHAR carries no pointer
-                // payload, so PostMessageA is safe here.
-                SetForegroundWindow(save_dialog);
-                SetFocus(filename_edit);
-                Sleep(100);
-                for (const char* p = ansi_path; *p != '\0'; ++p) {
-                    PostMessageA(filename_edit, WM_CHAR,
-                                static_cast<WPARAM>(
-                                    static_cast<unsigned char>(*p)),
-                                0);
-                    Sleep(5);
-                }
-                Sleep(200);
-                GetWindowTextA(filename_edit, fallback_check,
-                              static_cast<int>(std::size(fallback_check)));
-                std::cerr << "roundtrip WM_CHAR typing fallback_check='"
-                          << fallback_check << "'\n";
-            }
             if (filename_edit == nullptr || fallback_check[0] == '\0') {
-                // BLOCKED (see task-1-report.md): none of CDM_SETCONTROLTEXT
-                // to edt1 (0x0480, which does not exist in this
-                // Explorer-style template), CDM_SETCONTROLTEXT to cmb13
-                // (0x047C, the real ComboBoxEx32 filename field),
-                // SetWindowTextA on its inner Edit child, or real
-                // character-by-character WM_CHAR input into that same Edit
-                // persist a value that survives an immediate readback --
-                // every attempt reports success (TRUE / 1, or is silently
-                // queued for WM_CHAR) yet GetDlgItemTextA/GetWindowTextA
-                // read back empty right after. Dump the live control tree
-                // for whoever picks this up.
+                // BLOCKED (see task-1-report.md): neither the documented
+                // message-based approaches nor real focus + real SendInput
+                // keystrokes into the actual filename Edit persist a value
+                // that survives an immediate readback. Dump the live
+                // control tree for whoever picks this up.
                 std::cerr << "roundtrip dialog tree dump:\n";
                 dump_dialog_tree_diagnostic(save_dialog);
                 DeleteFileA(ansi_path);
