@@ -336,13 +336,15 @@ terminator) in FNextDMFile where this is called. */
 		struct DOP dop;
 		struct FIB fib;
 /* gather summary info */
-		bltbh(HpchGetPn(fn, pn0), &fib, min(cbSector, cbFIB));
+/* the fib on file is packed 4 bytes to the field, so it has to be
+	unpacked, not blitted, into the (wider) in memory struct */
+		UnpackFib(HpchGetPn(fn, pn0), &fib, cbFibDisk);
 		pSumd->cchDoc = fib.ccpText;
 		pSumd->fQuickSave = fib.fComplex;
 
 /* Read document properties */
 		SetFnPos(fn, fib.fcDop);
-		Assert(offset(FIB, fcDop) < cbSector);
+		Assert(cbFibDisk <= cbSector);
 		ReadRgchFromFn(fn, &dop, min(fib.cbDop, cbDOP));
 		pSumd->dttmRevision = dop.dttmRevised;
 		pSumd->dttmCreation = dop.dttmCreated;

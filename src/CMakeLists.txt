@@ -607,6 +607,8 @@ add_custom_command(
     COMMENT "Computing native SDM CAB initializers"
     VERBATIM
 )
+file(RELATIVE_PATH OPUS_MKCMD_DLG_RELDIR
+    "${OPUS_GENERATED_COMMAND_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/Opus/dlg")
 add_custom_command(
     OUTPUT ${OPUS_GENERATED_COMMAND_FILES}
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
@@ -622,11 +624,17 @@ add_custom_command(
         "${CMAKE_CURRENT_SOURCE_DIR}/Opus/resource/ibcm.rel"
         "${OPUS_GENERATED_COMMAND_DIR}/IBCM.H"
     COMMAND "$<TARGET_FILE:opus_mkcmd_tool>"
-        # Absolute rather than "../../../src/Opus/dlg/": the relative form
-        # silently assumed the Visual Studio preset's binaryDir depth
-        # (out/), and breaks under any preset that nests one level deeper
-        # (out/<preset>/), where it resolves to a nonexistent out/src.
-        -T@13 "-s${CMAKE_CURRENT_SOURCE_DIR}/Opus/dlg/" -bcabi/
+        # Neither a hardcoded "../../../src/Opus/dlg/" (assumed a fixed
+        # preset binaryDir depth, broke under out/<preset>/) nor a plain
+        # absolute path (mkcmd.c:2042 copies -s into a fixed 40-byte
+        # szFileName[40] with no length check -- a checkout under a long
+        # prefix, e.g. a nested worktree, overflows it and silently
+        # corrupts the macro symbol table). file(RELATIVE_PATH) computes
+        # the exact traversal between the generated dir and Opus/dlg at
+        # configure time, so the argument stays short no matter how deep
+        # the repo itself sits on disk. mkcmd.c is OpusEtAl/, restricted;
+        # not touched.
+        -T@13 "-s${OPUS_MKCMD_DLG_RELDIR}/" -bcabi/
         opuscmd keys menus
     COMMAND "${CMAKE_COMMAND}"
         -DINPUT=${OPUS_GENERATED_COMMAND_DIR}/MENUHELP.TXT
@@ -1628,3 +1636,7 @@ add_test(NAME opus_word1_save_as_test
     COMMAND $<TARGET_FILE:opus_word1_ui_test> $<TARGET_FILE:WORD1> --save-as
 )
 set_tests_properties(opus_word1_save_as_test PROPERTIES TIMEOUT 20 LABELS "word1_startup_blocked")
+add_test(NAME opus_word1_roundtrip_test
+    COMMAND $<TARGET_FILE:opus_word1_ui_test> $<TARGET_FILE:WORD1> --roundtrip
+)
+set_tests_properties(opus_word1_roundtrip_test PROPERTIES TIMEOUT 45 LABELS "word1_startup_blocked")

@@ -2000,8 +2000,9 @@ struct DSR *pdsr;
 			}
 #endif /* DEBUG */
 		vpqsib->cpnBteChp = fkpdChp.pn - vpqsib->pnChpFirst + 1;
-		vpqsib->lcbAvailBte -= vpqsib->cpnBteChp * (sizeof(CP) + sizeof(PN)) +
-				sizeof(CP);
+		/* an on file byte count: cbCpDisk to the cp, not sizeof(CP) */
+		vpqsib->lcbAvailBte -= vpqsib->cpnBteChp * (cbCpDisk + sizeof(PN)) +
+				cbCpDisk;
 		pdsr->fFkpdChpIncomplete = fkpdChp.fPlcIncomplete;
 		}
 	return (fTrue);
@@ -2288,16 +2289,16 @@ FSaveTbls()
 			}
 		else
 			hprgcp = ((CP HUGE *)(*hplcsed)->rgcp);
-		WriteHprgchToFn(fnDest, hprgcp,
-				vpqsib->cbPlcfsed = (isedMac + 1) * sizeof(CP));
+		WriteRgcpToFn(fnDest, hprgcp, isedMac + 1);
+		vpqsib->cbPlcfsed = (isedMac + 1) * cbCpDisk;
 #ifdef MAC
 		if ((*hplcsed)->fExternal)
 			UnlockHq((*hplcsed)->hqplce);
 #endif
 
 		fcPosSave = (PfcbFn(fnDest))->fcPos;
-		SetFnPos(fnDest, vpqsib->fcPlcfsed + (isedMac * sizeof(CP)));
-		WriteRgchToFn(fnDest, &cpLastCorrect, sizeof(CP));
+		SetFnPos(fnDest, vpqsib->fcPlcfsed + (isedMac * cbCpDisk));
+		WriteRgcpToFn(fnDest, (CP HUGE *)&cpLastCorrect, 1);
 
 		SetFnPos(fnDest, fcPosSave);
 		fcDestLimSave = vfcDestLim;
@@ -2340,6 +2341,10 @@ FSaveTbls()
 						psedExcerpt->fUnk = fFalse;
 					}
 				}
+/* the cp's above went out at cbCpDisk, but the SEDs go out at native width:
+	cbSED sizes both this write and the read, so it is self consistent, but
+	struct SED's fcSepx is an FC and so is 8 bytes here and 4 on MSVC x64.
+	See the scope note beside cbCpDisk in file.h. */
 			WriteRgchToFn(fnDest, rgsedExcerpt, cbSED * isedExcerptMac);
 			if (FFileWriteError())
 				goto LReturnFail;
@@ -2756,7 +2761,7 @@ FSaveTbls()
 		}
 
 	vpqsib->fcPlcfpcd = vfcDestLim;
-	vpqsib->cbPlcfpcd = (ipcdMac * (sizeof(CP) + cbPCD)) + sizeof(CP) + 3;
+	vpqsib->cbPlcfpcd = (ipcdMac * (cbCpDisk + cbPCD)) + cbCpDisk + 3;
 	vfcDestLim += vpqsib->cbPlcfpcd;
 	vpqsib->cbClx = vfcDestLim - vpqsib->fcClx;
 
@@ -2772,7 +2777,7 @@ FSaveTbls()
 		}
 	else
 		hprgcp = ((CP HUGE *)(*hplcpcd)->rgcp);
-	WriteHprgchToFn(fnDest, hprgcp, (ipcdMac + 1) * sizeof(CP));
+	WriteRgcpToFn(fnDest, hprgcp, ipcdMac + 1);
 #ifdef MAC
 	if ((*hplcpcd)->fExternal)
 		UnlockHq((*hplcpcd)->hqplce);
@@ -2817,6 +2822,8 @@ FSaveTbls()
 				((struct PRM *)&ppcdExcerpt->prm)->cfgrPrc = iprc;
 				}
 			}
+/* native width, like the SEDs above: struct PCD's fc is an FC.  cbPCD sizes
+	the write and the read, so it round trips; see file.h beside cbCpDisk. */
 		WriteRgchToFn(fnDest, rgpcdExcerpt, cbPCD * ipcdExcerptMac);
 		if (FFileWriteError())
 			goto LReturnFail;
@@ -2905,11 +2912,14 @@ CP      cpCorrect;
 		else
 			hprgcp = ((CP HUGE *)pplc->rgcp);
 
-		/* write rgcp */
-		cbRgcp = (iMac + 1) * sizeof(CP);
-		WriteHprgchToFn(fnDest, hprgcp, cbRgcp);
+		/* write rgcp (cbCpDisk to the cp on file, not sizeof(CP)) */
+		cbRgcp = (iMac + 1) * cbCpDisk;
+		WriteRgcpToFn(fnDest, hprgcp, iMac + 1);
 
-		/* write rgfoo */
+		/* write rgfoo, at native width: pplc->cb sizes both this and the
+			read in ReadIntoExtPlc, so every foo type round trips, but the
+			ones holding an FC (SED, PCD) are wider here than on MSVC x64.
+			See the scope note beside cbCpDisk in file.h. */
 		hpchFoo = &hprgcp[pplc->iMax];
 		cbRgfoo = pplc->cb * iMac;
 		WriteHprgchToFn(fnDest, hpchFoo, cbRgfoo);
@@ -2922,8 +2932,8 @@ CP      cpCorrect;
 		if (cpCorrect != cpNil)
 			{
 			fcPosSave = (PfcbFn(fnDest))->fcPos;
-			SetFnPos(fnDest, *pfc + iMac * sizeof(CP));
-			WriteRgchToFn(fnDest, &cpCorrect, sizeof(CP));
+			SetFnPos(fnDest, *pfc + iMac * cbCpDisk);
+			WriteRgcpToFn(fnDest, (CP HUGE *)&cpCorrect, 1);
 			SetFnPos(fnDest, fcPosSave);
 			}
 		}
@@ -3947,7 +3957,7 @@ PN pnFib;
 		uns ised;
 		CP far *lprgcp;
 /* calculate how many sed entries stored in disk copy of plc */
-		iMac = ((long)fib.cbPlcfsed - (long)sizeof(CP)) / ((long)cbSED + sizeof(CP));
+		iMac = ((long)fib.cbPlcfsed - (long)cbCpDisk) / ((long)cbSED + cbCpDisk);
 		Assert(iMac + 1 <= (*hplcsed)->iMax);
 /* read directly into external part of plc */
 		ReadIntoExtPlc(hplcsed, fn, fib.fcPlcfsed, fib.cbPlcfsed);
@@ -4253,9 +4263,11 @@ PN pn;
 	Mac( vfWritingFib = fFalse );
 	if (!vmerr.fDiskWriteErr)
 		{
-		bltbh(pfib, hpch, cbFIB);
-		Assert(cbFIB <= cbFileHeader);
-		SetBytes(LpOfHp(hpch+cbFIB), 0, cbFileHeader-cbFIB);
+		/* the fib goes out packed: in memory it is wider than the file
+			format (and wider than a sector), so it may not be blitted. */
+		Assert(cbFibDisk <= cbFileHeader);
+		PackFib(pfib, hpch);
+		SetBytes(LpOfHp(hpch+cbFibDisk), 0, cbFileHeader-cbFibDisk);
 		SetDirty(vibp);
 		}
 }

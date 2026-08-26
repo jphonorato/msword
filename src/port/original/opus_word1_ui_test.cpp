@@ -26,6 +26,7 @@ namespace {
 
 constexpr UINT kWmCommand = 0x0111;
 constexpr WPARAM kFileNew = 1813;
+constexpr WPARAM kFileOpen = 1843; /* opuscmd.h imiOpen */
 constexpr WPARAM kFileSaveAs = 1897;
 constexpr WPARAM kFileExit = 2095;
 constexpr WPARAM kHelpAbout = 182;
@@ -63,6 +64,38 @@ bool wide_contains(const wchar_t* haystack, const wchar_t* needle) {
         const wchar_t* h = start;
         const wchar_t* n = needle;
         while (*h != L'\0' && *n != L'\0' && *h == *n) {
+            ++h;
+            ++n;
+        }
+        if (*n == L'\0') {
+            return true;
+        }
+    }
+    return false;
+}
+
+// ASCII-only case folding for the loop below. Same -fshort-wchar reason as
+// wide_contains: towlower/CharLowerW-on-a-single-code-unit would be fine but
+// a manual fold keeps this TU free of any wide-char library dependency.
+wchar_t wide_lower_ascii(const wchar_t value) {
+    return (value >= L'A' && value <= L'Z')
+               ? static_cast<wchar_t>(value - L'A' + L'a')
+               : value;
+}
+
+// Case-insensitive wide_contains. Needed for window captions carrying a file
+// name: Word 1.x upper-cases the document name it puts in the frame caption
+// (DOS 8.3 convention), so "...\\TEMP\\OPRT0128.DOC" has to match a base name
+// the caller derived from the lower-case path it typed into Save As.
+bool wide_contains_i(const wchar_t* haystack, const wchar_t* needle) {
+    if (haystack == nullptr || needle == nullptr || *needle == L'\0') {
+        return needle != nullptr && *needle == L'\0';
+    }
+    for (const wchar_t* start = haystack; *start != L'\0'; ++start) {
+        const wchar_t* h = start;
+        const wchar_t* n = needle;
+        while (*h != L'\0' && *n != L'\0' &&
+               wide_lower_ascii(*h) == wide_lower_ascii(*n)) {
             ++h;
             ++n;
         }
@@ -178,6 +211,77 @@ void collect_descendants_by_class(const HWND parent,
             matches.push_back(child);
         }
         collect_descendants_by_class(child, expected_class, matches);
+    }
+}
+
+// Read a control's text from a window owned by ANOTHER process.
+//
+// GetWindowText*/GetDlgItemText* only send WM_GETTEXT when the target
+// window belongs to the calling process. For a window in another process
+// they return whatever caption the window manager itself has cached --
+// documented Win32 behaviour ("If the target window is owned by another
+// process and does not have a caption, the return value is a null string"),
+// and Wine implements it the same way: user32 reads the wineserver's stored
+// window text instead of sending any message. That stored text is only ever
+// written by DefWindowProc's WM_SETTEXT path, which Static and Button reach,
+// but Edit/ComboBox/ComboBoxEx32 do not -- they consume WM_SETTEXT in their
+// own window procs and keep the string in a private buffer. So a
+// cross-process GetWindowTextA on an Edit ALWAYS reads back empty no matter
+// what it actually contains. WM_GETTEXT, by contrast, is a system message
+// the window manager marshals across process boundaries, so sending it
+// explicitly is the only correct way for this harness to read a control's
+// text out of WORD1.
+int read_control_text_ansi(const HWND control, char* const buffer,
+                           const int buffer_size) {
+    if (buffer == nullptr || buffer_size <= 0) {
+        return 0;
+    }
+    buffer[0] = '\0';
+    if (control == nullptr) {
+        return 0;
+    }
+    return static_cast<int>(SendMessageA(control, WM_GETTEXT,
+                                         static_cast<WPARAM>(buffer_size),
+                                         reinterpret_cast<LPARAM>(buffer)));
+}
+
+// Diagnostic helper for --roundtrip: dump every descendant of a dialog with
+// its control id, class, visibility and text, recursively. Used only on the
+// Save As failure paths, so a broken run reports the live control tree
+// instead of just a message. Both texts are printed on purpose: cachedText
+// is what GetWindowTextW returns cross-process (the window manager's stored
+// caption -- empty for every control that owns its own text) and wmGetText
+// is the control's real content via WM_GETTEXT. The gap between those two
+// columns is exactly what made rounds 1-2 of this work look blocked; see
+// read_control_text_ansi above and task-1-report.md in
+// docs/superpowers/sdd/2026-08-25-doc-roundtrip/.
+void dump_dialog_tree_diagnostic(const HWND parent, const int depth = 0) {
+    for (HWND child = GetWindow(parent, GW_CHILD); child != nullptr;
+         child = GetWindow(child, GW_HWNDNEXT)) {
+        wchar_t class_name[128] = {};
+        wchar_t text[256] = {};
+        GetClassNameW(child, class_name, static_cast<int>(std::size(class_name)));
+        GetWindowTextW(child, text, static_cast<int>(std::size(text)));
+        char class_ansi[128] = {};
+        char text_ansi[256] = {};
+        WideCharToMultiByte(CP_ACP, 0, class_name, -1, class_ansi,
+                            static_cast<int>(sizeof(class_ansi)), nullptr,
+                            nullptr);
+        WideCharToMultiByte(CP_ACP, 0, text, -1, text_ansi,
+                            static_cast<int>(sizeof(text_ansi)), nullptr,
+                            nullptr);
+        for (int i = 0; i < depth; ++i) {
+            std::cerr << "  ";
+        }
+        char live_text[256] = {};
+        read_control_text_ansi(child, live_text,
+                               static_cast<int>(std::size(live_text)));
+        std::cerr << "id=" << GetDlgCtrlID(child) << " hwnd=" << child
+                  << " class='" << class_ansi << "' cachedText='" << text_ansi
+                  << "' wmGetText='" << live_text
+                  << "' visible=" << IsWindowVisible(child)
+                  << " enabled=" << IsWindowEnabled(child) << '\n';
+        dump_dialog_tree_diagnostic(child, depth + 1);
     }
 }
 
@@ -721,7 +825,7 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
         std::cerr <<
             "usage: opus_word1_ui_test WORD1.exe "
             "[--typing|--interaction|--selection|--caret|--formatting|--color|"
-            "--font-typing|--clipboard|--about|--save-as]\n";
+            "--font-typing|--clipboard|--about|--save-as|--roundtrip]\n";
         return 1;
     }
     const bool typing_mode =
@@ -753,10 +857,13 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
     const bool save_as_mode =
         argument_count == 3 &&
         lstrcmpW(arguments[2], L"--save-as") == 0;
+    const bool roundtrip_mode =
+        argument_count == 3 &&
+        lstrcmpW(arguments[2], L"--roundtrip") == 0;
     if (argument_count == 3 && !typing_mode && !interaction_mode &&
         !selection_mode && !caret_mode && !formatting_mode && !color_mode &&
         !font_typing_mode && !clipboard_mode && !about_mode &&
-        !save_as_mode) {
+        !save_as_mode && !roundtrip_mode) {
         std::cerr << "unknown test mode\n";
         return 1;
     }
@@ -848,6 +955,659 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
         WaitForSingleObject(process.hProcess, 2000);
         CloseHandle(process.hThread);
         CloseHandle(process.hProcess);
+        return 0;
+    }
+    if (roundtrip_mode) {
+        // Step 2 (plan docs/superpowers/plans/2026-08-25-doc-roundtrip.md):
+        // type a known line into Document1 and snapshot it via the
+        // opus_x64 query interface before anything is saved.
+        DWORD ignored_process_id = 0;
+        const DWORD thread_id =
+            GetWindowThreadProcessId(main_window, &ignored_process_id);
+        const HWND pane = find_descendant_by_class(main_window, L"OpusWwd");
+        if (pane == nullptr) {
+            return fail(process, 78,
+                        "roundtrip test could not find the document pane");
+        }
+        if (!make_foreground_and_focus(main_window, pane, thread_id)) {
+            return fail(process, 79,
+                        "roundtrip test could not focus the document pane");
+        }
+        if (!send_physical_text(L"roundtrip line one")) {
+            return fail(process, 80,
+                        "roundtrip test could not type the sample line");
+        }
+        Sleep(500);
+
+        const LRESULT cp_mac =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 41, 0);
+        if (cp_mac < 10) {
+            return fail(process, 81,
+                        "roundtrip test typed too little text to snapshot");
+        }
+        // Plain LRESULT storage, not std::wstring: these are raw byte
+        // values from query 69, not WCHAR text -- std::vector<LRESULT> is
+        // unrelated to the wide-char rule above (see the comment near
+        // lstrcmpW usage at the top of this file).
+        std::vector<LRESULT> snapshot_bytes(static_cast<std::size_t>(cp_mac));
+        for (LRESULT cp = 0; cp < cp_mac; ++cp) {
+            const LRESULT byte_value =
+                SendMessageW(pane, kWmOpusX64QuerySelection, 69, cp);
+            if (byte_value == -1) {
+                return fail(process, 82,
+                            "roundtrip snapshot query 69 returned -1");
+            }
+            snapshot_bytes[static_cast<std::size_t>(cp)] = byte_value;
+        }
+        const LRESULT ftc0 =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 51, 0);
+        const LRESULT hps0 =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 52, 0);
+        const LRESULT dyp0 =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 55, 0);
+        std::cerr << "roundtrip snapshot cpMac=" << cp_mac
+                  << " ftc0=" << ftc0 << " hps0=" << hps0 << " dyp0=" << dyp0
+                  << '\n';
+
+        // Step 3: choose an on-disk target and delete it if it is already
+        // there -- OFN_OVERWRITEPROMPT is on for the real Save As dialog
+        // (opus_sdm_runtime.cpp's run_word95_common_file_dialog), and a
+        // stray file left by a previous run would pop a "Confirm Save As"
+        // Yes/No prompt this mode does not expect at this point. 8.3-safe
+        // name so it round-trips through the legacy Win95 staging-file
+        // alias path unmodified.
+        char temp_dir[MAX_PATH] = {};
+        const DWORD temp_dir_length = GetTempPathA(
+            static_cast<DWORD>(std::size(temp_dir)), temp_dir);
+        if (temp_dir_length == 0 || temp_dir_length >= std::size(temp_dir)) {
+            return fail(process, 83,
+                        "roundtrip test could not resolve GetTempPathA");
+        }
+        char ansi_path[MAX_PATH] = {};
+        wsprintfA(ansi_path, "%soprt%04lx.doc", temp_dir,
+                  static_cast<unsigned long>(process.dwProcessId & 0xFFFFu));
+        DeleteFileA(ansi_path);
+        // Kept for Task 2, which continues this same mode with a second
+        // WORD1 process launched against this exact path on its command
+        // line.
+        wchar_t wide_path[MAX_PATH] = {};
+        MultiByteToWideChar(CP_ACP, 0, ansi_path, -1, wide_path,
+                            static_cast<int>(std::size(wide_path)));
+        std::cerr << "roundtrip target path='" << ansi_path
+                  << "' wideLength=" << lstrlenW(wide_path) << '\n';
+
+        // Step 4: File > Save As, driving the real #32770 common dialog --
+        // the decoy OpusSdmDialog forwarding hook from Task 5 exists for
+        // its own OK/Cancel buttons, not as a substitute for this window
+        // (docs/port-linux/03-comportamiento-word1-startup-blocked.md §7).
+        if (!PostMessageW(main_window, kWmCommand, kFileSaveAs, 0)) {
+            return fail(process, 84,
+                        "could not send File Save As for roundtrip");
+        }
+        const HWND save_dialog = wait_for_window(
+            process.hProcess, process.dwProcessId, L"#32770", L"Save As",
+            5000);
+        if (save_dialog == nullptr) {
+            log_process_windows(process.dwProcessId);
+            return fail(process, 85,
+                        "roundtrip Save As dialog (#32770) did not appear");
+        }
+        if (!window_is_responsive(process.hProcess, save_dialog)) {
+            DeleteFileA(ansi_path);
+            return fail(process, 86,
+                        "roundtrip Save As dialog did not finish initializing");
+        }
+
+        {
+            wchar_t dialog_caption[256] = {};
+            GetWindowTextW(save_dialog, dialog_caption,
+                           static_cast<int>(std::size(dialog_caption)));
+            char dialog_caption_ansi[256] = {};
+            WideCharToMultiByte(CP_ACP, 0, dialog_caption, -1,
+                                dialog_caption_ansi,
+                                static_cast<int>(sizeof(dialog_caption_ansi)),
+                                nullptr, nullptr);
+            std::cerr << "roundtrip found save_dialog=" << save_dialog
+                      << " caption='" << dialog_caption_ansi << "'\n";
+        }
+        // Set the file name. The brief's edt1 (0x0480) does not exist in
+        // this dialog: run_word95_common_file_dialog asks for OFN_EXPLORER,
+        // so Wine builds the Explorer-style template, whose filename field
+        // is cmb13 (0x047C) -- an editable ComboBoxEx32 -> ComboBox -> Edit
+        // composite. A plain WM_SETTEXT on that ComboBoxEx32 is enough: the
+        // window manager marshals WM_SETTEXT across the process boundary,
+        // and ComboBoxEx32 forwards it down to the inner Edit, which is
+        // exactly where comdlg32 reads the name from when Save is pressed.
+        //
+        // Read the value back with WM_GETTEXT, never GetDlgItemTextA: see
+        // read_control_text_ansi above for why a cross-process
+        // GetWindowText on an Edit/ComboBox always reports empty (that
+        // false negative is what made rounds 1-2 of this work look
+        // blocked -- task-1-report.md).
+        const HWND filename_field = GetDlgItem(save_dialog, 0x047C);
+        if (filename_field == nullptr) {
+            std::cerr << "roundtrip dialog tree dump:\n";
+            dump_dialog_tree_diagnostic(save_dialog);
+            DeleteFileA(ansi_path);
+            return fail(process, 87,
+                        "roundtrip Save As dialog has no cmb13 filename "
+                        "field");
+        }
+        SendMessageA(filename_field, WM_SETTEXT, 0,
+                     reinterpret_cast<LPARAM>(ansi_path));
+        char filename_check[MAX_PATH] = {};
+        read_control_text_ansi(filename_field, filename_check,
+                               static_cast<int>(std::size(filename_check)));
+        std::cerr << "roundtrip filename field=" << filename_field
+                  << " reads back '" << filename_check << "'\n";
+        if (lstrcmpiA(filename_check, ansi_path) != 0) {
+            std::cerr << "roundtrip dialog tree dump:\n";
+            dump_dialog_tree_diagnostic(save_dialog);
+            DeleteFileA(ansi_path);
+            return fail(process, 87,
+                        "roundtrip could not set the Save As filename");
+        }
+        if (!PostMessageW(save_dialog, kWmCommand, IDOK, 0)) {
+            DeleteFileA(ansi_path);
+            return fail(process, 88,
+                        "could not accept the roundtrip Save As dialog");
+        }
+
+        const ULONGLONG save_deadline = GetTickCount64() + 8000;
+        bool confirmed_overwrite = false;
+        bool file_ready = false;
+        DWORD saved_file_size = 0;
+        while (GetTickCount64() < save_deadline) {
+            if (GetFileAttributesA(ansi_path) != INVALID_FILE_ATTRIBUTES) {
+                const HANDLE probe = CreateFileA(
+                    ansi_path, GENERIC_READ,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                if (probe != INVALID_HANDLE_VALUE) {
+                    saved_file_size = GetFileSize(probe, nullptr);
+                    CloseHandle(probe);
+                    if (saved_file_size != INVALID_FILE_SIZE &&
+                        saved_file_size > 128) {
+                        file_ready = true;
+                        break;
+                    }
+                }
+            }
+            if (!confirmed_overwrite) {
+                const HWND confirm_dialog = find_process_window(
+                    process.dwProcessId, L"#32770", L"Confirm Save As");
+                if (confirm_dialog != nullptr &&
+                    confirm_dialog != save_dialog) {
+                    PostMessageW(confirm_dialog, kWmCommand, IDYES, 0);
+                    confirmed_overwrite = true;
+                }
+            }
+            Sleep(100);
+        }
+        if (!file_ready) {
+            // The brief asks for the exact dialog class/caption on this
+            // path. Word reports save failures through a plain MessageBox
+            // (class #32770, caption "Microsoft Word"), whose reason lives
+            // in a Static child -- so dump every #32770 still standing with
+            // its contents, not just the window list. That is how the one
+            // real failure seen here was identified ("Not a valid file
+            // name": Word 1.1a's FntSz rejects any path component longer
+            // than 8.3, and the Win95 shim stages saves through
+            // <WORD1.exe dir>\W95TEMP, so a checkout directory such as
+            // "msword-rt" makes every Save As fail -- see task-1-report.md).
+            std::cerr << "roundtrip save_dialog alive="
+                      << IsWindow(save_dialog) << '\n';
+            log_process_windows(process.dwProcessId);
+            for (HWND top = GetTopWindow(nullptr); top != nullptr;
+                 top = GetWindow(top, GW_HWNDNEXT)) {
+                wchar_t top_class[128] = {};
+                GetClassNameW(top, top_class,
+                              static_cast<int>(std::size(top_class)));
+                if (lstrcmpW(top_class, L"#32770") != 0 ||
+                    !IsWindowVisible(top)) {
+                    continue;
+                }
+                char top_caption[256] = {};
+                read_control_text_ansi(
+                    top, top_caption,
+                    static_cast<int>(std::size(top_caption)));
+                std::cerr << "roundtrip leftover #32770 hwnd=" << top
+                          << " caption='" << top_caption << "'\n";
+                dump_dialog_tree_diagnostic(top, 1);
+            }
+            DeleteFileA(ansi_path);
+            return fail(process, 89,
+                        "roundtrip Save As did not produce the target .doc "
+                        "file");
+        }
+        std::cerr << "roundtrip saved '" << ansi_path
+                  << "' size=" << saved_file_size << " bytes\n";
+
+        // Step 5: tear down process 1. A successful save must have marked
+        // the document clean; any #32770 popping up after File Exit means
+        // it did not, and this mode fails loudly instead of clicking
+        // through it (see the plan's Global Constraints).
+        if (!PostMessageW(main_window, kWmCommand, kFileExit, 0)) {
+            DeleteFileA(ansi_path);
+            return fail(process, 90,
+                        "could not send File Exit after roundtrip save");
+        }
+        const HWND save_changes_prompt = wait_for_window(
+            process.hProcess, process.dwProcessId, L"#32770", nullptr, 3000);
+        if (save_changes_prompt != nullptr) {
+            wchar_t prompt_caption[256] = {};
+            GetWindowTextW(save_changes_prompt, prompt_caption,
+                          static_cast<int>(std::size(prompt_caption)));
+            char prompt_caption_ansi[256] = {};
+            WideCharToMultiByte(CP_ACP, 0, prompt_caption, -1,
+                                prompt_caption_ansi,
+                                static_cast<int>(sizeof(prompt_caption_ansi)),
+                                nullptr, nullptr);
+            std::cerr << "roundtrip unexpected dialog after File Exit "
+                        "caption='" << prompt_caption_ansi << "'\n";
+            DeleteFileA(ansi_path);
+            return fail(process, 91,
+                        "File Exit prompted a dialog after the roundtrip "
+                        "save (document was not marked clean)");
+        }
+        if (WaitForSingleObject(process.hProcess, 5000) != WAIT_OBJECT_0) {
+            TerminateProcess(process.hProcess, 0);
+            WaitForSingleObject(process.hProcess, 2000);
+        }
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+
+        // Task 2 (plan docs/superpowers/plans/2026-08-25-doc-roundtrip.md):
+        // launch a second, independent WORD1 process against the .doc
+        // process 1 just saved, and compare what it reads back against the
+        // pre-save snapshot above. Same CreateProcessW pattern as process 1
+        // at the top of wmain, but with wide_path appended as a second
+        // command-line argument.
+        //
+        // Deliberately NOT quoted, unlike the exe path: Opus's own
+        // command-line parser (Opus/initwin.c FInitPart1) never strips
+        // quotes -- it just splits lpszCmdLine on raw whitespace and hands
+        // each token straight to SzToSt/DocOpenStDof (Opus/init2.c
+        // FInitArgs). A quoted path with no embedded space is passed
+        // through WITH the literal quote characters attached, which
+        // DocOpenStDof then fails to find -- and, worse, that failure is
+        // not silent: dofCmdNewOpen does not set dofNoErrors, so
+        // DocOpenStDof's LReturn: unconditionally calls ErrorEid(eidCantOpen,
+        // ...), popping a synchronous, modal "Cannot open document"
+        // MessageBoxA (caption == szAppTitle == "Microsoft Word", same
+        // caption FInitPart2's CreateWindow used for vhwndApp itself)
+        // *during FInitPart2*, before EndStartup/ElNewFile ever run --
+        // confirmed empirically: a quoted argument left the harness's
+        // wait loop below timing out against that stuck error box (which
+        // EnumWindows can return ahead of the real app frame), and the
+        // subsequent File > Open fallback then posted WM_COMMAND at the
+        // wrong window and could never get anywhere. wide_path has no
+        // spaces (GetTempPathA-based), so leaving it unquoted lets this
+        // custom parser's naive whitespace split find it as one token,
+        // unmodified.
+        // arguments[1]'s length is already bounds-checked once, at the top
+        // of wmain, before the first CreateProcessW call.
+        wchar_t command_line2[(MAX_PATH * 2) + 8] = {};
+        command_line2[0] = L'"';
+        lstrcpyW(command_line2 + 1, arguments[1]);
+        lstrcatW(command_line2, L"\" ");
+        lstrcatW(command_line2, wide_path);
+        STARTUPINFOW startup2{};
+        startup2.cb = sizeof(startup2);
+        PROCESS_INFORMATION process2{};
+        if (!CreateProcessW(arguments[1], command_line2, nullptr, nullptr,
+                            FALSE, 0, nullptr, nullptr, &startup2,
+                            &process2)) {
+            std::cerr << "roundtrip CreateProcessW (process 2) failed: "
+                      << GetLastError() << '\n';
+            DeleteFileA(ansi_path);
+            return fail(process2, 92, "could not launch process 2");
+        }
+
+        // Base name to watch for in process 2's title bar, e.g. "oprt0124"
+        // out of ansi_path's "...\\oprt0124.doc" -- extracted from wide_path
+        // rather than recomputed from the pid, so this matches whatever
+        // Word actually shows even if it normalizes the path. Manual scan,
+        // not wcsrchr: see the wide_contains comment above on why this
+        // TU's real 2-byte WCHAR must not go through glibc's wide string
+        // functions.
+        const wchar_t* base_name_start = wide_path;
+        for (const wchar_t* p = wide_path; *p != L'\0'; ++p) {
+            if (*p == L'\\') {
+                base_name_start = p + 1;
+            }
+        }
+        const wchar_t* base_name_end =
+            base_name_start + lstrlenW(base_name_start);
+        for (const wchar_t* p = base_name_start; *p != L'\0'; ++p) {
+            if (*p == L'.') {
+                base_name_end = p;
+                break;
+            }
+        }
+        wchar_t base_name[64] = {};
+        std::size_t base_name_length =
+            static_cast<std::size_t>(base_name_end - base_name_start);
+        if (base_name_length > std::size(base_name) - 1) {
+            base_name_length = std::size(base_name) - 1;
+        }
+        for (std::size_t i = 0; i < base_name_length; ++i) {
+            base_name[i] = base_name_start[i];
+        }
+        char base_name_ansi[64] = {};
+        WideCharToMultiByte(CP_ACP, 0, base_name, -1, base_name_ansi,
+                            static_cast<int>(sizeof(base_name_ansi)), nullptr,
+                            nullptr);
+        std::cerr << "roundtrip process 2 watching for base name '"
+                  << base_name_ansi << "'\n";
+
+        // Step 1: wait up to 8s for process 2's main window to report a
+        // title containing both "Microsoft Word" and the base name above
+        // -- SetAppCaptionFromHwnd (Opus/wwchange.c) only appends the file
+        // name once DocOpenStDof's FCreateMw has actually loaded it, so
+        // this is a reliable signal that command-line open worked, not
+        // just that the window exists. vhwndApp is a single fixed window
+        // for the life of the process (confirmed via Opus/init2.c,
+        // Opus/open.c), so polling the SAME handle here (rather than
+        // re-searching) is correct. Search by class "OpusApp", not a null
+        // class filter: a failed command-line open pops a MessageBoxA
+        // (class #32770) whose caption is ALSO the bare "Microsoft Word"
+        // app title (szAppTitle, same string CreateWindow used for
+        // vhwndApp itself) -- a null-class search can match that box
+        // instead of the real frame.
+        HWND main_window2 = nullptr;
+        bool command_line_open_worked = false;
+        {
+            const ULONGLONG deadline = GetTickCount64() + 8000;
+            do {
+                main_window2 = find_process_window(process2.dwProcessId,
+                                                   L"OpusApp",
+                                                   L"Microsoft Word");
+                if (main_window2 != nullptr) {
+                    wchar_t caption[512] = {};
+                    GetWindowTextW(main_window2, caption,
+                                   static_cast<int>(std::size(caption)));
+                    if (wide_contains_i(caption, base_name)) {
+                        command_line_open_worked = true;
+                        break;
+                    }
+                }
+                if (process2.hProcess != nullptr &&
+                    WaitForSingleObject(process2.hProcess, 0) ==
+                        WAIT_OBJECT_0) {
+                    break;
+                }
+                Sleep(50);
+            } while (GetTickCount64() < deadline);
+        }
+        if (main_window2 == nullptr) {
+            log_process_windows(process2.dwProcessId);
+            DeleteFileA(ansi_path);
+            return fail(process2, 93, "process 2 main window did not appear");
+        }
+        // Same zeroed-PROCESS_INFORMATION workaround as process 1 above:
+        // recover the PID/handle from the window we just found.
+        if (process2.hProcess == nullptr) {
+            DWORD window_process_id2 = 0;
+            GetWindowThreadProcessId(main_window2, &window_process_id2);
+            if (window_process_id2 != 0) {
+                const HANDLE recovered2 = OpenProcess(
+                    PROCESS_TERMINATE | PROCESS_QUERY_INFORMATION |
+                        SYNCHRONIZE,
+                    FALSE, window_process_id2);
+                if (recovered2 != nullptr) {
+                    process2.hProcess = recovered2;
+                    process2.dwProcessId = window_process_id2;
+                }
+            }
+        }
+        DWORD ignored_process_id2 = 0;
+        const DWORD thread_id2 =
+            GetWindowThreadProcessId(main_window2, &ignored_process_id2);
+
+        if (!command_line_open_worked) {
+            std::cerr << "roundtrip process 2 command-line open did not "
+                        "take effect (title still lacks the base name); "
+                        "falling back to File > Open\n";
+            // A failed command-line open leaves a modal "Cannot open
+            // document" MessageBoxA (Opus/open.c DocOpenStDof's LReturn:,
+            // eidCantOpen) up on screen. It fires from inside
+            // FInitPart2/FInitArgs, before vfInitializing is cleared and
+            // before ElNewFile creates the blank document, so nothing
+            // past that point in startup has run yet -- including the
+            // menu-command dispatch this fallback is about to use.
+            // Dismiss it (its OK button is id 1 / IDOK, confirmed via a
+            // dialog-tree dump) and wait for the normal idle
+            // "Microsoft Word - Document1" state before sending File >
+            // Open, exactly like every other mode in this file waits for
+            // at the top of wmain.
+            const HWND stray_error_box = find_process_window(
+                process2.dwProcessId, L"#32770", L"Microsoft Word");
+            if (stray_error_box != nullptr) {
+                std::cerr << "roundtrip dismissing stray dialog hwnd="
+                          << stray_error_box << " after failed "
+                          "command-line open\n";
+                dump_dialog_tree_diagnostic(stray_error_box);
+                PostMessageW(stray_error_box, kWmCommand, IDOK, 0);
+            }
+            main_window2 = wait_for_window(process2.hProcess,
+                                           process2.dwProcessId, L"OpusApp",
+                                           L"Microsoft Word - Document1",
+                                           5000);
+            if (main_window2 == nullptr) {
+                log_process_windows(process2.dwProcessId);
+                DeleteFileA(ansi_path);
+                return fail(process2, 108,
+                            "process 2 did not reach the idle Document1 "
+                            "state after a failed command-line open");
+            }
+
+            // Fall back to File > Open, driving the real #32770 dialog the
+            // same way Task 1 drove Save As: same OFN_EXPLORER template,
+            // same cmb13 (0x047C) ComboBoxEx32 filename field (see
+            // run_word95_common_file_dialog in opus_sdm_runtime.cpp --
+            // kIddOpen and kIddSaveAs share that code path and template).
+            if (!PostMessageW(main_window2, kWmCommand, kFileOpen, 0)) {
+                DeleteFileA(ansi_path);
+                return fail(process2, 94,
+                            "could not send File Open for roundtrip");
+            }
+            const HWND open_dialog = wait_for_window(
+                process2.hProcess, process2.dwProcessId, L"#32770", L"Open",
+                5000);
+            if (open_dialog == nullptr) {
+                log_process_windows(process2.dwProcessId);
+                for (HWND top = GetTopWindow(nullptr); top != nullptr;
+                     top = GetWindow(top, GW_HWNDNEXT)) {
+                    wchar_t top_class[128] = {};
+                    GetClassNameW(top, top_class,
+                                  static_cast<int>(std::size(top_class)));
+                    if (lstrcmpW(top_class, L"#32770") != 0 ||
+                        !IsWindowVisible(top)) {
+                        continue;
+                    }
+                    char top_caption[256] = {};
+                    read_control_text_ansi(
+                        top, top_caption,
+                        static_cast<int>(std::size(top_caption)));
+                    std::cerr << "roundtrip leftover #32770 hwnd=" << top
+                              << " caption='" << top_caption << "'\n";
+                    dump_dialog_tree_diagnostic(top, 1);
+                }
+                DeleteFileA(ansi_path);
+                return fail(process2, 95,
+                            "roundtrip File Open dialog (#32770) did not "
+                            "appear");
+            }
+            if (!window_is_responsive(process2.hProcess, open_dialog)) {
+                DeleteFileA(ansi_path);
+                return fail(process2, 96,
+                            "roundtrip File Open dialog did not finish "
+                            "initializing");
+            }
+
+            const HWND open_filename_field = GetDlgItem(open_dialog, 0x047C);
+            if (open_filename_field == nullptr) {
+                std::cerr << "roundtrip open dialog tree dump:\n";
+                dump_dialog_tree_diagnostic(open_dialog);
+                DeleteFileA(ansi_path);
+                return fail(process2, 97,
+                            "roundtrip File Open dialog has no cmb13 "
+                            "filename field");
+            }
+            SendMessageA(open_filename_field, WM_SETTEXT, 0,
+                        reinterpret_cast<LPARAM>(ansi_path));
+            char open_filename_check[MAX_PATH] = {};
+            read_control_text_ansi(
+                open_filename_field, open_filename_check,
+                static_cast<int>(std::size(open_filename_check)));
+            std::cerr << "roundtrip open filename field=" << open_filename_field
+                      << " reads back '" << open_filename_check << "'\n";
+            if (lstrcmpiA(open_filename_check, ansi_path) != 0) {
+                std::cerr << "roundtrip open dialog tree dump:\n";
+                dump_dialog_tree_diagnostic(open_dialog);
+                DeleteFileA(ansi_path);
+                return fail(process2, 98,
+                            "roundtrip could not set the File Open "
+                            "filename");
+            }
+            if (!PostMessageW(open_dialog, kWmCommand, IDOK, 0)) {
+                DeleteFileA(ansi_path);
+                return fail(process2, 99,
+                            "could not accept the roundtrip File Open "
+                            "dialog");
+            }
+
+            bool dialog_open_worked = false;
+            const ULONGLONG open_deadline = GetTickCount64() + 8000;
+            do {
+                wchar_t caption[512] = {};
+                GetWindowTextW(main_window2, caption,
+                               static_cast<int>(std::size(caption)));
+                if (wide_contains_i(caption, base_name)) {
+                    dialog_open_worked = true;
+                    break;
+                }
+                if (process2.hProcess != nullptr &&
+                    WaitForSingleObject(process2.hProcess, 0) ==
+                        WAIT_OBJECT_0) {
+                    break;
+                }
+                Sleep(100);
+            } while (GetTickCount64() < open_deadline);
+            if (!dialog_open_worked) {
+                log_process_windows(process2.dwProcessId);
+                for (HWND top = GetTopWindow(nullptr); top != nullptr;
+                     top = GetWindow(top, GW_HWNDNEXT)) {
+                    wchar_t top_class[128] = {};
+                    GetClassNameW(top, top_class,
+                                  static_cast<int>(std::size(top_class)));
+                    if (lstrcmpW(top_class, L"#32770") != 0 ||
+                        !IsWindowVisible(top)) {
+                        continue;
+                    }
+                    char top_caption[256] = {};
+                    read_control_text_ansi(
+                        top, top_caption,
+                        static_cast<int>(std::size(top_caption)));
+                    std::cerr << "roundtrip leftover #32770 hwnd=" << top
+                              << " caption='" << top_caption << "'\n";
+                    dump_dialog_tree_diagnostic(top, 1);
+                }
+                DeleteFileA(ansi_path);
+                return fail(process2, 100,
+                            "roundtrip File Open did not load the target "
+                            "document");
+            }
+            std::cerr << "roundtrip process 2 opened via the File > Open "
+                        "dialog\n";
+        } else {
+            std::cerr << "roundtrip process 2 opened via the command "
+                        "line\n";
+        }
+
+        // Step 2: re-read the same query codes used for the pre-save
+        // snapshot and compare, field by field, against process 1's
+        // document.
+        const HWND pane2 = find_descendant_by_class(main_window2, L"OpusWwd");
+        if (pane2 == nullptr) {
+            DeleteFileA(ansi_path);
+            return fail(process2, 101,
+                        "roundtrip reopened window has no OpusWwd pane");
+        }
+        if (!make_foreground_and_focus(main_window2, pane2, thread_id2)) {
+            DeleteFileA(ansi_path);
+            return fail(process2, 102,
+                        "roundtrip could not focus the reopened document "
+                        "pane");
+        }
+
+        const LRESULT new_cp_mac =
+            SendMessageW(pane2, kWmOpusX64QuerySelection, 41, 0);
+        if (new_cp_mac != cp_mac) {
+            std::cerr << "roundtrip mismatch cpMac: expected=" << cp_mac
+                      << " actual=" << new_cp_mac << '\n';
+            DeleteFileA(ansi_path);
+            return fail(process2, 103, "roundtrip cpMac differs after reopen");
+        }
+        for (LRESULT cp = 0; cp < new_cp_mac; ++cp) {
+            const LRESULT byte_value =
+                SendMessageW(pane2, kWmOpusX64QuerySelection, 69, cp);
+            if (byte_value != snapshot_bytes[static_cast<std::size_t>(cp)]) {
+                std::cerr << "roundtrip mismatch byte@" << cp << ": expected="
+                          << snapshot_bytes[static_cast<std::size_t>(cp)]
+                          << " actual=" << byte_value << '\n';
+                DeleteFileA(ansi_path);
+                return fail(process2, 104,
+                            "roundtrip byte content differs after reopen");
+            }
+        }
+        const LRESULT new_ftc0 =
+            SendMessageW(pane2, kWmOpusX64QuerySelection, 51, 0);
+        const LRESULT new_hps0 =
+            SendMessageW(pane2, kWmOpusX64QuerySelection, 52, 0);
+        const LRESULT new_dyp0 =
+            SendMessageW(pane2, kWmOpusX64QuerySelection, 55, 0);
+        std::cerr << "roundtrip reopened snapshot cpMac=" << new_cp_mac
+                  << " ftc0=" << new_ftc0 << " hps0=" << new_hps0
+                  << " dyp0=" << new_dyp0 << '\n';
+        if (new_ftc0 != ftc0) {
+            std::cerr << "roundtrip mismatch ftc: expected=" << ftc0
+                      << " actual=" << new_ftc0 << '\n';
+            DeleteFileA(ansi_path);
+            return fail(process2, 105, "roundtrip ftc differs after reopen");
+        }
+        if (new_hps0 != hps0) {
+            std::cerr << "roundtrip mismatch hps: expected=" << hps0
+                      << " actual=" << new_hps0 << '\n';
+            DeleteFileA(ansi_path);
+            return fail(process2, 106, "roundtrip hps differs after reopen");
+        }
+        if (new_dyp0 != dyp0) {
+            std::cerr << "roundtrip mismatch dypLine: expected=" << dyp0
+                      << " actual=" << new_dyp0 << '\n';
+            DeleteFileA(ansi_path);
+            return fail(process2, 107,
+                        "roundtrip dypLine differs after reopen");
+        }
+        std::cerr << "roundtrip reopen comparison OK: cpMac=" << new_cp_mac
+                  << " ftc0=" << new_ftc0 << " hps0=" << new_hps0
+                  << " dyp0=" << new_dyp0 << '\n';
+
+        // Step 3: tear down process 2 unconditionally -- it was only ever
+        // opened to read the file back, never edited, so there is nothing
+        // to save and no File Exit prompt to negotiate.
+        if (process2.hProcess != nullptr) {
+            TerminateProcess(process2.hProcess, 0);
+            WaitForSingleObject(process2.hProcess, 2000);
+        }
+        if (process2.hThread != nullptr) {
+            CloseHandle(process2.hThread);
+        }
+        if (process2.hProcess != nullptr) {
+            CloseHandle(process2.hProcess);
+        }
+        DeleteFileA(ansi_path);
         return 0;
     }
     if (about_mode) {

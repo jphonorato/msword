@@ -11,8 +11,16 @@
 #define fcMax	    	((FC)(32l*1024l*cbSector)) /* based on pn limitation */
 #define cpWarnTooBig 	((CP)fcMax)
 
-/* size of Word file header. cbFIB expanded to 128byte boundry */
+/* size of Word file header. The FIB *as it is stored on file* expanded to
+	a 128byte boundry.  In memory the FIB may be wider than the file format
+	describes (FC and CP are the native long, 8 bytes in a 64 bit build), so
+	the header size must come from the packed size, never from cbFIB.  See
+	"T H E   F I B   O N   D I S K" further down. */
+#ifdef MAC
 #define cbFileHeader    (((cbFIB + 127) >>7) <<7)
+#else
+#define cbFileHeader    (((cbFibDisk + 127) >>7) <<7)
+#endif /* MAC */
 
 /* F I B  V E R S I O N S */
 
@@ -913,6 +921,68 @@ quicksave.c code should be changed also. */
 
 #define cbFIB (sizeof (struct FIB))
 #define cwFIB (cbFIB / sizeof (uns))
+
+
+/* T H E   F I B   O N   D I S K */
+
+/* Every field of the FIB is one 4 byte word on file, whatever the native
+	width of uns, PN, FC and CP happens to be.  Where FC and CP are 8 byte
+	longs the in memory FIB (cbFIB) is far larger -- larger than cbSector,
+	in fact -- so it may never be blitted to or from a file page.
+	PackFib/UnpackFib (filewin.c) convert between the two representations;
+	they are the only code that knows the on file layout, and they carry the
+	compile time checks that keep cbFibDisk inside a sector.
+
+	This is the layout the MSVC x64 build of this source writes natively,
+	not the 1990 16 bit one (where uns/PN/int were 2 bytes). */
+#define cbFibWord   4
+#define cwFibDisk   105		/* count of fields in struct FIB; PackFib
+							checks the walk against it at run time */
+#define cbFibDisk   (cwFibDisk * cbFibWord)
+
+/* Word indices of the fields that are looked at in a still packed file page,
+	before UnpackFib has run (FNativeFormat, FetchFib).  CbBltFibPacked
+	asserts that it puts these fields exactly here. */
+#define iwFibWIdent     0
+#define iwFibNFib       1
+#define iwFibNProduct   2
+#define iwFibNLocale    3
+#define iwFibPnNext     4
+#define iwFibGrpfFib    5
+#define iwFibNFibBack   6
+#define iwFibFcMin      12
+
+/* the file status bits, as packed into word iwFibGrpfFib */
+#define fFibDot             0x0001
+#define fFibGlsy            0x0002
+#define fFibComplex         0x0004
+#define fFibHasPic          0x0008
+#define wFibQuickSaves      0x00f0
+#define shftFibQuickSaves   4
+
+
+/* C P ' S   A N D   F C ' S   O N   D I S K */
+
+/* The cp's of a PLC are 4 bytes on file too, exactly like the fc's and cp's
+	of the FIB.  Code that computes an on file byte count for a PLC must use
+	cbCpDisk, never sizeof(CP).
+
+	This covers the cp array only.  A plc's *foo records* -- struct SED with
+	its FC fcSepx, struct PCD with its FC fc -- are still written and read at
+	native width, sized by cbSED/cbPCD at both ends.  So are the FKPs, whose
+	rgfc array and cbFkp both come from sizeof(FC) (fkp.h) and which are
+	read straight off a cache page.  All of that is self consistent, so
+	nothing is broken by it, but it does mean a .doc written by this build
+	is not byte compatible with one written by the MSVC x64 build.  Narrowing
+	those needs fkp.h/inssubs.c/fetch.c as well, or the gap just moves. */
+#define cbCpDisk    4
+
+void PackFib();
+void UnpackFib();
+long LFromPackedFib();
+void WriteRgcpToFn();
+void ReadRgcpFromFn();
+
 
 /* indices into table of associated strings */
 /* #define ibstAssocFileNext   0 *//* unused */
