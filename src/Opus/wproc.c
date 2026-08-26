@@ -1796,6 +1796,13 @@ LONG      lParam;
 				return (LRESULT)(pkme != 0 && pkme->kt == ktMacro
 						? pkme->bcm : -1);
 				}
+			case 82: return (LRESULT) selCur.chp.fBold;
+			case 83: return (LRESULT) selCur.chp.fItalic;
+			case 84:
+				{
+				CachePara(selCur.doc, selCur.cpFirst);
+				return (LRESULT) vpapFetch.jc;
+				}
 			}
 		return (LRESULT) -1;
 #endif
