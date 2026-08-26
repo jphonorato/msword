@@ -16,7 +16,9 @@ extern "C" void** mpdochdod[];
 
 namespace {
 
-constexpr long kCcpEop = 1;
+/* Opus/ch.h: ccpEop = 2 under CRLF (defined for every engine target in
+ * CMakeLists.txt), 1 only under the MAC branch this port never builds. */
+constexpr long kCcpEop = 2;
 constexpr int kDocNil = 0;
 
 struct OpusCa {

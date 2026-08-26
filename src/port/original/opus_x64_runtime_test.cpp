@@ -257,7 +257,7 @@ int main() {
 
     OpusTestSetDodCpMac(motherDod, 103);
     TestCa range{};
-    if (CpMacDoc(1) != 101 || CpMacDocEdit(1) != 100 ||
+    if (CpMacDoc(1) != 99 || CpMacDocEdit(1) != 97 ||
         PcaSet(&range, 1, 10, 20) != &range || DcpCa(&range) != 10 ||
         !FInCa(1, 10, &range) || FInCa(1, 20, &range) ||
         PcaSetDcp(&range, 2, 30, 7)->cpLim != 37) {

@@ -2077,6 +2077,131 @@ este vps sigue en **8/10** (§ Resumen). Investigación cerrada; ambos
 árboles (vps y `debian13`) quedaron limpios tras revertir toda la
 instrumentación temporal.
 
+## 15. `kCcpEop` 1→2: arregla `--roundtrip`, y `--font-typing` resultó tener la expectativa calibrada contra el bug viejo -- ambos en verde a la vez
+
+**2026-08-26, en este vps, `DISPLAY=:91`, rama `fix/ccpeop-2` (no
+fusionada a `main`).** Punto de partida: `Opus/ch.h` define
+`ccpEop=2` bajo CRLF (el único modo que este puerto compila), pero
+`src/port/original/opus_asm_resn_core.cpp` reimplementaba
+`CpMacDoc`/`CpMac1Doc`/`CpMacDocEdit` (la version C de
+`Opus/asm/resn2.asm`, fiel a los comentarios de esa fuente
+ensamblador) con una constante propia `kCcpEop` hardcodeada en `1`.
+Esto producía dos síntomas documentados por separado antes de esta
+sesión: el drift de `cpMac +2` por ciclo de guardado/reapertura en
+`opus_word1_roundtrip_test` (ver CLAUDE.md, sección de estado del
+26-08), y -- según una investigación previa parqueada en la rama
+`wip/ccpeop-font-typing-regression` -- que corregir la constante
+"reproduciblemente rompe" `opus_word1_font_typing_test`, sin causa
+localizada.
+
+**Cambio base:** `kCcpEop` 1→2 en `opus_asm_resn_core.cpp` (con
+comentario que cita `Opus/ch.h`), y las expectativas hardcodeadas de
+`opus_x64_runtime_test.cpp:260` (`CpMacDoc(1)`/`CpMacDocEdit(1)` sobre
+un `dod` de prueba con `cpMac=103`) actualizadas de `101/100` a
+`99/97` -- consistente con la fórmula `-2*ccpEop`/`-3*ccpEop` ahora
+usando el valor correcto.
+
+**La regresión de `--font-typing` se confirmó real** (no ruido): con
+`kCcpEop=2`, `display_line_count` final da `2` en vez de `3`, y el
+test fallaba con "mixed-font lines disappeared after resizing".
+Se investigó con el proceso de `systematic-debugging` (instrumentación
+real, no suposición), probando y **descartando tres hipótesis
+concretas antes de encontrar la real**:
+
+1. **Invalidación/extensión de `pdr->cpLim` obsoleta tras insertar
+   cerca del final del documento** (`wordtech/editspec.c`, la función
+   `AdjustCp`/`C_AdjustCp` que ajusta cada `DR` de cada `WWD` cuando
+   el documento crece o encoge). Se instrumentó `AdjustCp` y
+   `disp2.c`/`FUpdateDr` (el punto donde `pdr->cpLim == cpNil`
+   dispara un recálculo vía `CpMacDoc(doc)`) con trazas `fprintf`
+   temporales. **Descartada:** `pdr->cpLim` se mantiene correctamente
+   sincronizado con `cpMac` en cada ciclo de inserción/recorte
+   observado; nunca se queda "atrás" del punto de edición.
+2. **`FReplace` rechazando el bloque "speeder" de inserción
+   (`cchInsertMax`=32 bytes, `wordtech/insert.c` `BeginInsert`) al
+   posicionarse justo en el borde `CpMacDocEdit(doc)`.** Se
+   instrumentó `BeginInsert` para capturar `cpInsert`,
+   `CpMacDoc`/`CpMacDocEdit` y el resultado de `FReplace` en cada
+   llamada. **Descartada:** `fReplaceOk=1` en las 9 llamadas
+   observadas durante la corrida completa del test; nunca falla.
+3. **El catch de "fin de documento" dentro del fetch de
+   `FormatLine`** (`wordtech/format.c:1717`, `LFetch`:
+   `if (cpNext >= caPara.cpLim || cpNext >= CpMacDoc(doc) || ...)
+   { vfli.chBreak = chEop; goto LEndBreakCp; }`, el candidato más
+   directo dado que acota exactamente con `CpMacDoc`). Se instrumentó
+   ese punto exacto. **Descartada:** la rama se alcanza 3478 veces
+   durante la corrida (`LFetch` es el bucle normal de fetch de runs),
+   pero la condición de corte por `CpMacDoc` nunca se cumple ni una
+   sola vez -- todo corte de línea real ocurre por `caPara.cpLim` o
+   por un carácter excepcional dentro del propio `switch`, no por este
+   catch.
+
+**Causa real, encontrada por comparación A/B directa** (mismo test,
+mismas pulsaciones, solo cambiando `kCcpEop` 1↔2 y volcando el estado
+de líneas con las consultas 30-34 justo después del Enter, antes de
+escribir "largeline"): bajo `kCcpEop=1` (el valor viejo, con el que
+el test venía pasando), el párrafo 1 (`"fonttest"` + `" secondfont"`,
+un run en cada fuente/tamaño) mostraba **23 caracteres reales**
+repartidos en 2 líneas envueltas (`n=10`+`n=13`) antes de la línea
+vacía del nuevo párrafo. Bajo `kCcpEop=2` (el valor correcto), el
+mismo párrafo mostraba **21 caracteres reales en una sola línea, sin
+envolver**. Ninguno de los dos números coincide con las pulsaciones
+reales enviadas (`"fonttest"`=8 + `" secondfont"`=11 = 19,
+confirmado `cp_before=0`, documento nuevo) -- ambas builds tienen un
+excedente sobre el conteo real (+4 la vieja, +2 la nueva) en lo que
+`edl.dcp` (consulta 34, el conteo de caracteres por línea de
+despliegue) reporta, no en el contenido del documento en sí (que se
+verificó completo y correcto por separado: los 9 caracteres de
+`"largeline"` se anexan al buffer de inserción en dos tandas,
+confirmado carácter por carácter vía instrumentación de
+`InsertLoopCh`). Es decir: el párrafo 1 **nunca envolvió a 2 líneas
+por ancho real de texto** -- el "envoltorio" que el test viejo
+observaba bajo `kCcpEop=1` era un artefacto del conteo de caracteres
+por línea bajo la constante incorrecta, no maquetación genuina. La
+aserción `display_line_count < 3` de `opus_word1_ui_test.cpp` estaba,
+sin saberlo, calibrada contra ese artefacto.
+
+**No se investigó más a fondo qué hace exactamente que `edl.dcp`
+reporte un excedente sobre el conteo real de pulsaciones bajo
+cualquiera de las dos constantes** (no es `LFetch`, según el punto 3
+de arriba; queda abierto si alguna vez importa para otro test que
+dependa de `edl.dcp` como conteo exacto de caracteres). Para este
+test, no hacía falta: el contenido y el formato (negrita/cursiva/`jc`,
+ver `opus_word1_formatting_test`) ya se verifican por otras vías
+(consultas CHP/PAP directas, comparación byte a byte cp por cp), y
+`display_line_count` solo necesitaba reflejar la maquetación real
+(2 líneas, no 3) para dejar de fallar por una razón que no era un bug.
+
+**Arreglo aplicado (arnés, no motor):**
+`src/port/original/opus_word1_ui_test.cpp`, bloque `--font-typing`:
+`display_line_count < 3` → `< 2`; se retira `after_enter_second_band
+== 0` de la condición de fallo (esa franja se mide justo después del
+Enter, antes de escribir "largeline" -- bajo la maquetación correcta
+es la línea 1, el párrafo nuevo aún vacío, y legítimamente da ~0
+píxeles oscuros en ese instante). Comentario ampliado documentando
+que el sweep de píxeles original (§8) quedó calibrado bajo el
+`kCcpEop` viejo.
+
+**Verificado:**
+```
+$ DISPLAY=:91 ctest --test-dir out/linux-winelib-debug -LE word1_startup_blocked
+100% tests passed, 0 tests failed out of 9
+
+$ DISPLAY=:91 ctest --test-dir out/linux-winelib-debug -L word1_startup_blocked
+91% tests passed, 1 tests failed out of 11
+  (único fallo: opus_word1_interaction_test, §12, límite de entorno ya documentado)
+```
+
+`opus_word1_roundtrip_test` y `opus_word1_font_typing_test` en verde
+**simultáneamente** -- el trade-off que había bloqueado la rama
+`wip/ccpeop-font-typing-regression` no era tal: no había que elegir
+entre los dos, había que corregir una aserción de arnés que llevaba
+calibrada contra el bug del motor desde que se escribió. Rama
+`wip/ccpeop-font-typing-regression` queda obsoleta, no se fusiona
+(su diff revierte los query codes 82-84 de `opus_word1_formatting_test`,
+que no existían cuando se creó); el trabajo real quedó en
+`fix/ccpeop-2`, sobre `main` actual.
+
 ## Resumen
 
 Los 8 ítems de comportamiento de la lista original de §26 de

@@ -2577,7 +2577,21 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
            two lines and shows the large line's own content beginning at
            client y=230, matching its layout y=90 + this same 140px
            offset. Both sweeps are recorded verbatim in
-           docs/port-linux/03-comportamiento-word1-startup-blocked.md §8. */
+           docs/port-linux/03-comportamiento-word1-startup-blocked.md §8.
+
+           That sweep predates kCcpEop=2 (see docs/port-linux/CLAUDE.md
+           status and 01-diagnostico-heap-corruption-arranque.md §30): it
+           was taken while opus_asm_resn_core.cpp's CpMacDoc/CpMacDocEdit
+           still used the wrong kCcpEop=1, under which paragraph 1 (the
+           "fonttest"+" secondfont" mixed-font run) wrapped into 2 display
+           lines (probeLines=3 total, including the fresh empty paragraph
+           after Enter). Under the correct kCcpEop=2, paragraph 1 fits on
+           a single line -- early_display_line_count is 2, not 3, right
+           after Enter: line 0 is paragraph 1 (unwrapped), line 1 is the
+           fresh, still-empty paragraph the caret now sits in. The second
+           band below is therefore expected to read ~0 dark pixels at
+           this point (nothing has been typed into it yet) -- only line
+           0's band is asserted non-empty here. */
         constexpr int kPageTopMarginY = 140;
         const LRESULT early_display_line_count = SendMessageW(
             pane, kWmOpusX64QuerySelection, 30, 0);
@@ -2684,9 +2698,16 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
                       << ']';
         }
         std::cerr << '\n';
+        /* display_line_count: 2 lines under the correct kCcpEop=2 layout
+           (paragraph 1 unwrapped + paragraph 2 holding "largeline"), not
+           the 3 lines the stale kCcpEop=1 sweep above recorded -- see the
+           comment on early_display_line_count. after_enter_second_band
+           is deliberately not asserted non-empty: it was measured right
+           after Enter, before "largeline" was typed, so it is line 1's
+           still-empty paragraph and legitimately reads ~0. */
         if (large_inserted_ftc != second_ftc || large_inserted_hps != 144 ||
-            display_line_count < 3 || mixed_line_pixels == 0 ||
-            after_enter_first_band == 0 || after_enter_second_band == 0 ||
+            display_line_count < 2 || mixed_line_pixels == 0 ||
+            after_enter_first_band == 0 ||
             after_forced_repaint_pixels * 4 < mixed_line_pixels * 3 ||
             large_line_band_pixels == 0 ||
             large_line_pixels <= after_forced_repaint_pixels ||
