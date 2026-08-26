@@ -825,7 +825,8 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
         std::cerr <<
             "usage: opus_word1_ui_test WORD1.exe "
             "[--typing|--interaction|--selection|--caret|--formatting|--color|"
-            "--font-typing|--clipboard|--about|--save-as|--roundtrip]\n";
+            "--font-typing|--clipboard|--about|--save-as|--roundtrip|"
+            "--rich-format]\n";
         return 1;
     }
     const bool typing_mode =
@@ -860,10 +861,13 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
     const bool roundtrip_mode =
         argument_count == 3 &&
         lstrcmpW(arguments[2], L"--roundtrip") == 0;
+    const bool rich_format_mode =
+        argument_count == 3 &&
+        lstrcmpW(arguments[2], L"--rich-format") == 0;
     if (argument_count == 3 && !typing_mode && !interaction_mode &&
         !selection_mode && !caret_mode && !formatting_mode && !color_mode &&
         !font_typing_mode && !clipboard_mode && !about_mode &&
-        !save_as_mode && !roundtrip_mode) {
+        !save_as_mode && !roundtrip_mode && !rich_format_mode) {
         std::cerr << "unknown test mode\n";
         return 1;
     }
@@ -1597,6 +1601,524 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
         // Step 3: tear down process 2 unconditionally -- it was only ever
         // opened to read the file back, never edited, so there is nothing
         // to save and no File Exit prompt to negotiate.
+        if (process2.hProcess != nullptr) {
+            TerminateProcess(process2.hProcess, 0);
+            WaitForSingleObject(process2.hProcess, 2000);
+        }
+        if (process2.hThread != nullptr) {
+            CloseHandle(process2.hThread);
+        }
+        if (process2.hProcess != nullptr) {
+            CloseHandle(process2.hProcess);
+        }
+        DeleteFileA(ansi_path);
+        return 0;
+    }
+    if (rich_format_mode) {
+        // Same structure as roundtrip_mode above (type -> Save As real
+        // .doc -> File Exit -> second WORD1 process -> compare), but the
+        // thing being round-tripped is CHP/PAP formatting instead of raw
+        // character bytes: Ctrl+B/Ctrl+I via query 80 (FExecKc, same
+        // mechanism execute_control_shortcut already uses for Ctrl+A),
+        // centered alignment via the real kParaCenter menu command, then
+        // read back through the new query codes 82 (chp.fBold), 83
+        // (chp.fItalic) and 84 (CachePara + vpapFetch.jc) added to
+        // Opus/wproc.c's WM_OPUS_X64_QUERY_SELECTION switch for this test.
+        DWORD ignored_process_id = 0;
+        const DWORD thread_id =
+            GetWindowThreadProcessId(main_window, &ignored_process_id);
+        const HWND pane = find_descendant_by_class(main_window, L"OpusWwd");
+        if (pane == nullptr) {
+            return fail(process, 109,
+                        "rich-format test could not find the document pane");
+        }
+        if (!make_foreground_and_focus(main_window, pane, thread_id)) {
+            return fail(process, 110,
+                        "rich-format test could not focus the document "
+                        "pane");
+        }
+        if (!send_physical_text(L"rich format paragraph")) {
+            return fail(process, 111,
+                        "rich-format test could not type its paragraph");
+        }
+        Sleep(500);
+
+        const LRESULT cp_mac =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 41, 0);
+        if (cp_mac < 10) {
+            return fail(process, 112,
+                        "rich-format test typed too little text to format");
+        }
+
+        // Select the whole paragraph, then apply character formatting
+        // (Bold, Italic) and paragraph formatting (centered) to it.
+        if (!execute_control_shortcut(pane, 'A')) {
+            return fail(process, 113,
+                        "rich-format test could not select all");
+        }
+        Sleep(300);
+        const LRESULT selected_first =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 0, 0);
+        const LRESULT selected_lim =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 1, 0);
+        if (selected_lim <= selected_first) {
+            return fail(process, 114,
+                        "rich-format test could not select the paragraph");
+        }
+        if (!execute_control_shortcut(pane, 'B')) {
+            return fail(process, 115,
+                        "rich-format test could not apply bold");
+        }
+        Sleep(200);
+        if (!execute_control_shortcut(pane, 'I')) {
+            return fail(process, 116,
+                        "rich-format test could not apply italic");
+        }
+        Sleep(200);
+        if (!PostMessageW(main_window, kWmCommand, kParaCenter, 0)) {
+            return fail(process, 117,
+                        "rich-format test could not apply centered "
+                        "alignment");
+        }
+        Sleep(500);
+        if (!window_is_responsive(process.hProcess, main_window)) {
+            return fail(process, 118,
+                        "rich-format formatting crashed or hung WORD1");
+        }
+
+        // Queries 82/83/84 read the CURRENT SELECTION's chp/pap (selCur),
+        // not an explicit cp like queries 51/52 do -- so click near the
+        // start of the pane to park the caret inside the just-formatted
+        // paragraph rather than trust wherever Select All left it.
+        POINT caret_point{20, 10};
+        if (!ClientToScreen(pane, &caret_point) ||
+            !SetCursorPos(caret_point.x, caret_point.y) ||
+            !send_mouse_button(MOUSEEVENTF_LEFTDOWN) ||
+            !send_mouse_button(MOUSEEVENTF_LEFTUP)) {
+            return fail(process, 119,
+                        "rich-format test could not place the caret");
+        }
+        Sleep(300);
+
+        const LRESULT expected_bold =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 82, 0);
+        const LRESULT expected_italic =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 83, 0);
+        const LRESULT expected_jc =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 84, 0);
+        std::cerr << "rich-format pre-save chp/pap: bold=" << expected_bold
+                  << " italic=" << expected_italic << " jc=" << expected_jc
+                  << '\n';
+        if (expected_bold == 0 || expected_italic == 0) {
+            return fail(process, 120,
+                        "rich-format bold/italic were not applied before "
+                        "save");
+        }
+
+        // Choose an on-disk target and delete it if already there, same
+        // reasoning as roundtrip_mode above (OFN_OVERWRITEPROMPT is on for
+        // the real Save As dialog). Distinct prefix ("orfm") so a
+        // concurrent run of --roundtrip never collides on the same name.
+        char temp_dir[MAX_PATH] = {};
+        const DWORD temp_dir_length = GetTempPathA(
+            static_cast<DWORD>(std::size(temp_dir)), temp_dir);
+        if (temp_dir_length == 0 || temp_dir_length >= std::size(temp_dir)) {
+            return fail(process, 121,
+                        "rich-format test could not resolve GetTempPathA");
+        }
+        char ansi_path[MAX_PATH] = {};
+        wsprintfA(ansi_path, "%sorfm%04lx.doc", temp_dir,
+                  static_cast<unsigned long>(process.dwProcessId & 0xFFFFu));
+        DeleteFileA(ansi_path);
+        wchar_t wide_path[MAX_PATH] = {};
+        MultiByteToWideChar(CP_ACP, 0, ansi_path, -1, wide_path,
+                            static_cast<int>(std::size(wide_path)));
+        std::cerr << "rich-format target path='" << ansi_path
+                  << "' wideLength=" << lstrlenW(wide_path) << '\n';
+
+        // File > Save As, driving the real #32770 common dialog -- same
+        // cmb13 (0x047C) filename field roundtrip_mode already found.
+        if (!PostMessageW(main_window, kWmCommand, kFileSaveAs, 0)) {
+            return fail(process, 122,
+                        "could not send File Save As for rich-format");
+        }
+        const HWND save_dialog = wait_for_window(
+            process.hProcess, process.dwProcessId, L"#32770", L"Save As",
+            5000);
+        if (save_dialog == nullptr) {
+            log_process_windows(process.dwProcessId);
+            return fail(process, 123,
+                        "rich-format Save As dialog (#32770) did not "
+                        "appear");
+        }
+        if (!window_is_responsive(process.hProcess, save_dialog)) {
+            DeleteFileA(ansi_path);
+            return fail(process, 124,
+                        "rich-format Save As dialog did not finish "
+                        "initializing");
+        }
+        const HWND filename_field = GetDlgItem(save_dialog, 0x047C);
+        if (filename_field == nullptr) {
+            std::cerr << "rich-format dialog tree dump:\n";
+            dump_dialog_tree_diagnostic(save_dialog);
+            DeleteFileA(ansi_path);
+            return fail(process, 125,
+                        "rich-format Save As dialog has no cmb13 filename "
+                        "field");
+        }
+        SendMessageA(filename_field, WM_SETTEXT, 0,
+                     reinterpret_cast<LPARAM>(ansi_path));
+        char filename_check[MAX_PATH] = {};
+        read_control_text_ansi(filename_field, filename_check,
+                               static_cast<int>(std::size(filename_check)));
+        if (lstrcmpiA(filename_check, ansi_path) != 0) {
+            std::cerr << "rich-format dialog tree dump:\n";
+            dump_dialog_tree_diagnostic(save_dialog);
+            DeleteFileA(ansi_path);
+            return fail(process, 126,
+                        "rich-format could not set the Save As filename");
+        }
+        if (!PostMessageW(save_dialog, kWmCommand, IDOK, 0)) {
+            DeleteFileA(ansi_path);
+            return fail(process, 127,
+                        "could not accept the rich-format Save As dialog");
+        }
+
+        const ULONGLONG save_deadline = GetTickCount64() + 8000;
+        bool confirmed_overwrite = false;
+        bool file_ready = false;
+        DWORD saved_file_size = 0;
+        while (GetTickCount64() < save_deadline) {
+            if (GetFileAttributesA(ansi_path) != INVALID_FILE_ATTRIBUTES) {
+                const HANDLE probe = CreateFileA(
+                    ansi_path, GENERIC_READ,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                if (probe != INVALID_HANDLE_VALUE) {
+                    saved_file_size = GetFileSize(probe, nullptr);
+                    CloseHandle(probe);
+                    if (saved_file_size != INVALID_FILE_SIZE &&
+                        saved_file_size > 128) {
+                        file_ready = true;
+                        break;
+                    }
+                }
+            }
+            if (!confirmed_overwrite) {
+                const HWND confirm_dialog = find_process_window(
+                    process.dwProcessId, L"#32770", L"Confirm Save As");
+                if (confirm_dialog != nullptr &&
+                    confirm_dialog != save_dialog) {
+                    PostMessageW(confirm_dialog, kWmCommand, IDYES, 0);
+                    confirmed_overwrite = true;
+                }
+            }
+            Sleep(100);
+        }
+        if (!file_ready) {
+            log_process_windows(process.dwProcessId);
+            DeleteFileA(ansi_path);
+            return fail(process, 128,
+                        "rich-format Save As did not produce the target "
+                        ".doc file");
+        }
+        std::cerr << "rich-format saved '" << ansi_path
+                  << "' size=" << saved_file_size << " bytes\n";
+
+        // Tear down process 1 -- a successful save must have marked the
+        // document clean, so File Exit should not prompt.
+        if (!PostMessageW(main_window, kWmCommand, kFileExit, 0)) {
+            DeleteFileA(ansi_path);
+            return fail(process, 129,
+                        "could not send File Exit after rich-format save");
+        }
+        const HWND save_changes_prompt = wait_for_window(
+            process.hProcess, process.dwProcessId, L"#32770", nullptr, 3000);
+        if (save_changes_prompt != nullptr) {
+            DeleteFileA(ansi_path);
+            return fail(process, 130,
+                        "File Exit prompted a dialog after the rich-format "
+                        "save (document was not marked clean)");
+        }
+        if (WaitForSingleObject(process.hProcess, 5000) != WAIT_OBJECT_0) {
+            TerminateProcess(process.hProcess, 0);
+            WaitForSingleObject(process.hProcess, 2000);
+        }
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+
+        // Launch a second, independent WORD1 process against the .doc
+        // process 1 just saved -- same CreateProcessW pattern as
+        // roundtrip_mode, unquoted path (see the long comment on that mode
+        // above for why).
+        wchar_t command_line2[(MAX_PATH * 2) + 8] = {};
+        command_line2[0] = L'"';
+        lstrcpyW(command_line2 + 1, arguments[1]);
+        lstrcatW(command_line2, L"\" ");
+        lstrcatW(command_line2, wide_path);
+        STARTUPINFOW startup2{};
+        startup2.cb = sizeof(startup2);
+        PROCESS_INFORMATION process2{};
+        if (!CreateProcessW(arguments[1], command_line2, nullptr, nullptr,
+                            FALSE, 0, nullptr, nullptr, &startup2,
+                            &process2)) {
+            std::cerr << "rich-format CreateProcessW (process 2) failed: "
+                      << GetLastError() << '\n';
+            DeleteFileA(ansi_path);
+            return fail(process2, 131, "could not launch process 2");
+        }
+
+        const wchar_t* base_name_start = wide_path;
+        for (const wchar_t* p = wide_path; *p != L'\0'; ++p) {
+            if (*p == L'\\') {
+                base_name_start = p + 1;
+            }
+        }
+        const wchar_t* base_name_end =
+            base_name_start + lstrlenW(base_name_start);
+        for (const wchar_t* p = base_name_start; *p != L'\0'; ++p) {
+            if (*p == L'.') {
+                base_name_end = p;
+                break;
+            }
+        }
+        wchar_t base_name[64] = {};
+        std::size_t base_name_length =
+            static_cast<std::size_t>(base_name_end - base_name_start);
+        if (base_name_length > std::size(base_name) - 1) {
+            base_name_length = std::size(base_name) - 1;
+        }
+        for (std::size_t i = 0; i < base_name_length; ++i) {
+            base_name[i] = base_name_start[i];
+        }
+
+        HWND main_window2 = nullptr;
+        bool command_line_open_worked = false;
+        {
+            const ULONGLONG deadline = GetTickCount64() + 8000;
+            do {
+                main_window2 = find_process_window(process2.dwProcessId,
+                                                   L"OpusApp",
+                                                   L"Microsoft Word");
+                if (main_window2 != nullptr) {
+                    wchar_t caption[512] = {};
+                    GetWindowTextW(main_window2, caption,
+                                   static_cast<int>(std::size(caption)));
+                    if (wide_contains_i(caption, base_name)) {
+                        command_line_open_worked = true;
+                        break;
+                    }
+                }
+                if (process2.hProcess != nullptr &&
+                    WaitForSingleObject(process2.hProcess, 0) ==
+                        WAIT_OBJECT_0) {
+                    break;
+                }
+                Sleep(50);
+            } while (GetTickCount64() < deadline);
+        }
+        if (main_window2 == nullptr) {
+            log_process_windows(process2.dwProcessId);
+            DeleteFileA(ansi_path);
+            return fail(process2, 132,
+                        "process 2 main window did not appear");
+        }
+        if (process2.hProcess == nullptr) {
+            DWORD window_process_id2 = 0;
+            GetWindowThreadProcessId(main_window2, &window_process_id2);
+            if (window_process_id2 != 0) {
+                const HANDLE recovered2 = OpenProcess(
+                    PROCESS_TERMINATE | PROCESS_QUERY_INFORMATION |
+                        SYNCHRONIZE,
+                    FALSE, window_process_id2);
+                if (recovered2 != nullptr) {
+                    process2.hProcess = recovered2;
+                    process2.dwProcessId = window_process_id2;
+                }
+            }
+        }
+        DWORD ignored_process_id2 = 0;
+        const DWORD thread_id2 =
+            GetWindowThreadProcessId(main_window2, &ignored_process_id2);
+
+        if (!command_line_open_worked) {
+            // Same fallback as roundtrip_mode: dismiss the stray "Cannot
+            // open document" box (if any) and drive File > Open instead.
+            const HWND stray_error_box = find_process_window(
+                process2.dwProcessId, L"#32770", L"Microsoft Word");
+            if (stray_error_box != nullptr) {
+                dump_dialog_tree_diagnostic(stray_error_box);
+                PostMessageW(stray_error_box, kWmCommand, IDOK, 0);
+            }
+            main_window2 = wait_for_window(process2.hProcess,
+                                           process2.dwProcessId, L"OpusApp",
+                                           L"Microsoft Word - Document1",
+                                           5000);
+            if (main_window2 == nullptr) {
+                log_process_windows(process2.dwProcessId);
+                DeleteFileA(ansi_path);
+                return fail(process2, 133,
+                            "process 2 did not reach the idle Document1 "
+                            "state after a failed command-line open");
+            }
+            if (!PostMessageW(main_window2, kWmCommand, kFileOpen, 0)) {
+                DeleteFileA(ansi_path);
+                return fail(process2, 134,
+                            "could not send File Open for rich-format");
+            }
+            const HWND open_dialog = wait_for_window(
+                process2.hProcess, process2.dwProcessId, L"#32770", L"Open",
+                5000);
+            if (open_dialog == nullptr) {
+                log_process_windows(process2.dwProcessId);
+                DeleteFileA(ansi_path);
+                return fail(process2, 135,
+                            "rich-format File Open dialog (#32770) did not "
+                            "appear");
+            }
+            if (!window_is_responsive(process2.hProcess, open_dialog)) {
+                DeleteFileA(ansi_path);
+                return fail(process2, 136,
+                            "rich-format File Open dialog did not finish "
+                            "initializing");
+            }
+            const HWND open_filename_field = GetDlgItem(open_dialog, 0x047C);
+            if (open_filename_field == nullptr) {
+                dump_dialog_tree_diagnostic(open_dialog);
+                DeleteFileA(ansi_path);
+                return fail(process2, 137,
+                            "rich-format File Open dialog has no cmb13 "
+                            "filename field");
+            }
+            SendMessageA(open_filename_field, WM_SETTEXT, 0,
+                        reinterpret_cast<LPARAM>(ansi_path));
+            char open_filename_check[MAX_PATH] = {};
+            read_control_text_ansi(
+                open_filename_field, open_filename_check,
+                static_cast<int>(std::size(open_filename_check)));
+            if (lstrcmpiA(open_filename_check, ansi_path) != 0) {
+                dump_dialog_tree_diagnostic(open_dialog);
+                DeleteFileA(ansi_path);
+                return fail(process2, 138,
+                            "rich-format could not set the File Open "
+                            "filename");
+            }
+            if (!PostMessageW(open_dialog, kWmCommand, IDOK, 0)) {
+                DeleteFileA(ansi_path);
+                return fail(process2, 139,
+                            "could not accept the rich-format File Open "
+                            "dialog");
+            }
+            bool dialog_open_worked = false;
+            const ULONGLONG open_deadline = GetTickCount64() + 8000;
+            do {
+                wchar_t caption[512] = {};
+                GetWindowTextW(main_window2, caption,
+                               static_cast<int>(std::size(caption)));
+                if (wide_contains_i(caption, base_name)) {
+                    dialog_open_worked = true;
+                    break;
+                }
+                if (process2.hProcess != nullptr &&
+                    WaitForSingleObject(process2.hProcess, 0) ==
+                        WAIT_OBJECT_0) {
+                    break;
+                }
+                Sleep(100);
+            } while (GetTickCount64() < open_deadline);
+            if (!dialog_open_worked) {
+                log_process_windows(process2.dwProcessId);
+                DeleteFileA(ansi_path);
+                return fail(process2, 140,
+                            "rich-format File Open did not load the target "
+                            "document");
+            }
+            std::cerr << "rich-format process 2 opened via the File > Open "
+                        "dialog\n";
+        } else {
+            std::cerr << "rich-format process 2 opened via the command "
+                        "line\n";
+        }
+
+        // Read back CHP/PAP through the reopened document's own SDM/FIB
+        // load path: if formatting reappears correctly here, the FKP
+        // pages just round-tripped cleanly through the FIB marshaling
+        // layer (PackFib/UnpackFib) on real disk bytes -- no separate
+        // binary parser needed, this reopen path IS that layer.
+        const HWND pane2 = find_descendant_by_class(main_window2, L"OpusWwd");
+        if (pane2 == nullptr) {
+            DeleteFileA(ansi_path);
+            return fail(process2, 141,
+                        "rich-format reopened window has no OpusWwd pane");
+        }
+        if (!make_foreground_and_focus(main_window2, pane2, thread_id2)) {
+            DeleteFileA(ansi_path);
+            return fail(process2, 142,
+                        "rich-format could not focus the reopened document "
+                        "pane");
+        }
+        const LRESULT new_cp_mac =
+            SendMessageW(pane2, kWmOpusX64QuerySelection, 41, 0);
+        if (new_cp_mac != cp_mac) {
+            // Not a hard gate here, unlike roundtrip_mode: this is the
+            // already-documented, already-parked ccpEop mismatch
+            // (Opus/ch.h's ccpEop=2 under CRLF vs opus_asm_resn_core.cpp's
+            // hardcoded kCcpEop=1 -- see docs/port-linux CLAUDE.md status
+            // and branch wip/ccpeop-font-typing-regression), which grows
+            // cpMac by a fixed +2 on every save/reopen cycle regardless of
+            // formatting. This test's own subject is CHP/PAP persistence,
+            // not cp accounting, and the paragraph's start (where the
+            // caret click below lands) is unaffected by a shift at the
+            // document's tail -- log and continue instead of failing.
+            std::cerr << "rich-format cpMac drifted after reopen (known "
+                        "parked ccpEop bug, not a formatting regression): "
+                        "expected=" << cp_mac << " actual=" << new_cp_mac
+                      << '\n';
+        }
+        POINT caret_point2{20, 10};
+        if (!ClientToScreen(pane2, &caret_point2) ||
+            !SetCursorPos(caret_point2.x, caret_point2.y) ||
+            !send_mouse_button(MOUSEEVENTF_LEFTDOWN) ||
+            !send_mouse_button(MOUSEEVENTF_LEFTUP)) {
+            DeleteFileA(ansi_path);
+            return fail(process2, 144,
+                        "rich-format could not place the caret in the "
+                        "reopened document");
+        }
+        Sleep(300);
+        const LRESULT actual_bold =
+            SendMessageW(pane2, kWmOpusX64QuerySelection, 82, 0);
+        const LRESULT actual_italic =
+            SendMessageW(pane2, kWmOpusX64QuerySelection, 83, 0);
+        const LRESULT actual_jc =
+            SendMessageW(pane2, kWmOpusX64QuerySelection, 84, 0);
+        std::cerr << "rich-format reopened chp/pap: bold=" << actual_bold
+                  << " italic=" << actual_italic << " jc=" << actual_jc
+                  << '\n';
+        if (actual_bold != expected_bold) {
+            DeleteFileA(ansi_path);
+            return fail(process2, 145,
+                        "rich-format bold (CHP.fBold) did not survive the "
+                        "save/reopen round-trip");
+        }
+        if (actual_italic != expected_italic) {
+            DeleteFileA(ansi_path);
+            return fail(process2, 146,
+                        "rich-format italic (CHP.fItalic) did not survive "
+                        "the save/reopen round-trip");
+        }
+        if (actual_jc != expected_jc) {
+            DeleteFileA(ansi_path);
+            return fail(process2, 147,
+                        "rich-format paragraph alignment (PAP.jc) did not "
+                        "survive the save/reopen round-trip");
+        }
+        std::cerr << "rich-format reopen comparison OK: bold=" << actual_bold
+                  << " italic=" << actual_italic << " jc=" << actual_jc
+                  << '\n';
+
+        // Tear down process 2 unconditionally -- it was only ever opened
+        // to read the file back, never edited.
         if (process2.hProcess != nullptr) {
             TerminateProcess(process2.hProcess, 0);
             WaitForSingleObject(process2.hProcess, 2000);
