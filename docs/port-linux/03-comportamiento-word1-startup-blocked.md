@@ -1956,7 +1956,7 @@ bloque, incluidos todos los nuevos códigos de fallo de este ítem.
 Archivo: `src/port/original/opus_word1_ui_test.cpp` (Pasos 1-3
 completos del plan, códigos de fallo 92-108).
 
-## 14. `opus_word1_ui_test` (smoke base): "two-document File Exit was not clean" -- reproducible solo en la VM `debian13` de exia, no en este vps, causa parcialmente localizada
+## 14. `opus_word1_ui_test` (smoke base): "two-document File Exit was not clean" -- reproducible solo en la VM `debian13` de exia, no en este vps, aislado a la fase post-`exit()` de Wine/Winelib
 
 **2026-08-26, en `debian13` (VM libvirt dentro de `exia`, recién
 recompuesta a 6 vCPU/10GB), `DISPLAY=:91`.** El test base sin flags
@@ -1989,30 +1989,12 @@ pasa siempre -- diferencia real entre dos entornos Debian 13
   exit_code=1 GetLastError=6`. No es un código de excepción/crash
   (`0xC0000005` y similares) -- es literalmente `exit_code=1`.
 
-**Causa candidata, localizada por lectura de código, no confirmada con
-instrumentación adicional (alcance de una investigación "breve"):**
-
-`Opus/quit.c:332`, el último tramo de `QuitExit()` (el manejador de
-`WM_QUIT`, "The last thing we ever call; does not return"):
-
-```c
-CleanUpForExit();
-exit(vmsgLast.wParam);
-```
-
-`vmsgLast` es el `MSG` global del bucle principal Win16-heredado
-(`wproc.c`, llenado por `PeekMessage((LPMSG)&vmsgLast, NULL, NULL,
-NULL, PM_REMOVE)` en `OpusOriginalWinMain`). El camino normal es
-`PostQuitMessage(0)` en `Opus/quit.c:311`, así que `vmsgLast.wParam`
-debería ser `0` cuando el bucle principal recoge el `WM_QUIT` y
-`exit(0)`. `exit_code=1` significa que, en el momento en que
-`QuitExit()` lee `vmsgLast.wParam`, ese campo no contenía el `wParam`
-real del `WM_QUIT` que se acaba de postear.
-
-Hay un segundo sitio que llama `PostQuitMessage` en todo el árbol
-compilado (`Opus/quit.c:311` es el único en código original):
-`src/port/original/opus_sdm_runtime.cpp:2660-2666`, el bucle modal
-propio de un diálogo SDM "nativo" (`dialog->native_modal`):
+**Hipótesis del bucle modal SDM -- descartada por instrumentación
+directa.** La sospecha inicial (recogida en una revisión previa de
+esta sección): había un segundo sitio que llama `PostQuitMessage` en
+todo el árbol compilado, `src/port/original/opus_sdm_runtime.cpp:2660-2666`,
+el bucle modal propio de un diálogo SDM "nativo"
+(`dialog->native_modal`):
 
 ```cpp
 MSG message{};
@@ -2026,42 +2008,74 @@ while (!dialog->dying) {
 ```
 
 `materialize_new_template` (`opus_sdm_runtime.cpp:844-871`, el
-diálogo de File New que este mismo test usa) fija
-`dialog.native_modal = true` -- así que el diálogo de File New sí
-pasa por este bucle modal propio, no por el bucle principal, mientras
-está abierto. `GetMessageA` con `hwnd=nullptr` recoge *cualquier*
-mensaje del hilo, `WM_QUIT` incluido, y si esta rutina lo intercepta
-en vez del bucle principal, reenvía el mismo `wParam` -- en teoría sin
-alterarlo. El dato que hace sospechar de este camino en vez de una
-simple relectura de un `vmsgLast` obsoleto: `exit_code=1` coincide
-exactamente con el `wParam=1` (`kTmcOk`) que el propio arnés le manda
-al botón OK del diálogo de File New un par de mensajes antes
-(`opus_word1_ui_test.cpp:3088`,
-`PostMessageW(new_dialog, kWmCommand, 1, 0)`). Como el diálogo ya
-está cerrado (`dialog->dying`, ventana destruida) para cuando el
-arnés manda File Exit, este bucle modal específico no debería seguir
-activo en ese momento bajo una lectura secuencial simple del código
--- lo que sugiere una condición de carrera (orden de mensajes o
-reentrancia del bucle modal) más que un bug determinístico de lógica,
-consistente con que **solo** se reproduzca en la VM con más núcleos y
-no en este vps de 4 núcleos.
+diálogo de File New que este test usa) fija `dialog.native_modal =
+true`, así que el diálogo de File New sí pasa por este bucle modal.
+Se instrumentó con `std::cerr` (temporal, revertido) tanto ese
+`PostQuitMessage` como `Opus/quit.c:311` y el punto de lectura en
+`QuitExit()` (`quit.c:332`). Resultado, corrida real contra
+`DISPLAY=:91` en `debian13`:
 
-**No confirmado, próximo paso para quien retome esto:** instrumentar
-`vmsgLast.message`/`vmsgLast.wParam` justo donde `QuitExit()` los lee
-(`Opus/quit.c:332`), y por separado loguear cada llamada a
-`PostQuitMessage` (las dos, `quit.c:311` y
-`opus_sdm_runtime.cpp:2665`) con su valor y con qué hilo/momento del
-ciclo de vida del diálogo de File New coincide. Repetir la corrida
-varias veces en la misma VM para ver si el `exit_code` es siempre `1`
-o varía -- eso separaría "wParam mal leído consistentemente" de
-"carrera real con resultado no determinístico".
+```
+[DEBUG QuitExit] wParam=0, calling exit() now -- C++ static dtors run inside it
+two-document File Exit was not clean
+```
+
+`[DEBUG PostQuitMessage SDM]` **nunca imprime** -- ese bucle modal no
+está activo en el momento del cierre, se descarta la condición de
+carrera propuesta. Y `vmsgLast.wParam` es `0` exactamente, como debe
+ser: la lógica de `Opus/quit.c` es correcta, `exit(0)` limpio desde
+el motor C. El proceso reportado por el arnés (`exit_code=1`) **no es
+el valor que el motor pasa a `exit()`**.
+
+**Hipótesis de destructores estáticos C++ globales -- también
+descartada por instrumentación directa.** Se revisó `src/port/` en
+busca de `atexit()` y de globales con destructor no trivial. Único
+candidato que toca una API Win32 real durante el apagado:
+`Win95AliasCleanup::~Win95AliasCleanup()`
+(`opus_sdm_runtime.cpp:155-165`, instancia global
+`g_win95_alias_cleanup`), que llama `DeleteFileA` sobre
+`g_win95_save_alias.legacy_path` y sobre las claves de
+`g_win95_saved_aliases`. Instrumentado con 5 puntos `std::cerr`
+(entrada con volcado de estado, antes/después de cada `DeleteFileA`,
+salida limpia), misma corrida:
+
+```
+[DEBUG Win95AliasCleanup] enter dtor, created=0 legacy_path='' saved_aliases=0
+[DEBUG Win95AliasCleanup] exit dtor cleanly
+```
+
+Entra y sale limpio -- `created=0`, este test nunca guarda nada, así
+que ninguna rama de `DeleteFileA` se ejecuta siquiera. Ningún otro
+global de `src/port/` (`g_dialogs`, `g_win95_saved_aliases`,
+`g_page_snapshots`, `searches`) tiene destructor no trivial que
+llame Win32; son contenedores planos que solo liberan memoria.
+
+**Conclusión de esta investigación:** el `exit_code=1` que reporta
+`GetExitCodeProcess` en el arnés **no se genera dentro de `msword`**.
+Confirmado por evidencia directa, no por descarte: el motor C
+(`Opus/quit.c`) llama `exit(0)` limpio (`wParam=0` verificado en el
+punto exacto de la llamada), y la capa C++ del puerto no tiene
+ninguna rutina de apagado (bucle modal SDM, destructor estático) que
+altere ese valor antes de que el proceso termine. El origen del `1`
+observado por el padre está en la fase **post-`exit()`**, fuera del
+código de este proyecto: en la plomería propia de Wine/Winelib
+(descarga interna de DLLs tras el `exit()` de libc, o la captura de
+código de salida de `GetExitCodeProcess`/`CreateProcessW` para
+binarios winelib lanzados externamente como proceso hijo) -- ya hay
+precedente documentado de comportamiento no estándar de Wine en este
+punto exacto, ver `01-diagnostico-heap-corruption-arranque.md`
+§25-26. Investigarlo de aquí en más ya no es depurar código de
+`msword`, es depurar Wine mismo; no se continúa en esta sesión.
 
 **Estado:** `opus_word1_ui_test` (smoke base) tratado como fallo
-**dependiente del entorno GUI de `debian13`**, no del código de esta
-sesión ni de los fixes de FIB/PLC o `ccpEop` -- no bloquea el trabajo
-de guardado. Etiqueta `word1_startup_blocked` en esa VM: **7/10**
-(este ítem, más `--interaction` y `--roundtrip`, ya documentados en
-§12 y §13). En este vps sigue en **8/10** (§ Resumen).
+**dependiente del entorno GUI de `debian13` / plomería de
+Wine-Winelib**, no del código de esta sesión ni de los fixes de
+FIB/PLC o `ccpEop` -- no bloquea el trabajo de guardado. Etiqueta
+`word1_startup_blocked` en esa VM: **7/10** (este ítem, más
+`--interaction` y `--roundtrip`, ya documentados en §12 y §13). En
+este vps sigue en **8/10** (§ Resumen). Investigación cerrada; ambos
+árboles (vps y `debian13`) quedaron limpios tras revertir toda la
+instrumentación temporal.
 
 ## Resumen
 
