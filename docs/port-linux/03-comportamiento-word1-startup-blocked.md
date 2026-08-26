@@ -1956,6 +1956,113 @@ bloque, incluidos todos los nuevos códigos de fallo de este ítem.
 Archivo: `src/port/original/opus_word1_ui_test.cpp` (Pasos 1-3
 completos del plan, códigos de fallo 92-108).
 
+## 14. `opus_word1_ui_test` (smoke base): "two-document File Exit was not clean" -- reproducible solo en la VM `debian13` de exia, no en este vps, causa parcialmente localizada
+
+**2026-08-26, en `debian13` (VM libvirt dentro de `exia`, recién
+recompuesta a 6 vCPU/10GB), `DISPLAY=:91`.** El test base sin flags
+(`opus_word1_ui_test WORD1.exe`, sin `--modo`) hace File New (crea
+`Document2`), después File Exit, y falla en el segundo paso con el
+código 12: `GetExitCodeProcess` devuelve éxito pero `exit_code != 0`
+(`src/port/original/opus_word1_ui_test.cpp:3107-3110`). Reproducible
+**3/3** en esta VM. En este vps, mismo binario, mismo commit, el test
+pasa siempre -- diferencia real entre dos entornos Debian 13
+"soportados", no ruido.
+
+**Dos hipótesis descartadas por evidencia directa, no por suposición:**
+
+- **No es la cookie xauth / WM de `:0`.** La sospecha inicial era
+  razonable -- esta VM tiene una sesión gráfica real en `:0`, y una
+  conexión SSH sin forwarding de X11 no tiene el cookie de esa sesión
+  (`opus_x64_runtime_test` sí falló ahí con
+  `Authorization required, but no authorization protocol specified`).
+  Pero el test que nos ocupa se corrió, como todos los demás en esta
+  sesión, contra un Xvfb propio en `:91` (headless, sin gestor de
+  ventanas, sin sesión de usuario) -- ahí es donde falla 3/3. `:0`
+  nunca estuvo en la ecuación de este fallo en particular.
+- **No es timeout del arnés.** El código de fallo es el 12 ("was not
+  clean"), no el 11 ("timed out"): `WaitForSingleObject(process.hProcess,
+  5000)` devuelve `WAIT_OBJECT_0` dentro de tiempo, es decir, `WORD1`
+  cierra rápido y limpio en el sentido de que el proceso termina --
+  simplemente termina con un código de salida distinto de 0.
+  Instrumentado con un `std::cerr` temporal antes de la
+  comparación (revertido después, no quedó en el árbol): `got_exit_code=1
+  exit_code=1 GetLastError=6`. No es un código de excepción/crash
+  (`0xC0000005` y similares) -- es literalmente `exit_code=1`.
+
+**Causa candidata, localizada por lectura de código, no confirmada con
+instrumentación adicional (alcance de una investigación "breve"):**
+
+`Opus/quit.c:332`, el último tramo de `QuitExit()` (el manejador de
+`WM_QUIT`, "The last thing we ever call; does not return"):
+
+```c
+CleanUpForExit();
+exit(vmsgLast.wParam);
+```
+
+`vmsgLast` es el `MSG` global del bucle principal Win16-heredado
+(`wproc.c`, llenado por `PeekMessage((LPMSG)&vmsgLast, NULL, NULL,
+NULL, PM_REMOVE)` en `OpusOriginalWinMain`). El camino normal es
+`PostQuitMessage(0)` en `Opus/quit.c:311`, así que `vmsgLast.wParam`
+debería ser `0` cuando el bucle principal recoge el `WM_QUIT` y
+`exit(0)`. `exit_code=1` significa que, en el momento en que
+`QuitExit()` lee `vmsgLast.wParam`, ese campo no contenía el `wParam`
+real del `WM_QUIT` que se acaba de postear.
+
+Hay un segundo sitio que llama `PostQuitMessage` en todo el árbol
+compilado (`Opus/quit.c:311` es el único en código original):
+`src/port/original/opus_sdm_runtime.cpp:2660-2666`, el bucle modal
+propio de un diálogo SDM "nativo" (`dialog->native_modal`):
+
+```cpp
+MSG message{};
+while (!dialog->dying) {
+    const int status = GetMessageA(&message, nullptr, 0, 0);
+    if (status <= 0) {
+        if (status == 0) {
+            PostQuitMessage(static_cast<int>(message.wParam));
+        }
+        ...
+```
+
+`materialize_new_template` (`opus_sdm_runtime.cpp:844-871`, el
+diálogo de File New que este mismo test usa) fija
+`dialog.native_modal = true` -- así que el diálogo de File New sí
+pasa por este bucle modal propio, no por el bucle principal, mientras
+está abierto. `GetMessageA` con `hwnd=nullptr` recoge *cualquier*
+mensaje del hilo, `WM_QUIT` incluido, y si esta rutina lo intercepta
+en vez del bucle principal, reenvía el mismo `wParam` -- en teoría sin
+alterarlo. El dato que hace sospechar de este camino en vez de una
+simple relectura de un `vmsgLast` obsoleto: `exit_code=1` coincide
+exactamente con el `wParam=1` (`kTmcOk`) que el propio arnés le manda
+al botón OK del diálogo de File New un par de mensajes antes
+(`opus_word1_ui_test.cpp:3088`,
+`PostMessageW(new_dialog, kWmCommand, 1, 0)`). Como el diálogo ya
+está cerrado (`dialog->dying`, ventana destruida) para cuando el
+arnés manda File Exit, este bucle modal específico no debería seguir
+activo en ese momento bajo una lectura secuencial simple del código
+-- lo que sugiere una condición de carrera (orden de mensajes o
+reentrancia del bucle modal) más que un bug determinístico de lógica,
+consistente con que **solo** se reproduzca en la VM con más núcleos y
+no en este vps de 4 núcleos.
+
+**No confirmado, próximo paso para quien retome esto:** instrumentar
+`vmsgLast.message`/`vmsgLast.wParam` justo donde `QuitExit()` los lee
+(`Opus/quit.c:332`), y por separado loguear cada llamada a
+`PostQuitMessage` (las dos, `quit.c:311` y
+`opus_sdm_runtime.cpp:2665`) con su valor y con qué hilo/momento del
+ciclo de vida del diálogo de File New coincide. Repetir la corrida
+varias veces en la misma VM para ver si el `exit_code` es siempre `1`
+o varía -- eso separaría "wParam mal leído consistentemente" de
+"carrera real con resultado no determinístico".
+
+**Estado:** `opus_word1_ui_test` (smoke base) tratado como fallo
+**dependiente del entorno GUI de `debian13`**, no del código de esta
+sesión ni de los fixes de FIB/PLC o `ccpEop` -- no bloquea el trabajo
+de guardado. Etiqueta `word1_startup_blocked` en esa VM: **7/10**
+(este ítem, más `--interaction` y `--roundtrip`, ya documentados en
+§12 y §13). En este vps sigue en **8/10** (§ Resumen).
+
 ## Resumen
 
 Los 8 ítems de comportamiento de la lista original de §26 de
