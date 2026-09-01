@@ -816,6 +816,56 @@ int fail(PROCESS_INFORMATION& process, const int code,
     return code;
 }
 
+// The .doc that --roundtrip and --rich-format save lives in GetTempPathA()
+// and is deleted on every exit path, which is right for those modes but
+// leaves nothing for anyone else to look at. When OPUS_X64_DOC_ARTIFACT_DIR
+// is set, a copy of the saved file is kept there under a stable name, and
+// opus_doc_inspector_test (registered in src/CMakeLists.txt) runs the native
+// doc_inspector over what it finds. Keeping the artifact is strictly a side
+// effect: a failure to copy is logged and ignored, never turned into a
+// failure of the save test itself.
+//
+// CTest hands the directory over as a Wine-visible path -- "Z:" plus the
+// build tree's unix path, using forward slashes, which Win32 accepts as a
+// separator everywhere a backslash works. Wine's default prefix always maps
+// Z: to /, so nothing here needs to know where the prefix lives.
+bool doc_artifact_path(const char* tag, char* buffer, const int buffer_size) {
+    char directory[MAX_PATH] = {};
+    const DWORD length = GetEnvironmentVariableA(
+        "OPUS_X64_DOC_ARTIFACT_DIR", directory,
+        static_cast<DWORD>(std::size(directory)));
+    if (length == 0 || length >= std::size(directory)) {
+        return false;
+    }
+    const char last = directory[length - 1];
+    const char* separator = (last == '\\' || last == '/') ? "" : "/";
+    if (static_cast<int>(length) + 1 + lstrlenA(tag) + 4 >= buffer_size) {
+        return false;
+    }
+    wsprintfA(buffer, "%s%s%s.doc", directory, separator, tag);
+    return true;
+}
+
+void discard_doc_artifact(const char* tag) {
+    char path[MAX_PATH] = {};
+    if (doc_artifact_path(tag, path, static_cast<int>(std::size(path)))) {
+        DeleteFileA(path);
+    }
+}
+
+void keep_doc_artifact(const char* ansi_path, const char* tag) {
+    char path[MAX_PATH] = {};
+    if (!doc_artifact_path(tag, path, static_cast<int>(std::size(path)))) {
+        return;
+    }
+    if (CopyFileA(ansi_path, path, FALSE)) {
+        std::cerr << "kept .doc artifact '" << path << "'\n";
+    } else {
+        std::cerr << "could not keep .doc artifact '" << path
+                  << "' err=" << GetLastError() << '\n';
+    }
+}
+
 }  // namespace
 
 extern "C" int wmain(const int argument_count, wchar_t** arguments) {
@@ -1031,6 +1081,7 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
         wsprintfA(ansi_path, "%soprt%04lx.doc", temp_dir,
                   static_cast<unsigned long>(process.dwProcessId & 0xFFFFu));
         DeleteFileA(ansi_path);
+        discard_doc_artifact("roundtrip");
         // Kept for Task 2, which continues this same mode with a second
         // WORD1 process launched against this exact path on its command
         // line.
@@ -1186,6 +1237,7 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
         }
         std::cerr << "roundtrip saved '" << ansi_path
                   << "' size=" << saved_file_size << " bytes\n";
+        keep_doc_artifact(ansi_path, "roundtrip");
 
         // Step 5: tear down process 1. A successful save must have marked
         // the document clean; any #32770 popping up after File Exit means
@@ -1730,6 +1782,7 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
         wsprintfA(ansi_path, "%sorfm%04lx.doc", temp_dir,
                   static_cast<unsigned long>(process.dwProcessId & 0xFFFFu));
         DeleteFileA(ansi_path);
+        discard_doc_artifact("rich_format");
         wchar_t wide_path[MAX_PATH] = {};
         MultiByteToWideChar(CP_ACP, 0, ansi_path, -1, wide_path,
                             static_cast<int>(std::size(wide_path)));
@@ -1824,6 +1877,7 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
         }
         std::cerr << "rich-format saved '" << ansi_path
                   << "' size=" << saved_file_size << " bytes\n";
+        keep_doc_artifact(ansi_path, "rich_format");
 
         // Tear down process 1 -- a successful save must have marked the
         // document clean, so File Exit should not prompt.
