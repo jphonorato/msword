@@ -41,6 +41,7 @@ struct CHP *prgbProps;
 	char rgchTab[sizeof(int)];
 	int itbd;
 	int cb;
+	int cbRgtc;
 	int valT;
 	int itc;
 	struct TAP *ptap;
@@ -218,14 +219,28 @@ the istcMac byte cuurently in val. Note base 1 addressing throughout. */
 #endif
 
 	case sprmTDefTable:
-		bltbh(hpprl + 1, &cb, sizeof (int));
-		((struct TAP *)prgbProps)->itcMac = itc = *(hpprl + 3);
-		bltbh(hpprl + 4,
+/* The record's shape is written down once, beside cbTDefTableHdr in prm.h.
+	The 1, 3 and 4 that used to be hard coded here are that layout with a 2
+	byte int; with a 4 byte int the writer had already moved itcMac to +5
+	and rgdxaCenter to +6, so this read itcMac out of the middle of the
+	length field and the column positions two bytes early. */
+		bltbh(hpprl + ibTDefTableCb, &cb, cbTDefTableCb);
+		itc = *(hpprl + ibTDefTableItcMac);
+/* a truncated or foreign record could name more cells than a TAP holds:
+	rgdxaCenter is itcMax + 1 ints and rgtc is itcMax TCs */
+		if (itc < 0 || itc > itcMax)
+			itc = itcMax;
+		((struct TAP *)prgbProps)->itcMac = itc;
+		bltbh(hpprl + ibTDefTableRgdxa,
 				&((struct TAP *)prgbProps)->rgdxaCenter,
 				(itc + 1) * sizeof(int));
-		bltbh(hpprl + 4 + (sizeof(int) * (itc + 1)),
-				&((struct TAP *)prgbProps)->rgtc,
-				cb - ((itc + 2) *sizeof(int)));
+		cbRgtc = cb - ((itc + 2) * sizeof(int));
+		if (cbRgtc > (int)(itcMax * sizeof(struct TC)))
+			cbRgtc = itcMax * sizeof(struct TC);
+		if (cbRgtc > 0)
+			bltbh(hpprl + ibTDefTableRgdxa + (sizeof(int) * (itc + 1)),
+					&((struct TAP *)prgbProps)->rgtc,
+					cbRgtc);
 		break;
 	case sprmTDxaGapHalf:
 		ptap = (struct TAP *)prgbProps;

@@ -154,6 +154,36 @@ struct SED
 #define cbSED  (sizeof (struct SED))
 #define cwSED  (sizeof (struct SED) / sizeof(int))
 
+/* S E D   O N   D I S K */
+
+/* cbSED is the in core size and nothing else.  It is 6 bytes in the 1990
+	16 bit build, 8 where FC is a 4 byte long, and 16 here: the int bit field
+	takes a 4 byte storage unit, an 8 byte FC has to be 8 byte aligned, so
+	4 bytes of padding sit between them.  Writing that struct straight to a
+	file doubles the size of plcfsed, makes the table unreadable by any build
+	with a different sizeof(FC) -- RetrieveHplcsed() divides cbPlcfsed by it
+	to get an entry count -- and leaks the 4 uninitialized padding bytes of
+	every SED into the document.
+
+	On file a SED is always two 4 byte little endian words: the grpf
+	(fSpare, fUnk, fn) and then fcSepx.  That is what a build with a 4 byte
+	FC lays down natively.  PackSed()/UnpackSed() in Opus/filewin.c are the
+	only code that knows the on file form; cbSEDDisk sizes every read and
+	write of plcfsed, cbSED only the in core PLC. */
+#define cbSedWord   4
+#define cbSEDDisk   (2 * cbSedWord)
+
+/* the fields of the packed grpf word, in the bit order of struct SED.
+	fn is 0..fnMax, so the 14 bit field never needs sign extending. */
+/* the widest packed foo record ReadIntoExtPlcDisk() has to stage while it
+	widens a PLC in place; only SED has a packed form today */
+#define cbFooDiskMax 16
+
+#define fSedSpare   0x0001
+#define fSedUnk     0x0002
+#define wSedFn      0xfffc
+#define shftSedFn   2
+
 /* PLCs with empty foos */
 #define cbHDD 0
 #define cbBKL   (0)

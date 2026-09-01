@@ -2312,6 +2312,7 @@ FSaveTbls()
 			{
 #define isedExcerptMax 20
 			struct SED rgsedExcerpt[isedExcerptMax];
+			char rgbSedDisk[isedExcerptMax * cbSEDDisk];
 			char rgchSepx[cchSepxMax];
 			struct SEP sepDefault;
 
@@ -2341,16 +2342,21 @@ FSaveTbls()
 						psedExcerpt->fUnk = fFalse;
 					}
 				}
-/* the cp's above went out at cbCpDisk, but the SEDs go out at native width:
-	cbSED sizes both this write and the read, so it is self consistent, but
-	struct SED's fcSepx is an FC and so is 8 bytes here and 4 on MSVC x64.
-	See the scope note beside cbCpDisk in file.h. */
-			WriteRgchToFn(fnDest, rgsedExcerpt, cbSED * isedExcerptMac);
+/* The cp's above went out at cbCpDisk and the SEDs go out at cbSEDDisk:
+	two 4 byte words apiece, whatever sizeof(FC) is in this build.  Packing
+	them here also keeps struct SED's alignment padding -- 4 bytes between
+	the bit field and an 8 byte fcSepx, which nothing ever initialises --
+	out of the saved document.  See the block beside cbSEDDisk in doc.h. */
+			for (isedExcerpt = 0; isedExcerpt < isedExcerptMac; isedExcerpt++)
+				PackSed(rgbSedDisk + isedExcerpt * cbSEDDisk,
+						&rgsedExcerpt[isedExcerpt]);
+			WriteRgchToFn(fnDest, rgbSedDisk, cbSEDDisk * isedExcerptMac);
 			if (FFileWriteError())
 				goto LReturnFail;
 			}
 
-		vfcDestLim = fcDestLimSave + (vpqsib->cbPlcfsed += (uns)cbSED * isedMac);
+		vfcDestLim = fcDestLimSave +
+				(vpqsib->cbPlcfsed += (uns)cbSEDDisk * isedMac);
 		}
 
 	FreezeHp();
@@ -3956,11 +3962,17 @@ PN pnFib;
 		struct SED sed;
 		uns ised;
 		CP far *lprgcp;
-/* calculate how many sed entries stored in disk copy of plc */
-		iMac = ((long)fib.cbPlcfsed - (long)cbCpDisk) / ((long)cbSED + cbCpDisk);
+/* calculate how many sed entries stored in disk copy of plc.  On file a SED
+	is cbSEDDisk bytes, never cbSED: dividing by the in core size here would
+	make iMac -- and with it iMax and icpAdjust below -- a function of this
+	build's sizeof(FC), and Assert() is compiled out, so a wrong count would
+	go straight through into out of bounds PLC reads. */
+		iMac = ((long)fib.cbPlcfsed - (long)cbCpDisk) /
+				((long)cbSEDDisk + cbCpDisk);
 		Assert(iMac + 1 <= (*hplcsed)->iMax);
-/* read directly into external part of plc */
-		ReadIntoExtPlc(hplcsed, fn, fib.fcPlcfsed, fib.cbPlcfsed);
+/* read directly into external part of plc, widening each SED as it lands */
+		ReadIntoExtPlcDisk(hplcsed, fn, fib.fcPlcfsed, fib.cbPlcfsed,
+				cbSEDDisk, (PFN)UnpackSed);
 /* set iMax and IMac to match */
 		pplc = *hplcsed;
 		pplc->iMac = iMac;

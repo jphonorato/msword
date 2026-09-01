@@ -1011,6 +1011,66 @@ CHAR HUGE *hpch;
 }
 
 
+/* S E D   P A C K I N G */
+
+/* On file a plcfsed record is two 4 byte little endian words whatever the
+	build makes of struct SED in core; see the block beside cbSEDDisk in
+	Opus/wordtech/doc.h.  These two routines are the only code that knows
+	that layout.
+
+	Directive: the packed form must never be larger than the native one,
+	because ReadIntoExtPlcDisk() reads it into the PLC's own foo area and
+	widens it there in place.  A negative array size is a hard compile
+	error, so this cannot silently regress. */
+typedef char cbSedDiskFitsNative[(cbSEDDisk <= cbSED) ? 1 : -1];
+typedef char cbSedDiskFitsStage[(cbSEDDisk <= cbFooDiskMax) ? 1 : -1];
+
+/* %%Function:PackSed %%Owner:port */
+/* store *psed at hpch in its cbSEDDisk byte on file form */
+PackSed(hpch, psed)
+CHAR HUGE *hpch;
+struct SED *psed;
+{
+	long lGrpf = 0;
+	long lfc;
+
+	if (psed->fSpare)
+		lGrpf |= fSedSpare;
+	if (psed->fUnk)
+		lGrpf |= fSedUnk;
+	lGrpf |= ((long)psed->fn << shftSedFn) & wSedFn;
+	PackDiskL(hpch, lGrpf);
+
+	/* fcNil is -1 and stays -1 on file; LFromDisk sign extends it back.
+		An fcSepx past 4 bytes means something upstream broke the fcMax
+		bound, and truncating it here would corrupt the file silently --
+		fail the save the way the FIB packer does. */
+	lfc = (long)psed->fcSepx;
+	if (lfc < -2147483647L - 1L || lfc > 2147483647L)
+		{
+		Assert(fFalse);
+		vmerr.fDiskWriteErr = fTrue;
+		}
+	PackDiskL(hpch + cbSedWord, lfc);
+}
+
+
+/* %%Function:UnpackSed %%Owner:port */
+/* fetch the cbSEDDisk byte on file form at hpch into *psed */
+UnpackSed(psed, hpch)
+struct SED *psed;
+CHAR HUGE *hpch;
+{
+	long lGrpf;
+
+	lGrpf = LFromDisk(hpch);
+	psed->fSpare = (lGrpf & fSedSpare) != 0;
+	psed->fUnk = (lGrpf & fSedUnk) != 0;
+	psed->fn = (int)((lGrpf & wSedFn) >> shftSedFn);
+	psed->fcSepx = (FC)LFromDisk(hpch + cbSedWord);
+}
+
+
 /* %%Function:IbBltFibUns %%Owner:port */
 /* move one 4 byte wide FIB field (uns, PN or int) between its native form
 	at pb and its packed form at hpch+ib.  cbMac is how many packed bytes

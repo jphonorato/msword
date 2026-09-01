@@ -22,13 +22,26 @@
  *     HplcReadPlcf/ReadIntoExtPlc: ccp cp's of cbCpDisk = 4 bytes, followed by
  *     ccp-1 "foo" records of the PLC's own record size.
  *
+ *   - The section table plcfsed, record by record: struct SED is packed to
+ *     kCbSedDisk = 8 bytes by PackSed() in Opus/filewin.c, so its fn, its
+ *     grpf bits and its fcSepx are checked against the file the SEPX they
+ *     point at has to fit in.
+ *
+ *   - The table rows in the PAPX FKPs: every papx grpprl is walked the way
+ *     CchPrl() walks it, and each sprmTDefTable record is decoded against
+ *     the layout prm.h defines -- itcMac, the rgdxaCenter column positions
+ *     and the rgtc prefix.  A grpprl that does not end exactly on its last
+ *     byte is how a writer and a reader that disagree about a length field
+ *     show up from outside the engine.
+ *
  * The one subtlety that makes this tool more than a hexdump: the cp/fc arrays
- * of a PLC and every field of the FIB are 4 bytes on disk regardless of the
- * host, but the FKP rgfc array and the PLC foo records are written at *native*
- * width.  On this LP64 Winelib build FC is a 64-bit long, so a .doc it writes
- * is not byte compatible with one from the MSVC x64 build, where long is 4
+ * of a PLC, every field of the FIB and (since PackSed) every plcfsed record
+ * are 4-byte quantities on disk regardless of the host, but the FKP rgfc
+ * array and the remaining PLC foo records are written at *native* width.  On
+ * this LP64 Winelib build FC is a 64-bit long, so a .doc it writes is still
+ * not byte compatible with one from the MSVC x64 build, where long is 4
  * bytes.  Both are self consistent, so the tool detects which one it is
- * looking at rather than assuming (see DetectFcWidth); --fc-width overrides.
+ * looking at rather than assuming (see ScoreFcWidth); --fc-width overrides.
  */
 
 #include <algorithm>
@@ -340,12 +353,85 @@ bool ReadFib(const Doc& doc, std::size_t pn, Fib& fib, Report& report)
 	return true;
 	}
 
+/* --------------------------------------------- SED and TAP on-disk shapes */
+
+/* Opus/wordtech/doc.h.  A plcfsed record is two 4-byte little-endian words
+ * -- the grpf (fSpare, fUnk, fn), then fcSepx -- whatever sizeof(FC) is in
+ * the build that wrote it, because savefast.c now packs it through
+ * PackSed().  A .doc from before that change holds the native struct
+ * instead: 8 bytes where FC is 4, and 16 where FC is 8, the middle four of
+ * them alignment padding that nothing ever initialised. */
+constexpr int kCbSedDisk = 8;
+constexpr int kCbSedNativeFc8 = 16;
+constexpr int kCbSedWord = 4;
+constexpr std::uint32_t kFSedSpare = 0x0001;
+constexpr std::uint32_t kFSedUnk = 0x0002;
+constexpr std::uint32_t kWSedFn = 0xfffc;
+constexpr int kShftSedFn = 2;
+constexpr int kFnMax = 50;              /* Opus/wordtech/word.h */
+constexpr int kCchSepxMax = 128;        /* Opus/wordtech/prm.h */
+
+/* Opus/wordtech/prm.h.  sprmTDefTable is the only sprm whose length field is
+ * wider than a byte, and the only way a TAP reaches a file: rgdxaCenter and
+ * rgtc travel inside a PAPX as this one record.
+ *
+ *      +0                     sprmTDefTable
+ *      +kIbTDefTableCb        cb, 4 bytes little endian
+ *      +kIbTDefTableItcMac    itcMac, one byte
+ *      +kIbTDefTableRgdxa     rgdxaCenter, (itcMac + 1) ints
+ *                             rgtc, the differing prefix of the TC array
+ *
+ * cb is the whole record less two, which is what CchPrl() assumes when it
+ * adds 2 back.  The kIb*Old values are the same layout with a 2-byte int;
+ * the reader in prl.c used to use them against a writer that had already
+ * moved to a 4-byte one, so a record written that way reads itcMac out of
+ * the middle of its own length field.  The tool knows both so it can say
+ * which shape it is looking at. */
+constexpr int kSprmNoop = 0;
+constexpr int kSprmPChgTabsPapx = 15;
+constexpr int kSprmPChgTabs = 23;
+constexpr int kSprmPFInTable = 24;
+constexpr int kSprmPFTtp = 25;
+constexpr int kSprmTFirst = 146;        /* sprmTJc */
+constexpr int kSprmTDefTable = 152;
+constexpr int kSprmTLast = 163;         /* sprmTSetBrc */
+constexpr int kSprmMax = 164;
+constexpr int kCbTDefTableCb = 4;
+constexpr int kIbTDefTableCb = 1;
+constexpr int kIbTDefTableItcMac = kIbTDefTableCb + kCbTDefTableCb;
+constexpr int kIbTDefTableRgdxa = kIbTDefTableItcMac + 1;
+constexpr int kIbTDefTableItcMacOld = 3;
+
+constexpr int kItcMax = 32;             /* Opus/wordtech/props.h */
+constexpr int kCbInt = 4;               /* sizeof(int) in every live build */
+constexpr int kCbTc = 5 * kCbInt;       /* struct TC: grpf plus four brc's */
+constexpr int kCbPhe = 3 * kCbInt;      /* struct PHE, Opus/wordtech/word.h */
+
+/* dnsprm[].cch from Opus/wordtech/prcsubs.c, WIN branch: the whole length of
+ * the sprm in bytes, or 0 when the sprm carries its own length. */
+const unsigned char kSprmCch[kSprmMax] =
+	{
+	1, 3, 2, 0, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 0,
+	3, 3, 3, 3, 3, 3, 3, 0, 2, 2, 3, 3, 3, 2, 3, 3,
+	3, 3, 3, 3, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 2, 2, 2, 0, 0, 1, 0, 2, 2, 2, 2,
+	2, 2, 2, 2, 3, 2, 4, 2, 0, 2, 2, 2, 2, 2, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0,
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 2, 2, 3, 3, 2, 2, 3, 3, 2, 2, 2,
+	2, 3, 3, 3, 3, 2, 2, 3, 3, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 3, 3, 3, 0, 0, 0, 0, 3, 0, 0, 0, 0, 5, 3,
+	5, 3, 3, 6,
+	};
+
 /* ------------------------------------------------------------ PLC tables */
 
-/* One PLC named by the FIB.  foo4/foo8 are sizeof() of the PLC's record type
- * when FC is 4 and 8 bytes wide; every one of them is the constant the engine
- * passes to HplcReadPlcf() in Opus/create.c, and only struct SED embeds an FC,
- * so only cbSED changes with the width. */
+/* One PLC named by the FIB.  foo4/foo8 are the record's size on disk when FC
+ * is 4 and 8 bytes wide; every one of them is the constant the engine passes
+ * to HplcReadPlcf() in Opus/create.c.  struct SED is the only foo that embeds
+ * an FC, and it is now packed to kCbSedDisk on the way out, so no foo size
+ * depends on the width any more -- the FKP rgfc arrays are all that is left
+ * to tell the two apart. */
 struct PlcSpec
 	{
 	const char *name;
@@ -359,7 +445,8 @@ struct PlcSpec
 
 const PlcSpec kPlcSpecs[] =
 	{
-	{"plcfsed",      iwFcPlcfsed,      iwCbPlcfsed,       8, 16, "SED",  false},
+	{"plcfsed",      iwFcPlcfsed,      iwCbPlcfsed,
+			kCbSedDisk, kCbSedDisk, "SED",  false},
 	{"plcfpgd",      iwFcPlcfpgd,      iwCbPlcfpgd,      20, 20, "PGD",  false},
 	{"plcffldMom",   iwFcPlcffldMom,   iwCbPlcffldMom,    8,  8, "FLD",  false},
 	{"plcffldHdr",   iwFcPlcffldHdr,   iwCbPlcffldHdr,    8,  8, "FLD",  false},
@@ -382,15 +469,19 @@ const PlcSpec kPlcSpecs[] =
 	{"plcfpgdFtn",   iwFcPlcfpgdFtn,   iwCbPlcfpgdFtn,   20, 20, "PGD",  false},
 	};
 
-/* The two bin tables are looked up by name so the kPlcSpecs order stays a
- * presentation choice rather than something the FKP code depends on. */
-const PlcSpec& BteSpec(bool is_papx)
+/* Specs are looked up by name so the kPlcSpecs order stays a presentation
+ * choice rather than something the rest of the tool depends on. */
+const PlcSpec& SpecNamed(const char *wanted)
 	{
-	const char *wanted = is_papx ? "plcfbtePapx" : "plcfbteChpx";
 	for (const PlcSpec& spec : kPlcSpecs)
 		if (std::strcmp(spec.name, wanted) == 0)
 			return spec;
 	std::abort();
+	}
+
+const PlcSpec& BteSpec(bool is_papx)
+	{
+	return SpecNamed(is_papx ? "plcfbtePapx" : "plcfbteChpx");
 	}
 
 struct PlcView
@@ -586,11 +677,183 @@ std::vector<std::size_t> BinTablePns(const Doc& doc, const Fib& fib,
 	return pns;
 	}
 
+/* ------------------------------------------------------- grpprl walking */
+
+/* One sprm found inside a grpprl. */
+struct SprmRun
+	{
+	int ib = 0;                     /* offset from the start of the grpprl */
+	int sprm = 0;
+	int cb = 0;                     /* whole sprm, its own byte included */
+	};
+
+/* Walk cb bytes of grpprl at `base` exactly the way CchPrl()
+ * (Opus/wordtech/prl.c) and the grpprl loop in prcsubs.c walk it.  Sets ok
+ * false and fills why as soon as a sprm does not fit.  A walk that ends
+ * anywhere but exactly on the last byte is what a writer and a reader that
+ * disagree about a length field look like from outside the engine. */
+std::vector<SprmRun> WalkGrpprl(const Doc& doc, std::size_t base, int cb,
+		bool& ok, std::string& why)
+	{
+	std::vector<SprmRun> runs;
+	ok = false;
+	why.clear();
+	if (cb < 0 || !doc.InRange(base, static_cast<std::size_t>(cb)))
+		{
+		why = "the grpprl runs past the end of the file";
+		return runs;
+		}
+	const unsigned char *p = doc.Bytes().data() + base;
+	int ib = 0;
+	while (ib < cb)
+		{
+		SprmRun run;
+		run.ib = ib;
+		run.sprm = p[ib];
+		if (run.sprm == kSprmNoop)
+			{
+			/* a single 0 pads a PAPX out to the word boundary its length
+			 * byte counts in */
+			++ib;
+			continue;
+			}
+		if (run.sprm >= kSprmMax)
+			{
+			why = "byte " + std::to_string(run.sprm) + " at +" +
+					std::to_string(ib) + " is not a sprm";
+			return runs;
+			}
+		int cch = kSprmCch[run.sprm];
+		if (cch == 0)
+			{
+			if (run.sprm == kSprmTDefTable)
+				{
+				if (ib + kIbTDefTableCb + kCbTDefTableCb > cb)
+					{
+					why = "sprmTDefTable at +" + std::to_string(ib) +
+							" has no room for its length field";
+					return runs;
+					}
+				cch = static_cast<int>(
+						doc.DiskLong(base + ib + kIbTDefTableCb));
+				}
+			else
+				{
+				if (ib + 2 > cb)
+					{
+					why = "sprm " + std::to_string(run.sprm) + " at +" +
+							std::to_string(ib) + " has no length byte";
+					return runs;
+					}
+				cch = p[ib + 1];
+				if (cch == 255 && run.sprm == kSprmPChgTabs)
+					{
+					/* the two-part tab list: a delete run, then an add run */
+					if (ib + 3 > cb)
+						{
+						why = "sprmPChgTabs at +" + std::to_string(ib) +
+								" is truncated";
+						return runs;
+						}
+					cch = p[ib + 2] * 4 + 1;
+					if (ib + 2 + cch >= cb)
+						{
+						why = "sprmPChgTabs at +" + std::to_string(ib) +
+								" names more deleted tabs than it holds";
+						return runs;
+						}
+					cch += p[ib + 2 + cch] * 3 + 1;
+					}
+				}
+			cch += 2;
+			}
+		if (cch <= 0 || ib + cch > cb)
+			{
+			why = "sprm " + std::to_string(run.sprm) + " at +" +
+					std::to_string(ib) + " claims " + std::to_string(cch) +
+					" bytes with " + std::to_string(cb - ib) + " left";
+			return runs;
+			}
+		run.cb = cch;
+		runs.push_back(run);
+		ib += cch;
+		}
+	ok = true;
+	return runs;
+	}
+
+/* One sprmTDefTable record, decoded with the layout prm.h defines. */
+struct TDefTable
+	{
+	int ib = 0;                     /* offset inside the grpprl */
+	int cb_stored = 0;              /* the wide length field */
+	int cb_total = 0;               /* cb_stored + 2, the whole record */
+	int itc_mac = 0;
+	int cb_rgtc = 0;
+	std::vector<int> centers;
+	bool ok = true;
+	std::string why;
+	bool old_layout = false;        /* reads as the 2-byte-int offsets */
+	};
+
+TDefTable ReadTDefTable(const Doc& doc, std::size_t base, const SprmRun& run)
+	{
+	TDefTable table;
+	table.ib = run.ib;
+	table.cb_stored =
+			static_cast<int>(doc.DiskLong(base + run.ib + kIbTDefTableCb));
+	table.cb_total = table.cb_stored + 2;
+	table.itc_mac = doc.Bytes()[base + run.ib + kIbTDefTableItcMac];
+	if (table.itc_mac < 1 || table.itc_mac > kItcMax)
+		{
+		table.ok = false;
+		table.why = "itcMac " + std::to_string(table.itc_mac) + " at +" +
+				std::to_string(kIbTDefTableItcMac) + " is outside 1.." +
+				std::to_string(kItcMax);
+		const int old_itc =
+				doc.Bytes()[base + run.ib + kIbTDefTableItcMacOld];
+		table.old_layout = old_itc >= 1 && old_itc <= kItcMax;
+		return table;
+		}
+	table.cb_rgtc = table.cb_stored - (table.itc_mac + 2) * kCbInt;
+	if (table.cb_rgtc < 0 || table.cb_rgtc > kItcMax * kCbTc)
+		{
+		table.ok = false;
+		table.why = "the rgtc prefix works out to " +
+				std::to_string(table.cb_rgtc) + " bytes, outside 0.." +
+				std::to_string(kItcMax * kCbTc);
+		return table;
+		}
+	if (kIbTDefTableRgdxa + kCbInt * (table.itc_mac + 1) > table.cb_total)
+		{
+		table.ok = false;
+		table.why = "cb " + std::to_string(table.cb_stored) +
+				" has no room for " + std::to_string(table.itc_mac + 1) +
+				" column positions";
+		return table;
+		}
+	for (int i = 0; i <= table.itc_mac; ++i)
+		table.centers.push_back(static_cast<int>(doc.DiskLong(
+				base + run.ib + kIbTDefTableRgdxa + i * kCbInt)));
+	for (std::size_t i = 1; i < table.centers.size(); ++i)
+		if (table.centers[i] <= table.centers[i - 1])
+			{
+			table.ok = false;
+			table.why = "rgdxaCenter does not increase at column " +
+					std::to_string(i) + " (" +
+					std::to_string(table.centers[i - 1]) + " then " +
+					std::to_string(table.centers[i]) + ')';
+			break;
+			}
+	return table;
+	}
+
 /* -------------------------------------------------- FC width autodetection */
 
-/* Score how well the file reads as one of the two native FC widths.  The
- * discriminators are the only two things whose on-disk size depends on it:
- * cbSED (so plcfsed's entry count divides evenly) and the FKP rgfc arrays. */
+/* Score how well the file reads as one of the two native FC widths.  Since
+ * plcfsed is packed the FKP rgfc arrays are the only discriminator left; the
+ * PLC loop is kept so a foo type that grows a width-dependent form again is
+ * picked up without anyone having to remember this function. */
 int ScoreFcWidth(const Doc& doc, const Fib& fib, int fc_width)
 	{
 	int score = 0;
@@ -1007,12 +1270,320 @@ void PrintPlcTables(const Doc& doc, const Fib& fib, int fc_width,
 			"table, and the EDL plc is memory only.\n";
 	}
 
+/* --------------------------------------------------------- section table */
+
+/* One plcfsed record, decoded the way UnpackSed() in Opus/filewin.c does. */
+struct SedView
+	{
+	std::uint32_t grpf = 0;
+	int fn = 0;
+	bool f_spare = false;
+	bool f_unk = false;
+	std::int32_t fc_sepx = 0;
+	};
+
+SedView ReadSed(const Doc& doc, std::size_t offset)
+	{
+	SedView sed;
+	sed.grpf = static_cast<std::uint32_t>(doc.DiskLong(offset));
+	sed.f_spare = (sed.grpf & kFSedSpare) != 0;
+	sed.f_unk = (sed.grpf & kFSedUnk) != 0;
+	sed.fn = static_cast<int>((sed.grpf & kWSedFn) >> kShftSedFn);
+	sed.fc_sepx = doc.DiskLong(offset + kCbSedWord);
+	return sed;
+	}
+
+void PrintSectionTable(const Doc& doc, const Fib& fib, int fc_width,
+		Report& report)
+	{
+	Section("plcfsed -- section table");
+
+	const PlcSpec& spec = SpecNamed("plcfsed");
+	const PlcView view = ViewPlc(doc, fib, spec, fc_width);
+	Field("fcPlcfsed", view.fc);
+	Field("cbPlcfsed", view.cb);
+	Field("SED on disk", std::to_string(kCbSedDisk) +
+			" bytes  (grpf word then fcSepx, both 4-byte little endian)");
+	if (!view.present)
+		{
+		std::cout << "  empty: the document is a single default section\n";
+		return;
+		}
+	Field("sections", std::to_string(view.records) + "  (" +
+			std::to_string(view.ccp) + " cp's)",
+			view.aligned ? "OK" : "MISALIGNED");
+
+	if (!view.aligned)
+		{
+		/* the shape a build that blitted struct SED straight out leaves */
+		const long long native = kCbSedNativeFc8 + kCbCpDisk;
+		if ((view.cb - kCbCpDisk) % native == 0)
+			report.Note("plcfsed divides evenly at a " +
+					std::to_string(kCbSedNativeFc8) + "-byte SED: this file "
+					"predates PackSed(), and was written by a build whose FC "
+					"was 8 bytes wide");
+		return;                 /* PrintPlcTables already filed the problem */
+		}
+	if (!view.readable)
+		return;                 /* likewise */
+
+	const std::int64_t cb_mac = fib.At(iwCbMac);
+	std::cout << "\n  " << std::left << std::setw(6) << "ised"
+			<< std::setw(11) << "cpFirst" << std::setw(11) << "cpLim"
+			<< std::setw(6) << "fn" << std::setw(7) << "fUnk"
+			<< std::setw(12) << "fcSepx" << "sepx\n";
+
+	for (long long i = 0; i < view.records; ++i)
+		{
+		const std::size_t at = view.foo_base +
+				static_cast<std::size_t>(i) * kCbSedDisk;
+		const std::string where = "plcfsed[" + std::to_string(i) + "]";
+		const SedView sed = ReadSed(doc, at);
+
+		/* Nothing but the three declared fields lives in the grpf word.  A
+		 * record still carrying the native struct would show the fcSepx of
+		 * the previous entry, or a stack fragment out of the alignment
+		 * padding, in the high half. */
+		if ((sed.grpf & ~(kFSedSpare | kFSedUnk | kWSedFn)) != 0)
+			report.Problem(where + ": the grpf word is " +
+					Hex(sed.grpf, 8) + ", which has bits set outside "
+					"fSpare/fUnk/fn");
+		if (sed.fn > kFnMax)
+			report.Problem(where + ": fn " + std::to_string(sed.fn) +
+					" is past fnMax " + std::to_string(kFnMax));
+
+		std::string sepx;
+		if (sed.fc_sepx == -1)
+			sepx = "fcNil, section uses the defaults";
+		else if (sed.fc_sepx < 0 ||
+				!doc.InRange(static_cast<std::size_t>(sed.fc_sepx), 1))
+			{
+			sepx = "OUT OF FILE";
+			report.Problem(where + ": fcSepx " +
+					std::to_string(sed.fc_sepx) + " is outside the " +
+					std::to_string(doc.Size()) + "-byte file");
+			}
+		else
+			{
+			const int cch = doc.Bytes()[static_cast<std::size_t>(sed.fc_sepx)];
+			sepx = std::to_string(cch) + "-byte grpprl";
+			if (cch >= kCchSepxMax)
+				{
+				sepx += "  <<< over cchSepxMax";
+				report.Problem(where + ": the sepx at fc " +
+						std::to_string(sed.fc_sepx) + " claims " +
+						std::to_string(cch) + " bytes, cchSepxMax is " +
+						std::to_string(kCchSepxMax));
+				}
+			else if (!doc.InRange(static_cast<std::size_t>(sed.fc_sepx),
+					static_cast<std::size_t>(cch) + 1))
+				{
+				sepx += "  <<< runs past the file";
+				report.Problem(where + ": the sepx at fc " +
+						std::to_string(sed.fc_sepx) + " runs past the end "
+						"of the file");
+				}
+			else
+				{
+				bool ok = false;
+				std::string why;
+				WalkGrpprl(doc, static_cast<std::size_t>(sed.fc_sepx) + 1,
+						cch, ok, why);
+				if (!ok)
+					{
+					sepx += "  <<< " + why;
+					report.Problem(where + ": the sepx at fc " +
+							std::to_string(sed.fc_sepx) +
+							" does not walk -- " + why);
+					}
+				if (cb_mac > 0 && sed.fc_sepx + 1 + cch > cb_mac)
+					report.Problem(where + ": the sepx at fc " +
+							std::to_string(sed.fc_sepx) + " ends past "
+							"cbMac " + std::to_string(cb_mac));
+				}
+			}
+
+		std::cout << "  " << std::left << std::setw(6) << i
+				<< std::setw(11) << view.cps[static_cast<std::size_t>(i)]
+				<< std::setw(11) << view.cps[static_cast<std::size_t>(i) + 1]
+				<< std::setw(6) << sed.fn
+				<< std::setw(7) << (sed.f_unk ? "yes" : "no")
+				<< std::setw(12) << sed.fc_sepx << sepx << '\n';
+		}
+	}
+
+/* --------------------------------------------------- table row properties */
+
+/* Walk the PAPX FKPs looking for table rows: a papx whose grpprl carries
+ * sprmPFInTable/sprmPFTtp or any sgcTap sprm, and above all sprmTDefTable,
+ * which is the only place a TAP's column geometry reaches a file. */
+void PrintTableFkps(const Doc& doc, const Fib& fib, int fc_width,
+		int max_rows, Report& report)
+	{
+	Section("FKP -- table row properties (sgcTap)");
+
+	const PlcSpec& bte_spec = BteSpec(true /* PAPX */);
+	const PlcView bte = ViewPlc(doc, fib, bte_spec, fc_width);
+	const std::vector<std::size_t> pns = BinTablePns(doc, fib, bte, true);
+
+	long long papx_walked = 0;
+	long long papx_failed = 0;
+	long long cells = 0;
+	long long rows = 0;
+	long long defs = 0;
+	int shown = 0;
+
+	for (std::size_t pn : pns)
+		{
+		const FkpPage page =
+				ReadFkpPage(doc, pn, fc_width, true, fib.At(iwCbMac));
+		if (!page.ok)
+			continue;           /* PrintFkpStream already filed the problem */
+		const std::size_t base = pn * kSector;
+
+		for (int irun = 0; irun < page.crun; ++irun)
+			{
+			const FkpRun& run = page.runs[static_cast<std::size_t>(irun)];
+			if (run.offset == 0 || !run.ok)
+				continue;
+
+			const std::string where = "PAPX FKP page " + std::to_string(pn) +
+					" run " + std::to_string(irun) + " (fc " +
+					std::to_string(run.fc_first) + ".." +
+					std::to_string(run.fc_lim) + ')';
+
+			/* a papx is [cb][stc][PHE][grpprl], and for nFib >= 25 cb counts
+			 * 16-bit words -- Opus/create.c's ApplyPapxToPap */
+			const int cb_grpprl = run.cb_stored * 2 - 1 - kCbPhe;
+			if (cb_grpprl < 0)
+				{
+				report.Problem(where + ": the papx is " +
+						std::to_string(run.cb_stored * 2) + " bytes, too "
+						"short for a stc and a PHE");
+				++papx_failed;
+				continue;
+				}
+			const std::size_t grpprl =
+					base + run.offset + 2 + static_cast<std::size_t>(kCbPhe);
+
+			bool ok = false;
+			std::string why;
+			const std::vector<SprmRun> sprms =
+					WalkGrpprl(doc, grpprl, cb_grpprl, ok, why);
+			++papx_walked;
+			if (!ok)
+				{
+				++papx_failed;
+				report.Problem(where + ": the grpprl does not walk -- " + why);
+				continue;
+				}
+
+			bool f_in_table = false;
+			bool f_ttp = false;
+			int c_tap = 0;
+			std::vector<TDefTable> tables;
+			for (const SprmRun& sprm : sprms)
+				{
+				if (sprm.sprm == kSprmPFInTable && sprm.cb >= 2)
+					f_in_table = doc.Bytes()[grpprl + sprm.ib + 1] != 0;
+				else if (sprm.sprm == kSprmPFTtp && sprm.cb >= 2)
+					f_ttp = doc.Bytes()[grpprl + sprm.ib + 1] != 0;
+				else if (sprm.sprm >= kSprmTFirst && sprm.sprm <= kSprmTLast)
+					{
+					++c_tap;
+					if (sprm.sprm == kSprmTDefTable)
+						tables.push_back(ReadTDefTable(doc, grpprl, sprm));
+					}
+				}
+			if (f_in_table)
+				++cells;
+			if (f_ttp)
+				++rows;
+			defs += static_cast<long long>(tables.size());
+
+			if (!f_in_table && !f_ttp && c_tap == 0)
+				continue;
+
+			/* Opus only ever puts table geometry on the row-end mark, so a
+			 * sprmTDefTable anywhere else means the walk landed somewhere
+			 * it should not have. */
+			if (!tables.empty() && !f_ttp)
+				report.Problem(where + ": sprmTDefTable on a papx that is "
+						"not a row end (sprmPFTtp is not set)");
+
+			const bool interesting = max_rows < 0 || shown < max_rows;
+			if (interesting)
+				{
+				++shown;
+				std::cout << "  fc " << run.fc_first << ".." << run.fc_lim
+						<< "  page " << pn << " run " << irun << ": "
+						<< (f_ttp ? "row end" : "cell")
+						<< ", " << c_tap << " tap sprm(s), grpprl "
+						<< cb_grpprl << " bytes\n";
+				}
+
+			for (const TDefTable& table : tables)
+				{
+				if (interesting)
+					{
+					std::cout << "      sprmTDefTable @ +" << table.ib
+							<< ": cb " << table.cb_stored << " (record "
+							<< table.cb_total << " bytes), itcMac "
+							<< table.itc_mac << ", rgtc " << table.cb_rgtc
+							<< " bytes\n";
+					if (!table.centers.empty())
+						{
+						std::cout << "      rgdxaCenter:";
+						for (int center : table.centers)
+							std::cout << ' ' << center;
+						std::cout << '\n';
+						}
+					if (!table.ok)
+						std::cout << "      <<< " << table.why << '\n';
+					}
+				if (!table.ok)
+					{
+					report.Problem(where + ": sprmTDefTable at +" +
+							std::to_string(table.ib) + ": " + table.why);
+					if (table.old_layout)
+						report.Note("that sprmTDefTable reads as the 2-byte "
+								"int layout (itcMac at +" +
+								std::to_string(kIbTDefTableItcMacOld) +
+								"): it was written by a build whose reader "
+								"and writer disagreed about the length "
+								"field -- see cbTDefTableHdr in prm.h");
+					}
+				}
+			}
+		}
+
+	if (max_rows >= 0 && (rows + cells) > shown)
+		std::cout << "      ... " << ((rows + cells) - shown)
+				<< " more table papx, use --runs=all\n";
+
+	if (papx_walked == 0)
+		{
+		std::cout << "  no PAPX FKP to walk\n";
+		return;
+		}
+	std::cout << "  walked " << papx_walked << " papx grpprl(s): " << rows
+			<< " row end(s), " << cells << " in-table papx, " << defs
+			<< " sprmTDefTable record(s)";
+	if (papx_failed != 0)
+		std::cout << ", " << papx_failed << " UNWALKABLE";
+	std::cout << '\n';
+	if (rows == 0 && cells == 0 && defs == 0)
+		std::cout << "  this document has no tables\n";
+	}
+
 void PrintUsage(std::ostream& out)
 	{
 	out << "usage: doc_inspector [options] FILE.doc\n"
 			"\n"
 			"Parses a Word 1.x (Opus) document without Wine and reports\n"
-			"whether its FIB, FKPs and PLC tables are structurally sound.\n"
+			"whether its FIB, FKPs, PLC tables, section table (plcfsed)\n"
+			"and table row properties (sprmTDefTable) are structurally\n"
+			"sound.\n"
 			"\n"
 			"options:\n"
 			"  --fc-width=auto|4|8  width of the native FC in the FKPs and\n"
@@ -1142,15 +1713,18 @@ int main(int argc, char **argv)
 		Field("native FC width", std::to_string(fc_width) +
 				" bytes  (forced by --fc-width)");
 	std::cout << "  (a .doc written by the LP64 Winelib build uses an 8-byte "
-			"FC in its FKPs\n   and PLC records; the MSVC x64 build uses 4 -- "
-			"see cbCpDisk in file.h)\n";
+			"FC in its FKPs;\n   the MSVC x64 build uses 4.  The FIB, the PLC "
+			"cp arrays and every\n   plcfsed record are 4-byte quantities in "
+			"both -- see cbCpDisk in file.h)\n";
 
 	PrintFib(doc, fib, report);
 	if (verbose)
 		PrintFibWordDump(fib);
 	PrintFkpStream(doc, fib, fc_width, false /* CHPX */, max_runs, report);
 	PrintFkpStream(doc, fib, fc_width, true /* PAPX */, max_runs, report);
+	PrintTableFkps(doc, fib, fc_width, max_runs, report);
 	PrintPlcTables(doc, fib, fc_width, verbose, report);
+	PrintSectionTable(doc, fib, fc_width, report);
 
 	if (fib.At(iwPnNext) != 0)
 		report.Note("pnNext is " + std::to_string(fib.At(iwPnNext)) +
@@ -1165,8 +1739,9 @@ int main(int argc, char **argv)
 
 	if (report.Problems().empty())
 		{
-		std::cout << "\n  STRUCTURALLY VALID -- FIB, FKPs and PLC tables are "
-				"self consistent.\n";
+		std::cout << "\n  STRUCTURALLY VALID -- FIB, FKPs, PLC tables, "
+				"section table and\n  table row properties are self "
+				"consistent.\n";
 		return 0;
 		}
 	std::cout << "\n  NOT STRUCTURALLY VALID -- " << report.Problems().size()

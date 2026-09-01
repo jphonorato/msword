@@ -398,6 +398,35 @@ struct SEBL  /* Sprm Edit Block */
 	an FKP that contains PAPXs */
 #define cbMaxGrpprlPapx cbSector - 2*sizeof(char) - 2*sizeof(FC) - 7
 
+/* T A P   O N   D I S K  --  the sprmTDefTable record */
+
+/* sprmTDefTable is the only sprm whose length field is wider than a byte,
+	and the only place a TAP reaches a file: everything the reader needs of
+	struct TAP's rgdxaCenter and rgtc travels inside a PAPX as this record.
+
+		+0                    sprmTDefTable
+		+ibTDefTableCb        cb, cbTDefTableCb bytes little endian
+		+ibTDefTableItcMac    itcMac, one byte
+		+ibTDefTableRgdxa     rgdxaCenter, (itcMac + 1) ints
+		                      rgtc, the differing prefix of the TC array
+
+	cb counts the whole record less the sprm byte and one more, which is
+	what CchPrl() and the grpprl walkers assume when they add 2 to it.
+
+	Every one of those offsets used to be written from sizeof(int) and read
+	from a hard coded 3 and 4, which agree only in the 16 bit build: with a
+	4 byte int the writer put itcMac at +5 and the reader took it from +3,
+	in the middle of the length field.  The whole record is expressed here
+	once so the two sides cannot drift again.  On this build cbTDefTableCb
+	is 4 -- so are the rgdxaCenter entries and the ints of a TC, which is
+	the 4 byte on disk form of a TAP -- and in the 16 bit build the three
+	offsets come out 1, 3 and 4, exactly what the old code wrote. */
+#define cbTDefTableCb      ((int)sizeof(int))
+#define ibTDefTableCb      1
+#define ibTDefTableItcMac  (ibTDefTableCb + cbTDefTableCb)
+#define ibTDefTableRgdxa   (ibTDefTableItcMac + 1)
+#define cbTDefTableHdr     ibTDefTableRgdxa
+
 #ifdef MAC /* WIN has vsci.ypSubSuper */
 #define ypSubSuper      3
 #endif
