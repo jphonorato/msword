@@ -2202,6 +2202,83 @@ calibrada contra el bug del motor desde que se escribió. Rama
 que no existían cuando se creó); el trabajo real quedó en
 `fix/ccpeop-2`, sobre `main` actual.
 
+## 16. Verificación 2026-09-01 en este vps: gating 9/9 y `--roundtrip` en verde; `--font-typing` cae antes de llegar a la aserción de líneas
+
+Sesión de verificación del trabajo de §15 (consolidación de
+`kCcpEop = 2`). Estado del árbol al empezar: los tres cambios ya
+estaban en `main` (`011feae`, fusionado en `b01e51a`) --
+`kCcpEop = 2` en `src/port/original/opus_asm_resn_core.cpp:19`,
+`99/97` en `src/port/original/opus_x64_runtime_test.cpp:260`, y
+`display_line_count < 2` / `early_display_line_count >= 2` en la
+sección `--font-typing` de `opus_word1_ui_test.cpp`. No hubo nada
+que modificar.
+
+El entorno pedido (VM `debian13`) no era alcanzable: `exia`, el
+salto SSH intermedio, figuraba `offline, last seen 2h ago` en
+`tailscale status`. La verificación se hizo en este vps con Xvfb.
+
+### Resultado
+
+- **Gating: 9/9 en verde** (`opus_original_strtbl_test`,
+  `opus_x64_runtime_test`, `opus_original_sttb_test`,
+  `opus_original_plc_test`, `opus_sdm_cab_test`,
+  `opus_original_command_test`, `opus_shell_memory_foreign_test`,
+  `opus_shell_config_test`, `opus_shell_font_substitution_test`).
+- **`ctest -E 'opus_word1_font_typing_test|opus_word1_interaction_test'`:
+  18/18 en verde**, incluidos `opus_word1_roundtrip_test` (6.66 s) y
+  `opus_word1_formatting_test` (8.41 s).
+- **`--font-typing`: falla, 4/4 intentos**, en tres formas distintas
+  entre corridas: `could not mouse-select the font`,
+  `could not mouse-select point size`, y cuelgue hasta el TIMEOUT de
+  ctest. **Nunca llega a la aserción de recuento de líneas de §15**:
+  muere en `choose_combo_item_with_mouse`, es decir en la
+  interacción de ratón con los combos de la cinta, muy por delante
+  de cualquier código de maquetación.
+
+### Efecto cascada en la suite completa (importante para leer un `ctest` global)
+
+En la primera corrida completa aparecieron 6 fallos (14, 16, 17, 18,
+19, 20). Cinco de esos son artefacto: cuando `--font-typing` se
+cuelga, deja vivo un `WORD1.exe.so` residual consumiendo 80-100 % de
+CPU, y los tests siguientes (`--about`, `--save-as`, `--roundtrip`,
+`--formatting`) reportan `Timeout` aunque **pasan sueltos y pasan en
+ctest** una vez que se mata el residuo. Al interpretar una corrida
+global hay que verificar procesos `WORD1` colgados antes de contar
+fallos.
+
+### Diagnóstico del cuelgue
+
+Con el test parado a los 15 s: el proceso de test está en
+`pipe_read` (un `SendMessageW` esperando respuesta vía wineserver) y
+el proceso `WORD1.exe.so` está en estado `R`, en bucle ocupado, no
+en espera de mensajes. `gdb` adjunto no produce símbolos utilizables
+(`Selected architecture i386:x86-64 is not compatible with reported
+target architecture i386:x64-32`).
+
+Experimento descartado, **revertido, no está en `main`**: endurecer
+`choose_combo_item_with_mouse` contra la carrera
+`SetCursorPos` (XWarpPointer) / `SendInput` (XTest) -- gap de 120 ms
+tras posicionar el cursor y sondeo del popup en vez de `Sleep(250)`
+fijo. Efecto medido: el click pasa a aterrizar de verdad y el fallo
+se convierte en cuelgue determinista 4/4 (antes era mezcla de fallo
+rápido y cuelgue). Conclusión: la causa no es la temporización del
+arnés, sino que WORD1 entra en bucle ocupado con el dropdown del
+combo abierto bajo Wine/Xvfb; hacer que el click acierte más
+confiablemente sólo hace el bucle más frecuente.
+
+### Qué cambió respecto al 2026-08-26 (10/11)
+
+No se identificó el disparador. `wine` sigue siendo
+`wine-10.0 (Debian 10.0~repack-6)`, instalado el 2026-08-10, sin
+actualizaciones desde entonces; el kernel se actualizó el 27 y el 31
+de agosto pero la máquina no se ha reiniciado (uptime 11 días). El
+fallo se reproduce igual en el Xvfb `:91` que llevaba activo desde
+el 2026-08-26 y en servidores Xvfb recién arrancados, con
+`wineserver -k` de por medio. Queda pendiente reproducirlo en la VM
+`debian13` cuando `exia` vuelva a estar en línea, y compararlo con
+`--interaction` (§12), el otro test cuyo fallo es puramente
+interacción de ratón con el chrome de la ventana.
+
 ## Resumen
 
 Los 8 ítems de comportamiento de la lista original de §26 de
