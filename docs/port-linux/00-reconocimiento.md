@@ -1220,6 +1220,18 @@ de mover nada:
 
 Ni `vk.h` ni `opus_host_compat.h` ni `bitapp.h` arrastran `<windows.h>`.
 
+**Actualización 2026-09-01: una quinta herramienta nativa,
+`doc_inspector`.** `port/tools/doc_inspector/doc_inspector.cpp`
+(`<algorithm> <cstdint> <cstdlib> <cstring> <fstream> <iomanip>
+<iostream> <sstream> <string> <vector>`, ABI del motor: no) entra en
+el mismo sub-proyecto por el mismo criterio de esta auditoría. No es
+un generador: lee un `.doc` ya guardado y verifica FIB, FKP y PLC por
+fuera del motor. Conoce el layout en disco por transcripción de
+`Opus/filewin.c`, `Opus/wordtech/file.h`, `fkp.h` y `create.c` -- no
+incluye ninguno de ellos, que es lo que la mantiene fuera de
+`winegcc`. La consume `opus_doc_inspector_test`; ver §17 de
+`03-comportamiento-word1-startup-blocked.md`.
+
 ### `opus_cabi_tool` no se mueve
 
 Su salida **es** el ABI del motor: evalúa `sizeof` sobre las estructuras del

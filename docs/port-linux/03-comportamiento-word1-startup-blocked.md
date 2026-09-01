@@ -2296,6 +2296,219 @@ el 2026-08-26 y en servidores Xvfb recién arrancados, con
 `--interaction` (§12), el otro test cuyo fallo es puramente
 interacción de ratón con el chrome de la ventana.
 
+## 17. Validación binaria del `.doc` en disco: `doc_inspector` y `opus_doc_inspector_test` (2026-09-01)
+
+Hasta ahora nada leía el `.doc` que WORD1 escribe. `--roundtrip`
+(§13, §15) comprueba que un segundo proceso WORD1 lo pueda reabrir y
+que el texto coincida, y `--rich-format` compara CHP/PAP vía los
+códigos de consulta 82/83/84 de `wproc.c`, pero ambas verificaciones
+pasan por el propio motor: si el motor escribiera y releyera de forma
+consistente una estructura mal formada, las dos pruebas seguirían en
+verde. El bug de corrupción en disco de `898e499` (la `FIB` nativa de
+768 bytes escrita en una página de sector de 512 -- desbordamiento
+real, no cosmético) es exactamente esa clase de fallo.
+
+`doc_inspector` cierra ese hueco leyendo el archivo por fuera del
+motor.
+
+### La herramienta
+
+`src/port/tools/doc_inspector/doc_inspector.cpp`, commit `a8dd611`.
+C++20 puro: sin `windows.h`, sin Wine, sin GUI. Se construye con gcc
+nativo. Bajo el toolchain Winelib entra en el sub-proyecto de
+`src/port/tools/host/` junto a `mkcmd`/`mkdlg`/`bitapp`/`dibapp`, por
+el mismo motivo que ellos y que está razonado en
+`00-reconocimiento.md`: no depende de Win32 ni del ABI del motor, así
+que pasarla por winegcc no aportaría nada y sí la expondría a los
+modos de fallo de la capa Winelib. Se instala como
+`<build>/host-tools/bin/doc_inspector`.
+
+Qué valida, y de dónde sale cada layout:
+
+- **FIB**: las 105 palabras little-endian de 4 bytes en el orden
+  exacto de `CbBltFibPacked()` (`Opus/filewin.c`), con un
+  `static_assert` que ata el enum de índices a `cwFibDisk`. Comprueba
+  `wIdent == wMagic` (0xA59B), `nFib` dentro de
+  `nFibMinDoc..nFibCurrent`, `nFibBack`, `fcMin`/`fcMac`/`cbMac`
+  contra el tamaño real del archivo y, cuando `!fComplex`, que
+  `fcMac - fcMin` sea la suma de los `ccp*`.
+
+- **FKP de CHPX y PAPX**: páginas de `cbSector` alcanzadas por
+  `plcfbteChpx`/`plcfbtePapx`, más el relleno secuencial desde
+  `pnChpFirst`/`pnPapFirst` que hace `FFillMissingBtePns`
+  (`Opus/openrare.c`). Verifica `crun`, monotonía estricta de `rgfc`,
+  los offsets de propiedad -- que son palabras de 16 bits, el
+  `b <<= 1` de `fetch.c`/`inssubs.c`, no offsets de byte -- y la
+  longitud del registro: `cb` en bytes para CHPX, `cw` en palabras
+  para PAPX (`fStoreCw = fPara` en `C_FAddRun`). Exige además
+  continuidad entre páginas y cobertura completa de `fcMin..fcMac`.
+
+- **Las 21 PLC nombradas por el FIB**, descompuestas como en
+  `HplcReadPlcf()` (`Opus/create.c`): `ccp` cp's de `cbCpDisk`
+  seguidos de `ccp-1` registros del tamaño propio de cada tabla, con
+  los mismos `cbSED`/`cbPGD`/`cbFLD`/... que el motor pasa en cada
+  llamada. Marca `MISALIGNED` cuando `cb` no divide en entradas
+  enteras, y revisa monotonía y rango de los cp.
+
+### Dos detalles del formato que quedaron establecidos al escribirla
+
+1. **El FIB de Word 1.x no tiene ranura `plcfed`.** No existe en
+   `struct FIB` ni en el recorrido de `CbBltFibPacked()`. Las tablas
+   vivas más cercanas son las cinco `plcffld*` (foo = `struct FLD`),
+   que la herramienta sí inspecciona; el PLC de EDL de
+   `Opus/wordtech/disp.h` es sólo memoria y nunca se escribe. La
+   salida lo dice explícitamente para que nadie vuelva a buscarlo.
+
+2. **El ancho del FC en disco no es fijo.** El FIB y los arrays de cp
+   van siempre a 4 bytes (`cbCpDisk`), pero `rgfc` de los FKP y los
+   registros foo de las PLC van a **ancho nativo**: 8 bytes en este
+   build Winelib LP64 y 4 en el de MSVC x64, que es justo lo que
+   advierte la nota junto a `cbCpDisk` en `Opus/wordtech/file.h` --
+   un `.doc` de este build no es compatible byte a byte con uno del
+   build MSVC. La herramienta lo autodetecta puntuando ambas
+   hipótesis contra `cbSED` y contra la coherencia de los FKP;
+   `--fc-width=4|8` fuerza. En los archivos de este vps la
+   autodetección da 8 con margen amplio (18 contra -10 en
+   `roundtrip.doc`, 20 contra -10 en `rich_format.doc`).
+
+Dos supuestos iniciales resultaron **falsos** y se corrigieron contra
+el motor antes de fijar las comprobaciones, porque ambos producían
+falsos positivos:
+
+- El archivo **no** se redondea a un múltiplo de sector. No hay
+  ningún `SetEndOfFile` en `Opus/filewin.c`: el archivo termina en el
+  último byte escrito. Los `.doc` de las pruebas miden 2385 bytes,
+  que no es múltiplo de 512.
+- `cbMac` es exactamente el tamaño físico del archivo, no una marca
+  lógica por debajo de un final redondeado. La comprobación correcta
+  es `cbMac == tamaño`; un archivo más largo es holgura de un
+  guardado anterior y sólo merece nota, no problema.
+
+### Cómo llega el archivo a la prueba
+
+Commit `b7a1c7b`. Las dos únicas pruebas que atraviesan el diálogo
+Save As real y producen un `.doc` son `opus_word1_roundtrip_test`
+(`--roundtrip`) y `opus_word1_formatting_test` (`--rich-format`).
+`opus_word1_save_as_test` **no** escribe nada: abre el diálogo y lo
+cancela (`WM_COMMAND` id 2 = IDCANCEL).
+
+Ambas borran su `.doc` en todas sus salidas, así que
+`opus_word1_ui_test.cpp` guarda una copia bajo
+`OPUS_X64_DOC_ARTIFACT_DIR` cuando esa variable está en el entorno
+(`keep_doc_artifact()`/`discard_doc_artifact()`). Guardarla es
+estrictamente un efecto lateral: si `CopyFileA` falla se registra y
+se sigue, nunca convierte en fallo una prueba de guardado que por lo
+demás pasó. Cada modo borra su propio artefacto antes de guardar, de
+modo que nunca se valida uno rancio.
+
+El directorio tiene que ser visible desde Wine, así que bajo el
+toolchain Winelib CTest lo pasa como `"Z:"` más la ruta unix del
+árbol de build, con barras normales -- Win32 las acepta como
+separador y `wineboot` mapea `Z:` a `/` en todo prefijo
+(`~/.wine/dosdevices/z: -> /` en este vps). La rama MSVC ya tiene
+ruta nativa y no lleva prefijo.
+
+El fixture `opus_saved_doc_artifacts` (`FIXTURES_SETUP` en las dos
+pruebas de guardado, `FIXTURES_REQUIRED` en la nueva) es lo que hace
+que `ctest -R opus_doc_inspector` las ejecute primero en vez de
+inspeccionar un artefacto viejo.
+
+`src/cmake/RunDocInspector.cmake` recorre el directorio y corre
+`doc_inspector --verbose` sobre cada `.doc`. Falla si alguno sale con
+código distinto de 0 y **también si no encontró ningún archivo**:
+pasar en silencio convertiría la prueba en un no-op permanente el día
+que las pruebas de guardado dejen de producir archivo. Los dos
+caminos negativos se verificaron a mano -- artefacto con `crun`
+corrupto y directorio vacío, ambos hacen fallar el script.
+
+Queda registrada en `src/CMakeLists.txt`, no en un
+`src/port/original/CMakeLists.txt`: ese archivo no existe,
+`port/original/` no es un subdirectorio de CMake y todas las pruebas
+del proyecto se registran en `src/CMakeLists.txt`.
+
+### Medición en este vps (2026-09-01, `DISPLAY=:91`)
+
+```
+Start 19: opus_word1_roundtrip_test ....... Passed  7.00 sec
+Start 20: opus_word1_formatting_test ...... Passed  8.74 sec
+Start 21: opus_doc_inspector_test ......... Passed  0.04 sec
+```
+
+**0.04 s** es el coste completo de la validación binaria: los dos
+`.doc` leídos, parseados y verificados enteros. No hay Wine, ni
+servidor X, ni proceso WORD1 en ese tramo -- es un binario nativo
+leyendo dos archivos de 2385 bytes. Los 15.7 s restantes son las dos
+pruebas productoras, que ya existían.
+
+Resultado sobre los dos artefactos, ambos `STRUCTURALLY VALID`:
+
+| artefacto | tamaño | `fcMin..fcMac` | `ccpText` | FC detectado |
+|---|---|---|---|---|
+| `roundtrip.doc` | 2385 | 512..532 | 20 | 8 bytes |
+| `rich_format.doc` | 2385 | 512..535 | 23 | 8 bytes |
+
+En ambos: `plcfsed` y `plcfpgd` con cps `0..ccpText`, bin tables con
+cps `fcMin..fcMac`, FKP contiguos y con cobertura completa.
+`rich_format.doc` muestra además 3 runs CHPX en su página con
+compartición de propiedad (dos runs apuntando al mismo offset 508),
+que es el comportamiento de `C_FAddRun` cuando encuentra un CHPX
+idéntico ya almacenado en la página.
+
+### La etiqueta: por qué **no** es gating
+
+`opus_doc_inspector_test` lleva
+`LABELS "word1_startup_blocked;doc_binary_validation"`.
+
+La ejecución de `doc_inspector` es nativa y determinista, y por sí
+sola sería perfectamente gating. Lo que no lo es son sus **entradas**:
+el `.doc` sólo existe si WORD1 arrancó, pintó y completó un Save As
+bajo Wine/Xvfb. Meterla en el conjunto gating trasladaría a CI toda
+la fragilidad de entorno que §12 y §16 documentan. Por eso hereda la
+etiqueta de sus productoras. La segunda etiqueta,
+`doc_binary_validation`, permite seleccionarla sola
+(`ctest -L doc_binary_validation`).
+
+Cuándo tendría sentido promoverla a gating: cuando los tests de la
+etiqueta `word1_startup_blocked` sean estables en las dos máquinas de
+referencia. Alternativa intermedia, si se quiere gating antes de eso:
+versionar un `.doc` de referencia generado una vez y validarlo sin
+WORD1 de por medio -- eso sí sería gating nativo puro, pero valida un
+archivo congelado, no lo que el motor escribe hoy, que es
+precisamente lo que interesa aquí.
+
+### Estado de CTest tras el cambio
+
+La suite pasa de 20 a **21 pruebas**. Corrida completa en este vps
+(`DISPLAY=:91`, 86.68 s):
+
+- **Gating: 9/9 en verde**, sin cambios.
+- **Etiqueta `word1_startup_blocked`: 12 pruebas** (las 11 de antes
+  más `opus_doc_inspector_test`).
+- **Total: 19/21.** Los dos fallos son los ya explicados y ninguno es
+  nuevo:
+  - `#14 opus_word1_interaction_test` -- limitación de entorno
+    Xvfb/Wine de §12, arrastre de la barra de título.
+  - `#16 opus_word1_font_typing_test` -- el fallo de §16, muere en
+    `choose_combo_item_with_mouse` sin llegar a la aserción de
+    recuento de líneas.
+
+Se comprobó explícitamente que `--font-typing` **no** es regresión de
+este cambio: con `git stash` sobre `opus_word1_ui_test.cpp` y
+recompilando, falla igual con el binario previo. Las modificaciones
+de este commit a ese archivo son las dos funciones auxiliares y
+cuatro llamadas, todas dentro de los bloques `roundtrip_mode` y
+`rich_format_mode`; no tocan el camino de `--font-typing`.
+
+En esta corrida no se dio el efecto cascada de §16 porque
+`--font-typing` falló rápido en vez de colgarse. Al leer un `ctest`
+global sigue valiendo la advertencia de §16: si `--font-typing` se
+cuelga, deja un `WORD1.exe.so` residual que hace expirar por timeout
+a las pruebas siguientes, incluidas las dos productoras del artefacto
+y, por tanto, también `opus_doc_inspector_test`.
+
+Fusionado a `main` en `b1db7ef` y publicado
+(`b01e51a..b1db7ef  main -> main`).
+
 ## Resumen
 
 Los 8 ítems de comportamiento de la lista original de §26 de
@@ -2342,6 +2555,14 @@ antes de esta sesión.
 en §8), el único fallo restante de la etiqueta es
 `opus_word1_interaction_test` (Task 10, §12, limitación de entorno
 Xvfb/Wine confirmada, no bug del proyecto).
+
+**Actualización 2026-09-01: suite en 21 pruebas, 19/21 en este vps.**
+La etiqueta `word1_startup_blocked` pasa a 12 pruebas con la entrada
+de `opus_doc_inspector_test` (§17), que valida por fuera del motor el
+`.doc` que WORD1 acaba de escribir. Los dos fallos de la etiqueta son
+`opus_word1_interaction_test` (§12, entorno) y
+`opus_word1_font_typing_test` (§16, cae en
+`choose_combo_item_with_mouse`); el gating sigue en 9/9.
 
 Aparte de la lista de 8, sigue sin investigar: `opus_x64_runtime_test`
 (gating, cuelga sin imprimir nada, confirmado pre-existente y no
