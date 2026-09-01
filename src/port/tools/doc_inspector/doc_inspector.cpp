@@ -35,13 +35,11 @@
  *     show up from outside the engine.
  *
  * The one subtlety that makes this tool more than a hexdump: the cp/fc arrays
- * of a PLC, every field of the FIB and (since PackSed) every plcfsed record
- * are 4-byte quantities on disk regardless of the host, but the FKP rgfc
- * array and the remaining PLC foo records are written at *native* width.  On
- * this LP64 Winelib build FC is a 64-bit long, so a .doc it writes is still
- * not byte compatible with one from the MSVC x64 build, where long is 4
- * bytes.  Both are self consistent, so the tool detects which one it is
- * looking at rather than assuming (see ScoreFcWidth); --fc-width overrides.
+ * of a PLC, every field of the FIB, every plcfsed record and (since PutFcFkp)
+ * every FKP rgfc entry are 4-byte quantities on disk regardless of the host.
+ * A .doc from before that last change holds native FC in its FKPs: 8 bytes
+ * where long is 8.  The tool still detects that so it can name the file as
+ * predating the pack (see ScoreFcWidth); --fc-width overrides.
  */
 
 #include <algorithm>
@@ -406,6 +404,7 @@ constexpr int kItcMax = 32;             /* Opus/wordtech/props.h */
 constexpr int kCbInt = 4;               /* sizeof(int) in every live build */
 constexpr int kCbTc = 5 * kCbInt;       /* struct TC: grpf plus four brc's */
 constexpr int kCbPhe = 3 * kCbInt;      /* struct PHE, Opus/wordtech/word.h */
+constexpr int kCbFcFkp = 4;             /* Opus/wordtech/fkp.h cbFcFkp */
 
 /* dnsprm[].cch from Opus/wordtech/prcsubs.c, WIN branch: the whole length of
  * the sprm in bytes, or 0 when the sprm carries its own length. */
@@ -428,10 +427,9 @@ const unsigned char kSprmCch[kSprmMax] =
 
 /* One PLC named by the FIB.  foo4/foo8 are the record's size on disk when FC
  * is 4 and 8 bytes wide; every one of them is the constant the engine passes
- * to HplcReadPlcf() in Opus/create.c.  struct SED is the only foo that embeds
- * an FC, and it is now packed to kCbSedDisk on the way out, so no foo size
- * depends on the width any more -- the FKP rgfc arrays are all that is left
- * to tell the two apart. */
+ * to HplcReadPlcf() in Opus/create.c.  struct SED is packed to kCbSedDisk
+ * and FKP rgfc to kCbFcFkp, so no live foo size depends on the width any
+ * more -- an 8-byte FKP rgfc is how a file from before PutFcFkp looks. */
 struct PlcSpec
 	{
 	const char *name;
@@ -572,8 +570,8 @@ FkpPage ReadFkpPage(const Doc& doc, std::size_t pn, int fc_width,
 		}
 
 	page.crun = doc.Bytes()[base + kSector - 1];
-	/* bFreeFirst after crun runs, from C_FAddRun: crun * (sizeof(FC) + 1) +
-	 * sizeof(FC).  It must still leave room for one property byte. */
+	/* bFreeFirst after crun runs, from C_FAddRun: crun * (cbFcFkp + 1) +
+	 * cbFcFkp.  It must still leave room for one property byte. */
 	const int run_table_end = page.crun * (fc_width + 1) + fc_width;
 	const int crun_max =
 			(static_cast<int>(kSector) - 1 - fc_width) / (fc_width + 1);
@@ -850,10 +848,11 @@ TDefTable ReadTDefTable(const Doc& doc, std::size_t base, const SprmRun& run)
 
 /* -------------------------------------------------- FC width autodetection */
 
-/* Score how well the file reads as one of the two native FC widths.  Since
- * plcfsed is packed the FKP rgfc arrays are the only discriminator left; the
- * PLC loop is kept so a foo type that grows a width-dependent form again is
- * picked up without anyone having to remember this function. */
+/* Score how well the file reads as one of the two FKP rgfc widths.  After
+ * PutFcFkp the packed form is always 4 bytes; 8 only appears in files that
+ * predate that change.  The PLC loop is kept so a foo type that grows a
+ * width-dependent form again is picked up without anyone having to remember
+ * this function. */
 int ScoreFcWidth(const Doc& doc, const Fib& fib, int fc_width)
 	{
 	int score = 0;
@@ -1064,6 +1063,16 @@ void PrintFkpStream(const Doc& doc, const Fib& fib, int fc_width,
 	const char *label = is_papx ? "FKP -- paragraph properties (PAPX)"
 			: "FKP -- character properties (CHPX)";
 	Section(label);
+
+	Field("rgfc stride", std::to_string(fc_width) +
+			" bytes  (cbFcFkp = " + std::to_string(kCbFcFkp) +
+			", packed little endian)");
+	if (fc_width != kCbFcFkp)
+		report.Note(std::string(is_papx ? "PAPX" : "CHPX") +
+				" FKP rgfc is " + std::to_string(fc_width) +
+				"-byte: this file predates PutFcFkp(), and was written by a "
+				"build whose FC was " + std::to_string(fc_width) +
+				" bytes wide");
 
 	const PlcSpec& bte_spec = BteSpec(is_papx);
 	const PlcView bte = ViewPlc(doc, fib, bte_spec, fc_width);
@@ -1586,8 +1595,9 @@ void PrintUsage(std::ostream& out)
 			"sound.\n"
 			"\n"
 			"options:\n"
-			"  --fc-width=auto|4|8  width of the native FC in the FKPs and\n"
-			"                       PLC records (default auto)\n"
+			"  --fc-width=auto|4|8  width of FKP rgfc entries (default auto;\n"
+			"                       4 is the packed form PutFcFkp writes, 8 is\n"
+			"                       a file from before that change)\n"
 			"  --page=N             read the FIB from page N (default 0);\n"
 			"                       use pnNext for the second document of a\n"
 			"                       compound file\n"
@@ -1700,22 +1710,26 @@ int main(int argc, char **argv)
 		{
 		const int score8 = ScoreFcWidth(doc, fib, 8);
 		const int score4 = ScoreFcWidth(doc, fib, 4);
-		fc_width = (score4 > score8) ? 4 : 8;
-		Field("native FC width", std::to_string(fc_width) +
+		fc_width = (score4 >= score8) ? 4 : 8;
+		Field("FKP rgfc stride", std::to_string(fc_width) +
 				" bytes  (autodetected; score 8-byte " +
-				std::to_string(score8) + ", 4-byte " + std::to_string(score4) +
-				')');
+				std::to_string(score8) + ", 4-byte " +
+				std::to_string(score4) + ')');
 		if (score8 == score4)
-			report.Note("the two FC widths score equally: too little "
-					"structure in this file to tell them apart, assuming 8");
+			report.Note("the two FKP rgfc widths score equally: too little "
+					"structure in this file to tell them apart, assuming the "
+					"packed 4-byte form");
+		if (fc_width != kCbFcFkp)
+			report.Note("autodetected an 8-byte FKP rgfc: this file predates "
+					"PutFcFkp()");
 		}
 	else
-		Field("native FC width", std::to_string(fc_width) +
+		Field("FKP rgfc stride", std::to_string(fc_width) +
 				" bytes  (forced by --fc-width)");
-	std::cout << "  (a .doc written by the LP64 Winelib build uses an 8-byte "
-			"FC in its FKPs;\n   the MSVC x64 build uses 4.  The FIB, the PLC "
-			"cp arrays and every\n   plcfsed record are 4-byte quantities in "
-			"both -- see cbCpDisk in file.h)\n";
+	std::cout << "  (FKP rgfc, the FIB, the PLC cp arrays and every plcfsed "
+			"record are 4-byte\n   quantities -- see cbFcFkp in fkp.h and "
+			"cbCpDisk in file.h.  An 8-byte rgfc\n   is a file from before "
+			"PutFcFkp.)\n";
 
 	PrintFib(doc, fib, report);
 	if (verbose)

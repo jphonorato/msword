@@ -948,17 +948,10 @@ int ibpDelete;
 	routines emit byte for byte what the old blit emitted, so the Windows
 	path keeps its format and both paths agree.
 
-	Scope note -- what is unified and what is not.  The FIB and the cp
-	arrays of a PLC go out at 4 bytes per field.  The *foo records* of a
-	PLC (struct SED's fcSepx, struct PCD's fc) are still written at native
-	width, as are the FKPs, whose rgfc array and cbFkp both derive from
-	sizeof(FC) (Opus/wordtech/fkp.h) and which are read straight off a
-	cache page.  Those are self consistent -- the same constant sizes the
-	read and the write, so nothing is broken today -- but they do mean a
-	.doc written here is not byte compatible with one written by the MSVC
-	x64 build.  Closing that gap needs fkp.h/inssubs.c/fetch.c, outside
-	the file set this change was authorized for.  Do not read the FIB and
-	cp work below as having achieved cross build file compatibility.
+	Scope note -- what is unified and what is not.  The FIB, the cp
+	arrays of a PLC, struct SED and the FKP rgfc array all go out at 4
+	bytes per field.  struct PCD's FC fc is still written and read at
+	native width, sized by cbPCD at both ends.
 
 	Every range guarantee these routines rely on is checked at compile
 	time (see the typedefs below): Assert() is a no-op unless ASSERTS is
@@ -1068,6 +1061,46 @@ CHAR HUGE *hpch;
 	psed->fUnk = (lGrpf & fSedUnk) != 0;
 	psed->fn = (int)((lGrpf & wSedFn) >> shftSedFn);
 	psed->fcSepx = (FC)LFromDisk(hpch + cbSedWord);
+}
+
+
+/* F K P   R G F C   P A C K I N G */
+
+/* On file each FKP rgfc entry is cbFcFkp bytes little endian whatever
+	sizeof(FC) is in this build; see the block beside cbFcFkp in
+	Opus/wordtech/fkp.h.  These two routines are the only code that knows
+	that layout.  The cache page is the on-file image, so they read and
+	write in place. */
+
+/* %%Function:FcFkp %%Owner:port */
+/* fetch the packed FC at rgfc[ifc].  hpchFkp is the 512-byte FKP page
+	(a struct FKP HUGE * at the call sites).  The stride is cbFcFkp = 4
+	in fkp.h; this file does not include that header (it would pull in
+	struct CHP), so the 4 is written here and checked there. */
+FC FcFkp(hpchFkp, ifc)
+CHAR HUGE *hpchFkp;
+int ifc;
+{
+	return (FC)LFromDisk(hpchFkp + ifc * 4);
+}
+
+
+/* %%Function:PutFcFkp %%Owner:port */
+/* store fc at rgfc[ifc] in its 4 byte on file form */
+void PutFcFkp(hpchFkp, ifc, fc)
+CHAR HUGE *hpchFkp;
+int ifc;
+FC fc;
+{
+	long lfc;
+
+	lfc = (long)fc;
+	if (lfc < -2147483647L - 1L || lfc > 2147483647L)
+		{
+		Assert(fFalse);
+		vmerr.fDiskWriteErr = fTrue;
+		}
+	PackDiskL(hpchFkp + ifc * 4, lfc);
 }
 
 

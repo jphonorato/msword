@@ -2143,9 +2143,9 @@ PN     pn;
 	if (!vpqsib->fCompleteSave)
 		{
 		Assert(!vpqsib->fWord3);
-		pfkpd->bFreeFirst = pfkp->crun * (sizeof(FC) + 1) +
-				sizeof(FC);
-		rgb = (char *) &(pfkp->rgfc[1 + pfkp->crun]);
+		pfkpd->bFreeFirst = pfkp->crun * (cbFcFkp + 1) +
+				cbFcFkp;
+		rgb = (char *) HpchAfterRgfcFkp(pfkp, pfkp->crun);
 		bMin = cbSector - 1;
 		for (ib = 0; ib < pfkp->crun; ib++)
 			{
@@ -2154,7 +2154,7 @@ PN     pn;
 				bMin = b;
 			}
 
-		pfkpd->fcFirst = pfkp->rgfc[pfkp->crun];
+		pfkpd->fcFirst = FcFkp(pfkp, pfkp->crun);
 		pfkpd->bFreeLim = (bMin << 1);
 		pfkpd->pn = pn;
 		}

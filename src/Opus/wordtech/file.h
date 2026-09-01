@@ -972,12 +972,10 @@ quicksave.c code should be changed also. */
 	packed too: it goes out at cbSEDDisk (doc.h) = two 4 byte words, through
 	PackSed()/UnpackSed() below, so plcfsed no longer changes size with
 	sizeof(FC).  struct PCD's FC fc is still written and read at native
-	width, sized by cbPCD at both ends, and so are the FKPs, whose rgfc
-	array and cbFkp both come from sizeof(FC) (fkp.h) and which are read
-	straight off a cache page.  Those two are self consistent -- the same
-	constant sizes the read and the write -- but they still mean a .doc
-	written by this build is not byte compatible with one written by the
-	MSVC x64 build.  Closing what is left needs fkp.h/inssubs.c/fetch.c. */
+	width, sized by cbPCD at both ends.  The FKP rgfc array is packed
+	too: each entry is cbFcFkp (fkp.h) = 4 bytes, through FcFkp/PutFcFkp
+	in filewin.c, so a CHPX/PAPX page no longer changes size with
+	sizeof(FC). */
 #define cbCpDisk    4
 
 void PackFib();
@@ -990,6 +988,11 @@ void ReadRgcpFromFn();
 	on file form; see the block beside cbSEDDisk in doc.h */
 int PackSed();
 int UnpackSed();
+
+/* one FKP rgfc entry between a native FC and its cbFcFkp byte on file
+	form; see the block beside cbFcFkp in fkp.h */
+FC FcFkp();
+void PutFcFkp();
 
 
 /* indices into table of associated strings */

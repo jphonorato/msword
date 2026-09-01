@@ -381,7 +381,6 @@ looked at */
 				if (pfcb->fHasFib)
 					{ /* Copy necessary amt of formatting info over std CHP */
 					int pn;
-					FC HUGE *hpfc;
 					FC fcMin, fcMac;
 #ifdef MAC
 					int fWord3File = pfcb->fWord3File;
@@ -402,16 +401,16 @@ looked at */
 #endif /* WIN */
 					Mac(vplb.fNoTsNonDest = fFalse);
 					if ((pn == pfcb->pnChpHint && pfcb->ifcChpHint != ifcFkpNil &&
-							*(hpfc = &hpfkp->rgfc[pfcb->ifcChpHint]) <= fcFetch) &&
-							fcFetch < *(hpfc + 1))
+							FcFkp(hpfkp, pfcb->ifcChpHint) <= fcFetch) &&
+							fcFetch < FcFkp(hpfkp, pfcb->ifcChpHint + 1))
 						{
-						fcMac = *(hpfc + 1);
+						fcMac = FcFkp(hpfkp, pfcb->ifcChpHint + 1);
 						crun = hpfkp->crun;
 #ifdef MAC
 						if (fWord3File)
 							crun = ((struct FKPO HUGE *)hpfkp)->crun;
 #endif /* MAC */
-						bchpx = ((CHAR HUGE *)&((hpfkp->rgfc)[crun+1]))
+						bchpx = HpchAfterRgfcFkp(hpfkp, crun)
 								[pfcb->ifcChpHint];
 #ifdef MAC
 						if (!fWord3File)
@@ -715,7 +714,6 @@ If there is no Eop at fc' in [fcMin, fc), goto NoParaEnd1. */
 					{ /* Formatted file; get info from para run */
 					int pn;
 					int ifc, ifcT;
-					FC HUGE *hpfc;
 					struct FKP HUGE *hpfkp;
 					FC fcLim, fcFkpLim;
 					int dpn;
@@ -743,11 +741,11 @@ If there is no Eop at fc' in [fcMin, fc), goto NoParaEnd1. */
 					Mac(vplb.fNoTsNonDest = fFalse);
 					ifc = pfcb->ifcPapHint1;
 					if (ifc != ifcFkpNil && pn == pfcb->pnPapHint1 &&
-							(((ifc > 1 && *(hpfc = &hpfkp->rgfc[ifcT = ifc - 1]) <= fc) &&
-							fc < *(hpfc + 1)) ||
-							((*(hpfc = &hpfkp->rgfc[ifcT = ifc]) <= fc) && fc < *(hpfc + 1))))
+							(((ifc > 1 && FcFkp(hpfkp, ifcT = ifc - 1) <= fc) &&
+							fc < FcFkp(hpfkp, ifcT + 1)) ||
+							((FcFkp(hpfkp, ifcT = ifc) <= fc) && fc < FcFkp(hpfkp, ifcT + 1))))
 						{
-						fcFirst = *hpfc;
+						fcFirst = FcFkp(hpfkp, ifcT);
 #ifdef DEBUG
 						if (ifc == ifcT)
 							vcPap1Same++;
@@ -946,7 +944,6 @@ while (fc < fcMac)
 				{
 				int pn;
 				int ifc, ifcT;
-				FC HUGE *hpfc;
 				struct FKP HUGE *hpfkp;
 				struct FPAP *pfpap;
 				FC fcFirst;
@@ -988,13 +985,13 @@ while (fc < fcMac)
 #endif /* MAC */
 				if (ifc != ifcFkpNil && pn == pfcb->pnPapHint2 &&
 						(((ifc < crun - 1 &&
-						*(hpfc = &hpfkp->rgfc[ifcT = ifc + 1]) <= fc) &&
-						fc < *(hpfc + 1)) ||
-						((*(hpfc = &hpfkp->rgfc[ifcT = ifc]) <= fc) && fc < *(hpfc + 1))))
+						FcFkp(hpfkp, ifcT = ifc + 1) <= fc) &&
+						fc < FcFkp(hpfkp, ifcT + 1)) ||
+						((FcFkp(hpfkp, ifcT = ifc) <= fc) && fc < FcFkp(hpfkp, ifcT + 1))))
 					{
-					fcFirst = *hpfc;
-					fcLim = *(hpfc + 1);
-					bpapx = ((CHAR HUGE *)&((hpfkp->rgfc)[crun + 1]))[ifcT];
+					fcFirst = FcFkp(hpfkp, ifcT);
+					fcLim = FcFkp(hpfkp, ifcT + 1);
+					bpapx = HpchAfterRgfcFkp(hpfkp, crun)[ifcT];
 #ifdef MAC
 					if (!fWord3File)
 #endif /* MAC */
@@ -1212,6 +1209,32 @@ LNoParaEnd2:
 #endif /* DEBUGORNOTWIN */
 
 #ifdef DEBUGORNOTWIN
+/* I F C  I N  F K P */
+/* Binary search of a packed rgfc.  Same contract as IcpInRgcp: ifcLim is
+	crun, the last index is crun (fcLim of the last run), and fc below
+	rgfc[0] is not a supported query.  Cannot hand the packed array to
+	IcpInRgcp -- that walks sizeof(CP) at a time. */
+/* %%Function:IFcInFkp %%Owner:port */
+private int IFcInFkp(hpfkp, ifcLim, fc)
+struct FKP HUGE *hpfkp;
+int ifcLim;
+FC fc;
+{
+	int ifcMin = 0;
+
+	ifcLim++;
+	while (ifcMin + 1 < ifcLim)
+		{
+		int ifcGuess = (ifcMin + ifcLim) >> 1;
+		if (FcFkp(hpfkp, ifcGuess) <= fc)
+			ifcMin = ifcGuess;
+		else
+			ifcLim = ifcGuess;
+		}
+	return ifcMin;
+}
+
+
 /* B   F R O M   F C */
 /* Return the b, fcFirst & fcLim for the first run with fcLim > fc. */
 /* %%Function:BFromFc %%Owner:davidlu */
@@ -1231,10 +1254,10 @@ int fFkpWord3;
 	if (fFkpWord3)
 		crun = ((struct FKPO HUGE *)hpfkp)->crun;
 #endif /* MAC */
-	*pifc = ifc = IcpInRgcp(LpFromHp(hpfkp->rgfc), crun, (CP) fc);
-	*pfcFirst = (hpfkp->rgfc)[ifc];
-	*pfcLim = (hpfkp->rgfc)[ifc + 1];
-	b = ((CHAR HUGE *)&((hpfkp->rgfc)[crun + 1]))[ifc];
+	*pifc = ifc = IFcInFkp(hpfkp, crun, fc);
+	*pfcFirst = FcFkp(hpfkp, ifc);
+	*pfcLim = FcFkp(hpfkp, ifc + 1);
+	b = HpchAfterRgfcFkp(hpfkp, crun)[ifc];
 #ifdef MAC
 	if (!fFkpWord3)
 #endif /* MAC */

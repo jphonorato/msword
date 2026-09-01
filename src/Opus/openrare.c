@@ -383,7 +383,7 @@ int fChp;
 	for (ibte = ibteMac, cpn = 0; cpn < cpnMissing; cpn++, ibte++, pnCur++)
 		{
 		hpfkp = (struct FKP HUGE *)HpchGetPn(fn, pnCur);
-		PutCpPlc(hplcbte, ibte, hpfkp->rgfc[0]);
+		PutCpPlc(hplcbte, ibte, FcFkp(hpfkp, 0));
 		PutPlc(hplcbte, ibte, &pnCur);
 		}
 	Assert(pfib->pnNext != pn0 ?  ibte >= cpnTot : ibte == cpnTot);

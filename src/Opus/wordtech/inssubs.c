@@ -684,7 +684,7 @@ int grpf;
 			if (cchPropTot != 0 && (bNewLim & 1) != 0)
 #endif /* WIN */
 				bNewLim--;
-		if (pfkpd->bFreeFirst + sizeof(FC) + 1 > bNewLim)
+		if (pfkpd->bFreeFirst + cbFcFkp + 1 > bNewLim)
 			{
 			int pn;
 LNewPage: 
@@ -739,8 +739,8 @@ get operate efficiently beyond the Eof */
 			PnAlloc2(fn, pfkpd->pn, fAllocMac);
 #endif /* WIN */
 			bltbcx(0, LpFromHp(hpfkp), cbPage);
-			hpfkp->rgfc[0] = fcFirst;
-			pfkpd->bFreeFirst = sizeof(FC);
+			PutFcFkp(hpfkp, 0, fcFirst);
+			pfkpd->bFreeFirst = cbFcFkp;
 			/* pfkp->crun = 0 */
 			pfkpd->bFreeLim = cbPage - 1;
 			continue;
@@ -753,25 +753,27 @@ get operate efficiently beyond the Eof */
 			*hpchFprop = (!fStoreCw) ? cchProp : (cchPropShare >> 1);
 			bltbh(pchProp, hpchFprop + 1, cchProp);
 			}
-		/* create a run */
-		hpbFirst = (char HUGE *) &hpfkp->rgfc[crun + 1];
-		bltbh(hpbFirst, hpbFirst + sizeof(FC), crun);
+		/* create a run.  The offset bytes sit immediately after the
+			packed rgfc array; shift them right by one packed FC to make
+			room, then write fcLim at the new last slot. */
+		hpbFirst = HpchAfterRgfcFkp(hpfkp, crun);
+		bltbh(hpbFirst, hpbFirst + cbFcFkp, crun);
 #ifdef MAC
-		*(hpbFirst + sizeof(FC) + crun) = (!fWord3) ? (bCur / sizeof(int)) : bCur;
+		*(hpbFirst + cbFcFkp + crun) = (!fWord3) ? (bCur / sizeof(int)) : bCur;
 #else /* WIN */
 		/* The FKP byte stores an offset in 16-bit words.  That is part of
 		 * the document/scratch-page format, not the host C int width. */
 #ifdef OPUS_X64
-		*(hpbFirst + sizeof(FC) + crun) = bCur >> 1;
+		*(hpbFirst + cbFcFkp + crun) = bCur >> 1;
 #else
-		*(hpbFirst + sizeof(FC) + crun) = bCur / sizeof(int);
+		*(hpbFirst + cbFcFkp + crun) = bCur / sizeof(int);
 #endif
 #endif /* WIN */
-		*((FC HUGE *)hpbFirst) = fcLim;
-		pfkpd->bFreeFirst += sizeof(FC) + 1;
+		PutFcFkp(hpfkp, crun + 1, fcLim);
+		pfkpd->bFreeFirst += cbFcFkp + 1;
 		(*hpcrun)++;
-		Assert(pfkpd->bFreeFirst == *hpcrun * (sizeof(FC) + 1) +
-				sizeof(FC));
+		Assert(pfkpd->bFreeFirst == *hpcrun * (cbFcFkp + 1) +
+				cbFcFkp);
 		pfkpd->fcFirst = fcLim;
 		SetDirty(vibp);
 		PutCpPlc(hplcbte, IMacPlc(hplcbte), fcLim);

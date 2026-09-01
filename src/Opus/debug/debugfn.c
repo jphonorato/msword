@@ -797,17 +797,17 @@ int fAbortOK;
 				{
 				if (!fComplex)
 					{
-					if (fCompound && fkp.rgfc[0] != fcLimPriorFkp)
+					if (fCompound && FcFkp(&fkp, 0) != fcLimPriorFkp)
 						{
 						fCompound = fFalse;
 						goto LGetFcLim;
 						}
 					else
-						Assert(fkp.rgfc[0] == fcLimPriorFkp);
+						Assert(FcFkp(&fkp, 0) == fcLimPriorFkp);
 					}
 				else
 					{
-					Assert(fkp.rgfc[0] >= fcLimPriorFkp);
+					Assert(FcFkp(&fkp, 0) >= fcLimPriorFkp);
 					}
 				Assert((FC)CpPlc(hplcbte, ibte) == fcLimPriorFkp);
 				}
@@ -916,26 +916,28 @@ int fScratch;
 	/* crun byte */
 	rggrpf[cbSector-1] |= bitCrunByte;
 	Assert ((crun = pfkp->crun) > 0);
-	Assert (pfkp->rgfc[0] < (*hfcb)->cbMac);
+	Assert (FcFkp(pfkp, 0) < (*hfcb)->cbMac);
 
 	/* fcLim of every run must be within confines of file's fc's
 		and be less than the following run's fcLim. */
 	for (irun = 0; irun < crun ; irun++)
 		{
-		/* bytes containing FC's */
-		*((long *)&(rggrpf[sizeof(FC) * irun])) |= lfcFlags;
-		Assert (pfkp->rgfc[irun] < pfkp->rgfc[irun + 1]);
+		int ibFc;
+		/* bytes containing packed FCs */
+		for (ibFc = 0; ibFc < cbFcFkp; ibFc++)
+			rggrpf[cbFcFkp * irun + ibFc] |= bitFcByte;
+		Assert (FcFkp(pfkp, irun) < FcFkp(pfkp, irun + 1));
 		if (fPara)
 			{
 			if (!FGetPn(fScratch,
-					(PN)((pfkp->rgfc[irun + 1] - 1) >> shftSector),
+					(PN)((FcFkp(pfkp, irun + 1) - 1) >> shftSector),
 					&rgchText))
 				return 0xffffffff;
-			chCur = rgchText[(int)((pfkp->rgfc[irun + 1] - 1)
+			chCur = rgchText[(int)((FcFkp(pfkp, irun + 1) - 1)
 				& maskSector)];
 			Assert(chCur == chEop || chCur == chSect || chCur == chTable);
 			}
-		pbrunD2 = ((char *)&(pfkp->rgfc[crun + 1])) + irun;
+		pbrunD2 = ((char *)HpchAfterRgfcFkp(pfkp, crun)) + irun;
 		/* bytes containing brun's */
 		rggrpf[(int)pbrunD2 - (int)pfkp] |= bitBrunByte;
 		/* with 512 byte sectors, runs start on word boundries and
@@ -943,7 +945,7 @@ int fScratch;
 		if (brun = (*pbrunD2 * sizeof(int)))
 			{
 			/* make sure *pbrun is between fc's and crun */
-			Assert ((crun + 1) * sizeof(long) <= brun
+			Assert ((crun + 1) * cbFcFkp <= brun
 					&& brun < cbSector-1);
 			/* first bytes of runs */
 			rggrpf[brun] |= bitByteRunFirst;
@@ -973,7 +975,11 @@ int fScratch;
 				rggrpf[++brun] |= bitByteRunPad;
 			}
 		}
-	*((long *)&(rggrpf[sizeof(FC) * irun])) |= lfcFlags;
+		{
+		int ibFc;
+		for (ibFc = 0; ibFc < cbFcFkp; ibFc++)
+			rggrpf[cbFcFkp * irun + ibFc] |= bitFcByte;
+		}
 	crunUnused = 0;
 	for (brun = 0; brun < cbSector; brun++)
 		{
@@ -990,7 +996,7 @@ int fScratch;
 				);
 		}
 	/* Assert(crunUnused <= 1); */
-	return (pfkp->rgfc[irun]);
+	return (FcFkp(pfkp, irun));
 #undef bitCrunByte
 #undef bitFcByte
 #undef lfcFlags

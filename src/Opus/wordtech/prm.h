@@ -395,8 +395,9 @@ struct SEBL  /* Sprm Edit Block */
 								derivation and proof of adequate size bz */
 
 /* cbMaxGrpprlPapx is the size of the largest grpprl which can fit within
-	an FKP that contains PAPXs */
-#define cbMaxGrpprlPapx cbSector - 2*sizeof(char) - 2*sizeof(FC) - 7
+	an FKP that contains PAPXs.  The two FCs at the front of a page are
+	cbFcFkp bytes each (fkp.h), not sizeof(FC). */
+#define cbMaxGrpprlPapx (cbSector - 2*sizeof(char) - 2*4 - 7)
 
 /* T A P   O N   D I S K  --  the sprmTDefTable record */
 

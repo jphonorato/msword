@@ -1,19 +1,43 @@
 /* formatting bin */
-#define cbFkp   (512/*cbSector*/ - sizeof(FC) - 1)
+
+/* F K P   O N   D I S K */
+
+/* An FKP is one 512-byte sector.  The rgfc array at the front used to be
+	native FC values, so on this LP64 build each entry was 8 bytes, the
+	page held fewer runs, and a .doc was not byte compatible with the
+	MSVC x64 build (where long is 4).  On file every rgfc entry is now
+	cbFcFkp = 4 bytes little endian, the same width as a packed FIB/PLC
+	fc.  The cache page *is* the on-file image, so the struct overlay
+	must not use native FC: FcFkp/PutFcFkp (filewin.c) are the only
+	routines that know the packed layout.  cbFkp and ifcFkpNil follow
+	the packed stride, never sizeof(FC). */
+#define cbFcFkp     4
+#define cbFkp       (512/*cbSector*/ - cbFcFkp - 1)
 struct FKP
 	{
-	FC      rgfc[1]; /* crun + 1 entries from fcFirst to fcLim */
+	char    rgfc[cbFcFkp]; /* first packed FC; crun+1 entries of cbFcFkp */
 	/*char  rgb[1];   crun entries based on FKP, points to chpx or papx*/
 	char    rgb[cbFkp];
 	char    crun;   /* number of runs */
 	};
+/* the overlay is the sector: no padding, last byte is crun */
+typedef char cbFkpPageIsSector[(sizeof(struct FKP) == 512) ? 1 : -1];
+typedef char cbFcFkpIsFour[(cbFcFkp == 4) ? 1 : -1];
+
 #ifdef MAC
 #define ifcFkpNil (-1)	/* native code depends on this */
 #else
-#define ifcFkpNil (512 /*cbSector*/ / sizeof(FC))
+#define ifcFkpNil (512 /*cbSector*/ / cbFcFkp)
 #endif
 
-#define cbFkpPre35   (128/*cbSector*/ - sizeof(FC) - 1)
+/* byte just past rgfc[crun], where the crun one-byte property offsets start */
+#define HpchAfterRgfcFkp(hpfkp, crun) \
+		(((char HUGE *)(hpfkp)) + ((int)(crun) + 1) * cbFcFkp)
+
+FC      FcFkp();
+void    PutFcFkp();
+
+#define cbFkpPre35   (128/*cbSector*/ - cbFcFkp - 1)
 struct FKPO
 	{
 	FC      rgfc[1]; /* crun + 1 entries from fcFirst to fcLim */
