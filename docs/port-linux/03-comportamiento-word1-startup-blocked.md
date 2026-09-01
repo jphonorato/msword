@@ -2266,6 +2266,23 @@ arnés, sino que WORD1 entra en bucle ocupado con el dropdown del
 combo abierto bajo Wine/Xvfb; hacer que el click acierte más
 confiablemente sólo hace el bucle más frecuente.
 
+### Reverificación en `DISPLAY=:91` (mismo día)
+
+Repetida la corrida sobre el Xvfb `:91` (el que lleva activo desde el
+2026-08-26), con `pkill -9 WORD1.exe` previo:
+
+- `ctest` completo: 14/20, con los mismos 6 fallos (14, 16, 17, 18,
+  19, 20) -- otra vez 5 de ellos por cascada.
+- Matando el `WORD1` residuo y relanzando 17-20:
+  `about` 2.22 s, `save_as` 2.66 s, `roundtrip` 4.78 s,
+  `formatting` 6.42 s, **4/4 en verde**.
+- `ctest -E 'font_typing|interaction'`: **18/18 en verde**, gating
+  9/9 incluido, `roundtrip` 6.98 s.
+
+Es decir: el comportamiento es idéntico en `:91` y en servidores
+Xvfb recién arrancados. El único fallo propio es `--font-typing`;
+`--interaction` sigue siendo la limitación de entorno de §12.
+
 ### Qué cambió respecto al 2026-08-26 (10/11)
 
 No se identificó el disparador. `wine` sigue siendo
