@@ -5,7 +5,7 @@
  * 95 caracteres ASCII imprimibles), vía
  * opus_shell_font_metrics_oracle_table.h -- ver el comentario de
  * cabecera de esa tabla para cómo y cuándo se capturó, y
- * docs/port-qt/01-frontera-nucleo-shell.md §B2.3 para la estrategia que
+ * docs/port-qt/01-core-shell-boundary.md §B2.3 para la estrategia que
  * valida.
  *
  * No re-mide contra Wine en cada corrida (eso exigiría wineg++ y

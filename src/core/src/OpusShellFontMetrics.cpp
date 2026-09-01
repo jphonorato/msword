@@ -1,7 +1,7 @@
 /*
  * Implementación del contrato de medición de texto
  * (src/core/include/OpusShellFontMetrics.h, docs/port-qt/
- * 01-frontera-nucleo-shell.md §B2). Estrategia validada empíricamente en
+ * 01-core-shell-boundary.md §B2). Estrategia validada empíricamente en
  * §B2.3: ppem entero + QFont::PreferFullHinting sobre QRawFont construido
  * directamente contra el archivo físico -- no QFontMetricsF, no QFont
  * (ver §B2.4 para por qué esas dos quedan descartadas). Reproduce, no
@@ -18,7 +18,7 @@
  *    esos 4 `ftc` y es la misma que ya cubre OpusShellFontSubstitution.
  *    Para fuentes en tiempo de ejecución fuera de esas 4 (ftc >= 4), el
  *    llamador pasa el nombre real en `szFace` -- un `ftc` fuera de [0,3]
- *    sin `szFace` sigue fallando controlado. Ver 01-frontera-nucleo-shell.md,
+ *    sin `szFace` sigue fallando controlado. Ver 01-core-shell-boundary.md,
  *    pregunta abierta #3, último párrafo, para la decisión pendiente
  *    sobre dónde debe vivir esta tabla a largo plazo.
  * 2. **`catr` (negrita/cursiva) no soportado -- falla controlado, no se

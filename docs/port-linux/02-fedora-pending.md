@@ -11,7 +11,7 @@ Fedora en sí sigue sin probarse — el documento no queda invalidado, solo
 deja de ser la única vía. El resto de los ítems (3-7) sigue abierto tal
 cual, independiente de en qué entorno se ejecuten.
 
-Checklist de continuación de `01-diagnostico-heap-corruption-arranque.md`.
+Checklist de continuación de `01-heap-corruption-startup-diagnosis.md`.
 Todo lo que sigue quedó bloqueado, sin cerrar, o sin poder generalizarse
 desde el sandbox usado en las sesiones más recientes (Debian 13 "trixie",
 GCC 14.2.0, wine-10.0 Debian repack, `gdb` 16.3) — que **no reproduce el
@@ -32,7 +32,7 @@ puede afirmar ahora (hp-15): **no hace falta Fedora específicamente**,
 GCC ≥15 alcanza.
 
 Referencias entre paréntesis (`§N`) son secciones de
-`01-diagnostico-heap-corruption-arranque.md`.
+`01-heap-corruption-startup-diagnosis.md`.
 
 ---
 

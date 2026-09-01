@@ -16,7 +16,7 @@
    glibc's wcscasecmp is compiled against its own native 4-byte wchar_t and
    silently misreads real WCHAR buffers regardless of the caller's local
    type width -- confirmed empirically 2026-08-14 (see
-   docs/port-linux/01-diagnostico-heap-corruption-arranque.md §23) via the
+   docs/port-linux/01-heap-corruption-startup-diagnosis.md §23) via the
    sibling bug in this same file's argument parsing. lstrcmpiW is the
    Win32-native, width-correct equivalent. */
 #define _wcsicmp lstrcmpiW
@@ -54,7 +54,7 @@ struct WindowSearch {
 // string returned 6, consistent with reading 4 bytes at a time past a
 // 24-byte buffer). Everything comparing genuine Win32 wide-char data in
 // this file must go through lstrcmpW/lstrcmpiW or a manual loop like this
-// one instead. See docs/port-linux/01-diagnostico-heap-corruption-arranque.md
+// one instead. See docs/port-linux/01-heap-corruption-startup-diagnosis.md
 // §23.
 bool wide_contains(const wchar_t* haystack, const wchar_t* needle) {
     if (haystack == nullptr || needle == nullptr || *needle == L'\0') {
@@ -112,7 +112,7 @@ BOOL CALLBACK find_window_callback(const HWND window, const LPARAM value) {
     // which this build's wine (10.0~repack-6, vanilla) returns zeroed for
     // WORD1.exe.so specifically -- confirmed with a standalone repro
     // outside this project entirely (docs/port-linux/
-    // 01-diagnostico-heap-corruption-arranque.md §25); real PID/handles
+    // 01-heap-corruption-startup-diagnosis.md §25); real PID/handles
     // come back fine for Wine's own builtin executables, so this looks
     // like a Wine limitation for externally-built winelib targets, not a
     // bug here. When it's 0 there's nothing valid to filter on, so fall
@@ -928,7 +928,7 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
     // TU's real 2-byte Win32 WCHAR data) -- confirmed empirically 2026-08-14
     // (std::wstring(arguments[1]).size() came back 22 against a real
     // lstrlenW() of 32). lstrlenW/lstrcpyW/lstrcatW are Win32-native and
-    // width-correct. See docs/port-linux/01-diagnostico-heap-corruption-arranque.md
+    // width-correct. See docs/port-linux/01-heap-corruption-startup-diagnosis.md
     // §23-24.
     const int application_name_length = lstrlenW(arguments[1]);
     if (application_name_length >= MAX_PATH) {
@@ -1094,7 +1094,7 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
         // Step 4: File > Save As, driving the real #32770 common dialog --
         // the decoy OpusSdmDialog forwarding hook from Task 5 exists for
         // its own OK/Cancel buttons, not as a substitute for this window
-        // (docs/port-linux/03-comportamiento-word1-startup-blocked.md §7).
+        // (docs/port-linux/03-word1-startup-blocked-behavior.md §7).
         if (!PostMessageW(main_window, kWmCommand, kFileSaveAs, 0)) {
             return fail(process, 84,
                         "could not send File Save As for roundtrip");
@@ -2631,10 +2631,10 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
            two lines and shows the large line's own content beginning at
            client y=230, matching its layout y=90 + this same 140px
            offset. Both sweeps are recorded verbatim in
-           docs/port-linux/03-comportamiento-word1-startup-blocked.md §8.
+           docs/port-linux/03-word1-startup-blocked-behavior.md §8.
 
            That sweep predates kCcpEop=2 (see docs/port-linux/CLAUDE.md
-           status and 01-diagnostico-heap-corruption-arranque.md §30): it
+           status and 01-heap-corruption-startup-diagnosis.md §30): it
            was taken while opus_asm_resn_core.cpp's CpMacDoc/CpMacDocEdit
            still used the wrong kCcpEop=1, under which paragraph 1 (the
            "fonttest"+" secondfont" mixed-font run) wrapped into 2 display
@@ -3297,7 +3297,7 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
                own builtin notepad.exe under this same Xvfb+openbox
                setup (standalone winegcc repro, no project code). Same
                class of finding as the CreateProcessW zero-PID case
-               (docs/port-linux/01-diagnostico-heap-corruption-arranque.md
+               (docs/port-linux/01-heap-corruption-startup-diagnosis.md
                §25). Ruled out first: no window manager (retested under
                real openbox, same result) and a single SetCursorPos
                teleport instead of incremental movement (also same
@@ -3604,7 +3604,7 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
         // operator+=, and std::to_wstring all go through the same glibc
         // char_traits<wchar_t>/wide-conversion machinery already found
         // broken for this TU's real 2-byte Win32 WCHAR (see the argv-parsing
-        // fix above and docs/port-linux/01-diagnostico-heap-corruption-arranque.md
+        // fix above and docs/port-linux/01-heap-corruption-startup-diagnosis.md
         // §23-24, §27) -- forty rounds of growing a std::wstring by repeated
         // += was the actual crash site (malloc(): invalid size + stack
         // overflow, confirmed 2026-08-14). wsprintfW/lstrlenW are

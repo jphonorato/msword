@@ -4,7 +4,7 @@
 # CMakeLists.txt (OPUS_WINELIB_BUILD branch). Compiles four generators with
 # the native gcc/g++ instead of winegcc/wineg++: they are pure build-machine
 # tools with no Win32 or engine-ABI dependency (see
-# docs/port-linux/00-reconocimiento.md), so building them with winegcc
+# docs/port-linux/00-reconnaissance.md), so building them with winegcc
 # gained nothing and exposed them to the Winelib layer's failure modes.
 #
 # opus_cabi_tool is intentionally NOT here: it measures the engine's own

@@ -10,7 +10,7 @@ cmake_minimum_required(VERSION 3.25)
 # RCX, not RDI. Binding to those from System V code makes setjmp write its
 # 256-byte _JUMP_BUFFER over whatever stale pointer RCX holds -- the bug that
 # smashed *vhpllbs during layout and cost three debugging rounds (see
-# docs/port-linux/03-comportamiento-word1-startup-blocked.md, "Fix round 3").
+# docs/port-linux/03-word1-startup-blocked-behavior.md, "Fix round 3").
 #
 # port/original/opus_x64_setjmp.cpp pins both halves by defining them in
 # System V ABI, which stops winebuild from generating the import thunks. This

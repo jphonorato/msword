@@ -1,6 +1,6 @@
 /*
  * Prueba propia de la implementación de OpusShellConfig.h
- * (docs/port-qt/01-frontera-nucleo-shell.md §B5, Qt-2 paso 1).
+ * (docs/port-qt/01-core-shell-boundary.md §B5, Qt-2 paso 1).
  *
  * El árbol de pruebas existente (src/port/original/opus_*_test.c*) no
  * ejercita GetProfileString/GetProfileInt/WriteProfileString hoy -- se

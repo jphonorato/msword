@@ -449,7 +449,7 @@ describe en §1.6. Noventa de esos 202 provienen de una única cabecera (`Opus/k
 
 Nota: la sección 6 principal corresponde a Fedora 44 / GCC 16.1.1 (la máquina
 donde se desarrolló el grueso del trabajo). El VPS Debian / GCC 14.2.0 está
-documentado en `docs/port-qt/01-frontera-nucleo-shell.md` (sección «Bloqueador
+documentado en `docs/port-qt/01-core-shell-boundary.md` (sección «Bloqueador
 de build: disp.h:248 en GCC 14»). Este subapartado añade el tercer entorno.
 
 | Herramienta | Versión / ruta |
@@ -1230,7 +1230,7 @@ fuera del motor. Conoce el layout en disco por transcripción de
 `Opus/filewin.c`, `Opus/wordtech/file.h`, `fkp.h` y `create.c` -- no
 incluye ninguno de ellos, que es lo que la mantiene fuera de
 `winegcc`. La consume `opus_doc_inspector_test`; ver §17 de
-`03-comportamiento-word1-startup-blocked.md`.
+`03-word1-startup-blocked-behavior.md`.
 
 ### `opus_cabi_tool` no se mueve
 

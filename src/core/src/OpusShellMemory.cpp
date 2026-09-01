@@ -1,6 +1,6 @@
 /*
  * Implementación del contrato de memoria Win16
- * (src/core/include/OpusShellMemory.h, docs/port-qt/01-frontera-nucleo-shell.md
+ * (src/core/include/OpusShellMemory.h, docs/port-qt/01-core-shell-boundary.md
  * §B3).
  *
  * Heap nativo (malloc/realloc/free) detrás de un handle opaco con contador

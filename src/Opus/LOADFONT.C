@@ -15,7 +15,7 @@ DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
 
 #if defined(__GNUC__) && !defined(_MSC_VER)
 /* Contrato de medicion de texto del nucleo Qt (src/core/include/
-   OpusShellFontMetrics.h, docs/port-qt/01-frontera-nucleo-shell.md
+   OpusShellFontMetrics.h, docs/port-qt/01-core-shell-boundary.md
    SB2). Reemplaza GetCharWidth/OurGetCharWidth para el camino de
    pantalla, paso variable, de C_LoadFcid -- ver el uso en
    LNewMetrics abajo. Solo en el camino Winelib; MSVC sigue con GDI. */
@@ -469,7 +469,7 @@ LNewMetrics:
 			   omision, no solo szFace. */
 			memset(&shellKey, 0, sizeof shellKey);
 			/* Camino de pantalla, paso variable: contrato Qt del shell
-			   (docs/port-qt/01-frontera-nucleo-shell.md SB2) en vez de
+			   (docs/port-qt/01-core-shell-boundary.md SB2) en vez de
 			   GetCharWidth/OurGetCharWidth. ibstFont ya es el indice de
 			   vhsttbFont que el nucleo llama "ftc" (verificado contra
 			   Opus/initwin.c:1541-1583: Tms Rmn/Symbol/Helv/Courier se
@@ -490,7 +490,7 @@ LNewMetrics:
 			   fallback GDI (OpusPortGdiCharWidths) mida cualquier fuente
 			   de tiempo de ejecucion (ftc >= 4) en vez de fallar siempre
 			   por no estar en la tabla fija de 4 nombres de epoca (Bug 4,
-			   docs/port-linux/03-comportamiento-word1-startup-blocked.md
+			   docs/port-linux/03-word1-startup-blocked-behavior.md
 			   Task 6 Septima actualizacion). szFfn es un string C con NUL
 			   pese al comentario "FFN is a funny st" de fontwin.h -- no
 			   es un Pascal st, no hace falta CchSz/CbSzOfPffn aqui. El
@@ -1053,7 +1053,7 @@ int fPrinterFont;
 	   happens to survive it -- copy only the real length and zero the
 	   rest of the destination instead. (Investigated as a candidate
 	   root cause for the CreateFontIndirect NULL-return bug in
-	   docs/port-linux/03-comportamiento-word1-startup-blocked.md Task 6
+	   docs/port-linux/03-word1-startup-blocked-behavior.md Task 6
 	   Bug 4 -- ruled out as the cause there: the NUL still lands
 	   correctly within the over-read for every font tried, so GDI never
 	   actually sees the garbage. Fixed here anyway as a real,

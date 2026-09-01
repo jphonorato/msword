@@ -6,7 +6,7 @@ ownership y ciclo de vida a través de winegcc/wineg++. No forma parte del
 build.
 
 Ver "Verificación B3: round-trip de handle real" en
-`docs/port-qt/01-frontera-nucleo-shell.md` para el detalle completo.
+`docs/port-qt/01-core-shell-boundary.md` para el detalle completo.
 
 | Archivo | Qué hace |
 |---|---|

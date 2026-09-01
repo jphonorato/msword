@@ -2,7 +2,7 @@
 
 /*
  * Contrato de persistencia de configuración entre el núcleo Qt y el shell.
- * Diseño: docs/port-qt/01-frontera-nucleo-shell.md, §B5.
+ * Diseño: docs/port-qt/01-core-shell-boundary.md, §B5.
  *
  * Reemplaza GetProfileString/GetProfileInt/WriteProfileString (43 sitios,
  * 12 TUs). La semántica de WIN.INI -- sección, clave, valor por omisión --

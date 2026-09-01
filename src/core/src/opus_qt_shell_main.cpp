@@ -1,6 +1,6 @@
 /*
  * Primer binario Qt real de la rama Qt-2 -- ver docs/port-qt/
- * 01-frontera-nucleo-shell.md, "Secuencia recomendada para Qt-2".
+ * 01-core-shell-boundary.md, "Secuencia recomendada para Qt-2".
  *
  * Este NO es Word bajo Qt. No hay motor de documento, no hay wordtech/
  * conectado. Es el andamiaje que demuestra que un ejecutable Qt6 real --

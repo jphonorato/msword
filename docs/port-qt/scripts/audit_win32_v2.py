@@ -29,7 +29,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 SRC = Path(__file__).resolve().parents[3] / "src"
-OUT = Path(__file__).resolve().parents[1] / "00-inventario-win32.md"
+OUT = Path(__file__).resolve().parents[1] / "00-win32-inventory.md"
 
 # Headers que SON la superficie de API, no consumidores de ella.
 API_SURFACE = {"Opus/lib/qwindows.h", "Opus/debugwin.h"}

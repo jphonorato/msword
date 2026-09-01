@@ -1,6 +1,6 @@
 #!/bin/sh
 # Reproduce la verificación de enlace cross-toolchain documentada en
-# docs/port-qt/01-frontera-nucleo-shell.md ("Verificación de la frontera
+# docs/port-qt/01-core-shell-boundary.md ("Verificación de la frontera
 # física"). Requiere opus_core_build ya compilado
 # (cmake --build build/linux-winelib-debug --target opus_core_build).
 set -e

@@ -4,7 +4,7 @@ project(opus_core CXX)
 # Núcleo Qt (rama Qt-2), no el motor Winelib: siempre se construye con el
 # compilador nativo, aunque el proyecto principal esté bajo el toolchain
 # winegcc/wineg++. No depende de windows.h ni de la capa de compatibilidad
-# de port/ -- ver docs/port-qt/01-frontera-nucleo-shell.md.
+# de port/ -- ver docs/port-qt/01-core-shell-boundary.md.
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
@@ -32,7 +32,7 @@ install(TARGETS opus_shell_config ARCHIVE DESTINATION lib)
 
 # Contrato de sustitución de fuentes de época (§B2.6). Tabla de datos
 # estática, medida contra el oráculo Winelib -- ver
-# docs/port-qt/01-frontera-nucleo-shell.md §B2.6. No depende de Qt.
+# docs/port-qt/01-core-shell-boundary.md §B2.6. No depende de Qt.
 add_library(opus_shell_font_substitution STATIC
     src/OpusShellFontSubstitution.cpp
 )
@@ -124,7 +124,7 @@ endif()
 
 # Contrato de memoria Win16 (B3). No depende de Qt: es malloc/realloc/free
 # nativo detrás de un handle opaco con contador de fijación -- ver
-# docs/port-qt/01-frontera-nucleo-shell.md §B3 y el comentario de cabecera
+# docs/port-qt/01-core-shell-boundary.md §B3 y el comentario de cabecera
 # de OpusShellMemory.h.
 add_library(opus_shell_memory STATIC
     src/OpusShellMemory.cpp
@@ -154,7 +154,7 @@ install(TARGETS opus_shell_memory ARCHIVE DESTINATION lib)
 
 # Primer binario Qt real de la rama Qt-2 -- QApplication/QMainWindow, no
 # QCoreApplication como los tests de arriba. Andamiaje deliberadamente
-# vacío de motor de documento (docs/port-qt/01-frontera-nucleo-shell.md,
+# vacío de motor de documento (docs/port-qt/01-core-shell-boundary.md,
 # "Secuencia recomendada para Qt-2", paso 7 sigue siendo el último);
 # existe para probar que el grafo de enlace con Widgets de por medio
 # funciona antes de colgarle encima medición de texto (B2). Se construye

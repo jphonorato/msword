@@ -230,7 +230,7 @@ constexpr Word kDlmSetDialogFocus = 0x000d;
 constexpr Word kDlmKillDialogFocus = 0x000e;
 constexpr Word kDlmDialogClick = 0x0012;
 constexpr UINT kWmCommitRibbonSelection = WM_APP + 0x352;
-/* Task 6 Bug 3 (docs/port-linux/03-comportamiento-word1-startup-blocked.md
+/* Task 6 Bug 3 (docs/port-linux/03-word1-startup-blocked-behavior.md
    §8): commit_ribbon_list_selection's own kDlmDialogClick call already puts
    real Win32 focus on the document pane -- confirmed by tracing GetFocus()
    synchronously right after that call returns. It doesn't hold: Wine's

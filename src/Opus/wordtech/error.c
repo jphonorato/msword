@@ -7,7 +7,7 @@ DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
 
 #if defined(__GNUC__) && !defined(_MSC_VER)
 /* Contrato de espina de mensajes del nucleo Qt (src/core/include/
-   OpusShellSpine.h, docs/port-qt/01-frontera-nucleo-shell.md SB4.3).
+   OpusShellSpine.h, docs/port-qt/01-core-shell-boundary.md SB4.3).
    Reemplaza el MessageBox real de ErrorEidStartup, mas abajo -- solo
    en el camino Winelib; MSVC sigue con MessageBox real. */
 #include "OpusShellSpine.h"

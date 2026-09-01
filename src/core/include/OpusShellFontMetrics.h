@@ -2,13 +2,13 @@
 
 /*
  * Contrato de medición de texto entre el núcleo Qt y el shell.
- * Diseño: docs/port-qt/01-frontera-nucleo-shell.md, §B2.
+ * Diseño: docs/port-qt/01-core-shell-boundary.md, §B2.
  *
  * El núcleo nunca adquiere un HDC ni selecciona fuentes: pide la tabla de
  * avances una vez por fuente y hace su propia aritmética entera sobre
  * struct FTI/FCE (Opus/fontwin.h:96-152; el sitio real de relleno es
  * Opus/LOADFONT.C:187 C_LoadFcid -- format.h/FONTREC es código #ifdef MAC
- * muerto en este build, ver 01-frontera-nucleo-shell.md pregunta abierta
+ * muerto en este build, ver 01-core-shell-boundary.md pregunta abierta
  * #3), exactamente como hoy. El shell es responsable de reproducir el
  * redondeo entero de GDI bajo el oráculo Winelib -- estrategia validada
  * empíricamente en §B2.3: ppem entero más QFont::PreferFullHinting sobre

@@ -1,7 +1,7 @@
 /*
  * Implementación del contrato de espina de mensajes/ventanas -- solo los
  * dos fragmentos con firma concreta (src/core/include/OpusShellSpine.h,
- * docs/port-qt/01-frontera-nucleo-shell.md §B4.3). La inversión de
+ * docs/port-qt/01-core-shell-boundary.md §B4.3). La inversión de
  * control completa (paso 7 de la secuencia Qt-2) sigue sin tocar aquí --
  * ver el comentario de cabecera del header.
  */
