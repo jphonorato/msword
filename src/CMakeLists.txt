@@ -179,6 +179,15 @@ if(OPUS_WINELIB_BUILD)
             IMPORTED_LOCATION "${OPUS_HOST_TOOLS_PREFIX}/bin/${host_tool}")
         add_dependencies(${host_tool} opus_host_tools_build)
     endforeach()
+
+    # doc_inspector is in the same sub-build but is not a code generator, so
+    # nothing DEPENDS on it and it needs no OPUS_*_TOOL_DEP.  It is declared
+    # here only so "$<TARGET_FILE:opus_doc_inspector_tool>" resolves; the
+    # installed binary keeps the plain CLI name the tool is invoked by.
+    add_executable(opus_doc_inspector_tool IMPORTED GLOBAL)
+    set_target_properties(opus_doc_inspector_tool PROPERTIES
+        IMPORTED_LOCATION "${OPUS_HOST_TOOLS_PREFIX}/bin/doc_inspector")
+    add_dependencies(opus_doc_inspector_tool opus_host_tools_build)
     # Custom commands depend on the sub-build target, not on the IMPORTED
     # target: ninja cannot resolve a DEPENDS on an IMPORTED target's location.
     set(OPUS_MKCMD_TOOL_DEP opus_host_tools_build)
@@ -557,6 +566,36 @@ set_target_properties(opus_dibapp_tool PROPERTIES
 foreach(config Debug Release RelWithDebInfo MinSizeRel)
     string(TOUPPER "${config}" config_upper)
     set_target_properties(opus_dibapp_tool PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY_${config_upper} "${MSWORD_BUILD_ROOT}/tools/${config}"
+    )
+endforeach()
+endif()
+
+# doc_inspector: a standalone reader for a saved Word 1.x .doc that checks the
+# FIB, the CHPX/PAPX FKPs and the PLC tables against the layout the engine
+# writes (Opus/filewin.c, Opus/wordtech/file.h, fkp.h, create.c). No Win32 and
+# no engine ABI, so under the Winelib toolchain it is built by the native
+# sub-project in port/tools/host/ with the rest of the host tools; this branch
+# is the MSVC/native-only build of the same source. Like the generators above
+# it is EXCLUDE_FROM_ALL -- nothing in the build consumes it, it is run by hand
+# on a document.
+if(NOT OPUS_WINELIB_BUILD)
+add_executable(opus_doc_inspector_tool EXCLUDE_FROM_ALL
+    port/tools/doc_inspector/doc_inspector.cpp
+)
+target_compile_features(opus_doc_inspector_tool PRIVATE cxx_std_20)
+if(MSVC)
+    target_compile_options(opus_doc_inspector_tool PRIVATE /W4 /permissive-)
+endif()
+set_target_properties(opus_doc_inspector_tool PROPERTIES
+    OUTPUT_NAME doc_inspector
+    FOLDER "Original Opus x64/build tools"
+    RUNTIME_OUTPUT_DIRECTORY "${MSWORD_BUILD_ROOT}/tools"
+    VS_GLOBAL_VcpkgApplocalDeps "false"
+)
+foreach(config Debug Release RelWithDebInfo MinSizeRel)
+    string(TOUPPER "${config}" config_upper)
+    set_target_properties(opus_doc_inspector_tool PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY_${config_upper} "${MSWORD_BUILD_ROOT}/tools/${config}"
     )
 endforeach()

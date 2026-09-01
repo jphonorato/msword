@@ -55,10 +55,23 @@ add_executable(opus_dibapp_tool
 )
 target_compile_features(opus_dibapp_tool PRIVATE cxx_std_20)
 
+# doc_inspector reads a saved Word 1.x .doc and reports whether its FIB, FKPs
+# and PLC tables line up.  It belongs here for the same reason as the four
+# generators above: it is plain C++ with no Win32 or engine-ABI dependency, so
+# it builds and runs without a Wine prefix.  It knows the on-disk layout by
+# transcription from Opus/filewin.c, Opus/wordtech/file.h, fkp.h and create.c
+# -- it does not include any of them, which is what keeps it out of winegcc.
+add_executable(opus_doc_inspector_tool
+    "${OPUS_HOST_TOOLS_SRC_ROOT}/port/tools/doc_inspector/doc_inspector.cpp"
+)
+target_compile_features(opus_doc_inspector_tool PRIVATE cxx_std_20)
+set_target_properties(opus_doc_inspector_tool PROPERTIES OUTPUT_NAME doc_inspector)
+
 install(TARGETS
     opus_mkcmd_tool
     opus_mkdlg_tool
     opus_bitapp_tool
     opus_dibapp_tool
+    opus_doc_inspector_tool
     RUNTIME DESTINATION bin
 )
