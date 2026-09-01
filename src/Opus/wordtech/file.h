@@ -967,14 +967,17 @@ quicksave.c code should be changed also. */
 	of the FIB.  Code that computes an on file byte count for a PLC must use
 	cbCpDisk, never sizeof(CP).
 
-	This covers the cp array only.  A plc's *foo records* -- struct SED with
-	its FC fcSepx, struct PCD with its FC fc -- are still written and read at
-	native width, sized by cbSED/cbPCD at both ends.  So are the FKPs, whose
-	rgfc array and cbFkp both come from sizeof(FC) (fkp.h) and which are
-	read straight off a cache page.  All of that is self consistent, so
-	nothing is broken by it, but it does mean a .doc written by this build
-	is not byte compatible with one written by the MSVC x64 build.  Narrowing
-	those needs fkp.h/inssubs.c/fetch.c as well, or the gap just moves. */
+	This covers the cp array only.  A plc's *foo records* have their own
+	on file sizes.  struct SED, the one that carries an FC (fcSepx), is now
+	packed too: it goes out at cbSEDDisk (doc.h) = two 4 byte words, through
+	PackSed()/UnpackSed() below, so plcfsed no longer changes size with
+	sizeof(FC).  struct PCD's FC fc is still written and read at native
+	width, sized by cbPCD at both ends, and so are the FKPs, whose rgfc
+	array and cbFkp both come from sizeof(FC) (fkp.h) and which are read
+	straight off a cache page.  Those two are self consistent -- the same
+	constant sizes the read and the write -- but they still mean a .doc
+	written by this build is not byte compatible with one written by the
+	MSVC x64 build.  Closing what is left needs fkp.h/inssubs.c/fetch.c. */
 #define cbCpDisk    4
 
 void PackFib();
@@ -982,6 +985,11 @@ void UnpackFib();
 long LFromPackedFib();
 void WriteRgcpToFn();
 void ReadRgcpFromFn();
+
+/* one plcfsed record between its native struct SED and its cbSEDDisk byte
+	on file form; see the block beside cbSEDDisk in doc.h */
+int PackSed();
+int UnpackSed();
 
 
 /* indices into table of associated strings */

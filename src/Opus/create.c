@@ -125,6 +125,7 @@ extern FC               FcAppendRgchToFn();
 struct STTB      **HsttbPropeFromStsh();
 struct DTTM DttmCur();
 struct PLC **HplcReadPlcf();
+struct PLC **HplcReadPlcfDisk();
 
 
 /* D O C  C R E A T E  F N */
@@ -310,8 +311,11 @@ struct SELS *psels;
 		{
 		struct SED sed;
 		int ised;
+		/* plcfsed is the one PLC whose foo has an on file form of its
+			own: cbSEDDisk bytes, not cbSED.  See doc.h. */
 		if (FNoHeap ( dod.hplcsed =
-				HplcReadPlcf(fn, fib.fcPlcfsed, fib.cbPlcfsed, cbSED)))
+				HplcReadPlcfDisk(fn, fib.fcPlcfsed, fib.cbPlcfsed, cbSED,
+						cbSEDDisk, (PFN)UnpackSed)))
 			goto ErrRet1;
 		/* set the fn's in the section table */
 		for ( ised = 0; ised < IMacPlc( dod.hplcsed ); ised++ )
@@ -1641,6 +1645,45 @@ long l;
 }
 
 
+/*  %%Function:HplcReadPlcfDisk %%Owner:port  */
+/* H P L C  R E A D  P L C F  D I S K */
+/* HplcReadPlcf() for a foo type whose on file size cbDisk is not its in core
+	size cb.  pfnUnpack widens one on file record into one native record; it
+	is 0 when the two forms are the same, and then cbDisk must equal cb. */
+struct PLC **HplcReadPlcfDisk(fn, fcFirst, cbTotal, cb, cbDisk, pfnUnpack)
+int     fn;
+FC      fcFirst;
+uns     cbTotal;
+int     cb;
+int     cbDisk;
+PFN     pfnUnpack;
+{
+	int     iMax;
+	struct PLC     **hplc;
+
+	/* cbTotal is an on file byte count, so the cp's in it are cbCpDisk
+		wide, not sizeof(CP) wide, and its foos are cbDisk wide, not cb */
+	if (cbTotal < cbCpDisk)
+		{
+		Assert(fFalse);
+		/* safety, we have files out there with this true! */
+		return hNil;
+		}
+	iMax = (long)((long) cbTotal - cbCpDisk) / (long)(cbDisk + cbCpDisk);
+	if (vmerr.fMemFail || (hplc = HplcInit(cb, iMax, cp0, fTrue /* ext rgFoo */)) == hNil)
+		return(hNil);
+	if ((*hplc)->iMax < iMax)
+		{
+		FreeHplc(hplc);
+		return hNil;
+		}
+	ReadIntoExtPlcDisk(hplc, fn, fcFirst, cbTotal, cbDisk, pfnUnpack);
+	(*hplc)->iMac = iMax;
+	(*hplc)->icpAdjust = iMax+1;
+	return(hplc);
+}
+
+
 /*  %%Function:HplcReadPlcf %%Owner:peterj  */
 /* H P L C  R E A D  P L C F */
 struct PLC **HplcReadPlcf(fn, fcFirst, cbTotal, cb)
@@ -1649,28 +1692,64 @@ FC      fcFirst;
 uns     cbTotal;
 int     cb;
 {
-	int     iMax;
-	struct PLC     **hplc, *pplc;
+	return HplcReadPlcfDisk(fn, fcFirst, cbTotal, cb, cb, (PFN)0);
+}
 
-	/* cbTotal is an on file byte count, so the cp's in it are cbCpDisk
-		wide, not sizeof(CP) wide */
-	if (cbTotal < cbCpDisk)
+
+/*  %%Function:ReadIntoExtPlcDisk %%Owner:port  */
+/* ReadIntoExtPlc() for a foo type whose on file size cbDisk is not the PLC's
+	in core cb.  pfnUnpack widens one record; 0 means the forms are equal. */
+ReadIntoExtPlcDisk(hplc, fn, fcFirst, cbTotal, cbDisk, pfnUnpack)
+struct PLC **hplc;
+int fn;
+FC fcFirst;
+uns cbTotal;
+int cbDisk;
+PFN pfnUnpack;
+{
+	struct PLC *pplc;
+	CP HUGE *hprgcp;
+	CHAR HUGE *hpbFoo;
+	uns ccp;
+	long ifoo;
+	char rgbDisk[cbFooDiskMax];
+
+	if (fcFirst != fcNil)
+		SetFnPos(fn, fcFirst);
+	pplc = *hplc;
+	Assert(pplc->fExternal);
+	hprgcp = (CP HUGE *)HpOfHq(pplc->hqplce);
+	Assert(CbOfHq(pplc->hqplce) >= cbTotal);
+	Win(StartUMeas(umScanFnForBytes));
+	/* On file a plc is ccp cp's of cbCpDisk bytes followed by ccp-1 foos of
+		cbDisk bytes; in memory the cp's are sizeof(CP) wide and the foos,
+		pplc->cb wide, start after them, so the two runs are read
+		separately.  Foo types with no packed form of their own are moved at
+		native width -- pplc->cb sizes them here and in QuicksavePlc alike --
+		which round trips but is not the MSVC x64 layout for the ones holding
+		an FC.  See the scope note beside cbCpDisk in file.h. */
+	ccp = (uns)(((long)cbTotal - cbCpDisk) / (long)(cbDisk + cbCpDisk)) + 1;
+	ReadRgcpFromFn(fn, hprgcp, ccp);
+	if (cbDisk > 0)
 		{
-		Assert(fFalse);
-		/* safety, we have files out there with this true! */
-		return hNil;
+		hpbFoo = (CHAR HUGE *)&hprgcp[ccp];
+		ReadHprgchFromFn(fn, hpbFoo, (uns)(cbDisk * (ccp - 1)));
+		if (pfnUnpack != (PFN)0 && cbDisk <= cbFooDiskMax)
+			{
+			/* Widen in place, last record first.  cbDisk <= pplc->cb (the
+				compile time check beside PackSed in Opus/filewin.c), so
+				record ifoo's native slot starts at or past its packed one;
+				going downwards means every record below is still packed and
+				unread when the one above it is written. */
+			Assert(cbDisk <= pplc->cb);
+			for (ifoo = (long)ccp - 2; ifoo >= 0; ifoo--)
+				{
+				bltbh(hpbFoo + ifoo * cbDisk, rgbDisk, cbDisk);
+				(*pfnUnpack)(hpbFoo + ifoo * pplc->cb, rgbDisk);
+				}
+			}
 		}
-	iMax = (long)((long) cbTotal - cbCpDisk) / (long)(cb + cbCpDisk);
-	if (vmerr.fMemFail || (hplc = HplcInit(cb, iMax, cp0, fTrue /* ext rgFoo */)) == hNil)
-		return(hNil);
-	if ((*hplc)->iMax < iMax)
-		{
-		FreeHplc(hplc);
-		return hNil;
-		}
-	ReadIntoExtPlc(hplc, fn, fcFirst, cbTotal);
-	(*hplc)->iMac = iMax;
-	(*hplc)->icpAdjust = iMax+1;
+	Win(StopUMeas(umScanFnForBytes));
 	return(hplc);
 }
 
@@ -1682,30 +1761,8 @@ int fn;
 FC fcFirst;
 uns cbTotal;
 {
-	struct PLC *pplc;
-	CP HUGE *hprgcp;
-	uns ccp;
-
-	if (fcFirst != fcNil)
-		SetFnPos(fn, fcFirst);
-	pplc = *hplc;
-	Assert(pplc->fExternal);
-	hprgcp = (CP HUGE *)HpOfHq(pplc->hqplce);
-	Assert(CbOfHq(pplc->hqplce) >= cbTotal);
-	Win(StartUMeas(umScanFnForBytes));
-	/* On file a plc is ccp cp's of cbCpDisk bytes followed by ccp-1 foos;
-		in memory the cp's are sizeof(CP) wide and the foos start after
-		them, so the two runs are read separately.  The foo run is moved at
-		native width -- pplc->cb sizes it here and in QuicksavePlc alike --
-		which round trips but is not the MSVC x64 layout for the foo types
-		holding an FC.  See the scope note beside cbCpDisk in file.h. */
-	ccp = (uns)(((long)cbTotal - cbCpDisk) / (long)(pplc->cb + cbCpDisk)) + 1;
-	ReadRgcpFromFn(fn, hprgcp, ccp);
-	if (pplc->cb > 0)
-		ReadHprgchFromFn(fn, (CHAR HUGE *)&hprgcp[ccp],
-				(uns)(pplc->cb * (ccp - 1)));
-	Win(StopUMeas(umScanFnForBytes));
-	return(hplc);
+	return ReadIntoExtPlcDisk(hplc, fn, fcFirst, cbTotal, (*hplc)->cb,
+			(PFN)0);
 }
 
 

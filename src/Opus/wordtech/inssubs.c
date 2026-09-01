@@ -1418,13 +1418,18 @@ int cbMax;
 			;
 		cbTc = pchTc - pchT + 1;
 /* we will generate sprmTDefTable if there is room to store all of the sprm */
-		if (cbTap + (cbDefTable = 4 + cbDxa + cbTc)
+/* cbDefTable is the whole record -- sprm byte, length field, itcMac,
+	rgdxaCenter, rgtc -- and the room check below depends on it being exact.
+	It was hard coded 4, which is cbTDefTableHdr only where an int is 2
+	bytes; with a 4 byte int it came out 2 short and this test let through a
+	record that then wrote 2 bytes past cbMax.  See prm.h. */
+		if (cbTap + (cbDefTable = cbTDefTableHdr + cbDxa + cbTc)
 				<= cbMax)
 			{
 			*pch++ = sprmTDefTable;
-/* note: this is the only sprm with a two-byte length field. */
-			cbSprm = cbDefTable - sizeof(int);
-			pch = bltbyte(&cbSprm, pch, sizeof(int));
+/* note: this is the only sprm whose length field is wider than a byte. */
+			cbSprm = cbDefTable - 2;
+			pch = bltbyte(&cbSprm, pch, cbTDefTableCb);
 			*pch++ = itcMac;
 			pch = bltbyte(&ptap->rgdxaCenter, pch, cbDxa);
 			if (cbTc > 0)
