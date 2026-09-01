@@ -576,11 +576,13 @@ endif()
 # writes (Opus/filewin.c, Opus/wordtech/file.h, fkp.h, create.c). No Win32 and
 # no engine ABI, so under the Winelib toolchain it is built by the native
 # sub-project in port/tools/host/ with the rest of the host tools; this branch
-# is the MSVC/native-only build of the same source. Like the generators above
-# it is EXCLUDE_FROM_ALL -- nothing in the build consumes it, it is run by hand
-# on a document.
+# is the MSVC/native-only build of the same source. Unlike the generators above
+# it is not EXCLUDE_FROM_ALL: no custom command pulls it in on demand, and
+# opus_doc_inspector_test below needs the binary to exist after a plain build
+# (the Winelib sub-project builds it unconditionally, so this keeps the two
+# branches equivalent).
 if(NOT OPUS_WINELIB_BUILD)
-add_executable(opus_doc_inspector_tool EXCLUDE_FROM_ALL
+add_executable(opus_doc_inspector_tool
     port/tools/doc_inspector/doc_inspector.cpp
 )
 target_compile_features(opus_doc_inspector_tool PRIVATE cxx_std_20)
@@ -1683,3 +1685,45 @@ add_test(NAME opus_word1_formatting_test
     COMMAND $<TARGET_FILE:opus_word1_ui_test> $<TARGET_FILE:WORD1> --rich-format
 )
 set_tests_properties(opus_word1_formatting_test PROPERTIES TIMEOUT 45 LABELS "word1_startup_blocked")
+
+# Binary validation of what the engine actually wrote to disk.
+#
+# opus_word1_roundtrip_test and opus_word1_formatting_test are the two modes
+# that drive the real Save As dialog and produce a .doc. Both delete it on the
+# way out, so opus_word1_ui_test.cpp keeps a copy under
+# OPUS_X64_DOC_ARTIFACT_DIR when that variable is in the environment (see
+# keep_doc_artifact() there). The copy is a side effect: if it fails, the save
+# test still passes or fails on its own terms.
+#
+# The path handed to WORD1 has to be Wine-visible, so under the Winelib
+# toolchain it is the build directory prefixed with "Z:" -- wineboot maps Z: to
+# / in every prefix -- with forward slashes, which Win32 accepts as separators.
+# The MSVC build already has a native path and needs no prefix.
+set(OPUS_DOC_ARTIFACT_DIR "${CMAKE_CURRENT_BINARY_DIR}/doc-artifacts")
+file(MAKE_DIRECTORY "${OPUS_DOC_ARTIFACT_DIR}")
+if(OPUS_WINELIB_BUILD)
+    set(OPUS_DOC_ARTIFACT_DIR_WIN "Z:${OPUS_DOC_ARTIFACT_DIR}")
+else()
+    set(OPUS_DOC_ARTIFACT_DIR_WIN "${OPUS_DOC_ARTIFACT_DIR}")
+endif()
+set_property(TEST opus_word1_roundtrip_test opus_word1_formatting_test
+    APPEND PROPERTY ENVIRONMENT
+    "OPUS_X64_DOC_ARTIFACT_DIR=${OPUS_DOC_ARTIFACT_DIR_WIN}")
+set_property(TEST opus_word1_roundtrip_test opus_word1_formatting_test
+    APPEND PROPERTY FIXTURES_SETUP opus_saved_doc_artifacts)
+
+# doc_inspector itself is native: no Wine, no Win32, no display. Only its input
+# comes from a WORD1 run, which is why this carries "word1_startup_blocked"
+# like its producers -- plus "doc_binary_validation" so it can be selected on
+# its own. The FIXTURES_REQUIRED is what makes "ctest -R opus_doc_inspector"
+# run the two save tests first instead of inspecting a stale artifact.
+add_test(NAME opus_doc_inspector_test
+    COMMAND "${CMAKE_COMMAND}"
+        "-DDOC_INSPECTOR=$<TARGET_FILE:opus_doc_inspector_tool>"
+        "-DARTIFACT_DIR=${OPUS_DOC_ARTIFACT_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunDocInspector.cmake"
+)
+set_tests_properties(opus_doc_inspector_test PROPERTIES
+    TIMEOUT 60
+    FIXTURES_REQUIRED opus_saved_doc_artifacts
+    LABELS "word1_startup_blocked;doc_binary_validation")
