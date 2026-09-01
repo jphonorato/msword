@@ -5,7 +5,7 @@
  *
  * Vive en src/port/tests/, no en src/core/: necesita windows.h real de
  * Wine, y src/core/ no puede depender de eso por construcción (frontera
- * núcleo/shell, docs/port-qt/01-frontera-nucleo-shell.md). Se compila con
+ * núcleo/shell, docs/port-qt/01-core-shell-boundary.md). Se compila con
  * wineg++ (toolchain por omisión del proyecto bajo OPUS_WINELIB_BUILD),
  * no con el g++ nativo del ExternalProject de src/core/.
  *

@@ -12,7 +12,7 @@ fidelidad byte a byte es alcanzable con Qt. No forman parte del build.
 | `qt_hint.cpp` | Qt | El mismo glifo bajo los cuatro modos de hinting, para aislar grid-fitting de aritmética |
 | `qt_full.cpp` | Qt | Estrategia que rige: ppem entero más `QFont::PreferFullHinting` |
 | `compare.sh` | — | Matriz 3 fuentes × N tamaños × 95 caracteres |
-| `capture.py` | — | Regenera `src/core/src/opus_shell_font_metrics_oracle_table.h` (2026-08-11, ver `01-frontera-nucleo-shell.md` paso 5) -- a diferencia de las demás, esta sí alimenta un artefacto del build: la tabla de regresión de `opus_shell_font_metrics_fidelity_test` |
+| `capture.py` | — | Regenera `src/core/src/opus_shell_font_metrics_oracle_table.h` (2026-08-11, ver `01-core-shell-boundary.md` paso 5) -- a diferencia de las demás, esta sí alimenta un artefacto del build: la tabla de regresión de `opus_shell_font_metrics_fidelity_test` |
 
 Construcción:
 

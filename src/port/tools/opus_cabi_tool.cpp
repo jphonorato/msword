@@ -10,7 +10,7 @@
    lives in Fedora's ELF/POSIX libstdc++.so, and the two disagree: operator/,
    .string(), create_directories and directory_iterator were each confirmed to
    corrupt the heap or silently no-op.  Paths are handled here as plain
-   std::string.  See docs/port-linux/00-reconocimiento.md, "Regla de
+   std::string.  See docs/port-linux/00-reconnaissance.md, "Regla de
    plataforma: std::filesystem bajo wineg++". */
 
 #ifndef NEAR

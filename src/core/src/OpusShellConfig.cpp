@@ -1,6 +1,6 @@
 /*
  * Implementación del contrato de persistencia de configuración
- * (src/core/include/OpusShellConfig.h, docs/port-qt/01-frontera-nucleo-shell.md
+ * (src/core/include/OpusShellConfig.h, docs/port-qt/01-core-shell-boundary.md
  * §B5).
  *
  * Reemplaza GetProfileString/GetProfileInt/WriteProfileString con QSettings.

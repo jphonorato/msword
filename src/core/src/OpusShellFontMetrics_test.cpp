@@ -1,6 +1,6 @@
 /*
  * Prueba propia de OpusShellFontMetrics.cpp, contra el punto de dato
- * medido y documentado en docs/port-qt/01-frontera-nucleo-shell.md §B2.3:
+ * medido y documentado en docs/port-qt/01-core-shell-boundary.md §B2.3:
  * Liberation Serif a 14 pt (19 px a 96 ppp), glifo '@', FullHinting ->
  * 18 -- coincide con GDI bajo el oráculo Winelib. No repite la medición
  * contra el oráculo (eso ya está hecho y documentado); verifica que esta
@@ -49,7 +49,7 @@ int main(int argc, char **argv) {
         Check(rc == 0, "OpusShellCharWidths(Tms Rmn, 14pt, '@') fallo");
         Check(w == 18,
               "OpusShellCharWidths(Tms Rmn, 14pt, '@') != 18 (ver "
-              "01-frontera-nucleo-shell.md Sec.B2.3)");
+              "01-core-shell-boundary.md Sec.B2.3)");
     }
 
     /* Metrics agregadas: debe tener éxito y devolver valores no

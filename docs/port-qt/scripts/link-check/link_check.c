@@ -1,6 +1,6 @@
 /*
  * Verificación de enlace cross-toolchain (Qt-2, previo a B3).
- * docs/port-qt/01-frontera-nucleo-shell.md, sección de verificación de
+ * docs/port-qt/01-core-shell-boundary.md, sección de verificación de
  * frontera física.
  *
  * Programa mínimo en C, compilado con el MISMO compilador que usa

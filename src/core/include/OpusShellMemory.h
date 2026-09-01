@@ -2,7 +2,7 @@
 
 /*
  * Contrato de memoria Win16 entre el núcleo Qt y el shell.
- * Diseño: docs/port-qt/01-frontera-nucleo-shell.md, §B3.
+ * Diseño: docs/port-qt/01-core-shell-boundary.md, §B3.
  *
  * Reemplaza GlobalAlloc/GlobalFree/GlobalLock/GlobalUnlock/GlobalReAlloc/
  * GlobalSize/GlobalHandle y sus equivalentes Local* -- bajo este port ambos
@@ -25,7 +25,7 @@
  *
  * Regla que no se relaja: los handles son de tiempo de ejecución y no se
  * serializan nunca. Verificado por inventario, no asumido: Qt-2 Fase 1
- * (docs/port-qt/01-frontera-nucleo-shell.md §B3) recorrió toda estructura
+ * (docs/port-qt/01-core-shell-boundary.md §B3) recorrió toda estructura
  * con campo tipo HANDLE/GLOBALHANDLE/HGLOBAL/LOCALHANDLE en `Opus/` y
  * confirmó que ninguna se escribe a disco -- todas son estado de sesión
  * (DDE, registro de teclas, carga de DLL de conversión, caché de fuente,
@@ -108,7 +108,7 @@ typedef struct OpusHandleImpl *OpusHandle;
    deciden qué tabla lo asigna, ver arriba. Literales en vez de las
    macros GMEM_* del SDK Win16: este header no incluye
    Opus/lib/qwindows.h (lado núcleo, no depende del SDK vendorizado, ver
-   01-frontera-nucleo-shell.md). Valores confirmados en
+   01-core-shell-boundary.md). Valores confirmados en
    Opus/lib/qwindows.h:1736 (GMEM_ZEROINIT), Opus/dde.h:28 (GMEM_DDE
    contiene 0x2000), Opus/dde.h:29 (GMEM_SENDKEYS contiene 0x1000). */
 static inline unsigned OpusMemFlagsFromWin16(unsigned win16Flags)
@@ -125,7 +125,7 @@ static inline unsigned OpusMemFlagsFromWin16(unsigned win16Flags)
 
 /* Tabla de function pointers que el shell (src/port/) instala para
    reenviar handles ajenos a la API Win32 real de Wine. src/core/ no
-   incluye Win32 -- ver docs/port-qt/01-frontera-nucleo-shell.md -- así
+   incluye Win32 -- ver docs/port-qt/01-core-shell-boundary.md -- así
    que esta tabla es el único punto donde el núcleo toca algo que no es
    malloc/realloc/free, y lo hace por indirección, sin linkear contra
    windows.h. win16Flags en Alloc/Realloc son los bits OPUS_MEM_DDESHARE/

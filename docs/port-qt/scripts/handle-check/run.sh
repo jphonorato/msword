@@ -1,6 +1,6 @@
 #!/bin/sh
 # Reproduce la verificación de round-trip de handle documentada en
-# docs/port-qt/01-frontera-nucleo-shell.md ("Verificación B3: round-trip
+# docs/port-qt/01-core-shell-boundary.md ("Verificación B3: round-trip
 # de handle real"). Requiere opus_core_build ya compilado
 # (cmake --build build/linux-winelib-debug --target opus_core_build).
 set -e

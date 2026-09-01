@@ -14,7 +14,7 @@ código de `src/Opus/`, `src/OpusEtAl/` ni `src/port/` en esta tarea.**
 Prerrequisito resuelto antes de empezar: el `HEAD` de esta sesión no
 enlazaba `WORD1.exe.so` (faltaba `opus_shell_spine` en el link de `WORD1`,
 hueco dejado por el commit `ea5f908` — ver
-`01-frontera-nucleo-shell.md`, sección "Verificación cruzada en Fedora 44").
+`01-core-shell-boundary.md`, sección "Verificación cruzada en Fedora 44").
 Se corrigió con una línea en `src/CMakeLists.txt` (agregar
 `target_link_libraries(WORD1 PRIVATE opus_shell_spine)` más el bloque
 `IMPORTED` correspondiente, mismo patrón que las otras 3 libs de núcleo) y
@@ -249,7 +249,7 @@ WORD1+0x1FD57C → N_FormatLineDxa
 
 Es un adaptador nativo de una sola línea que llama directo a
 `C_FormatLineDxa` — el motor real de formateo de línea (paginación, el
-mismo subsistema que documenta B1.3/B2 de `01-frontera-nucleo-shell.md`).
+mismo subsistema que documenta B1.3/B2 de `01-core-shell-boundary.md`).
 
 **Frame #0** (el punto exacto del fallo, `write` a `0x0`) es la dirección
 cruda `0x00006FFFFFC1B75F` — **no cae dentro del rango de `WORD1`** (no
@@ -266,7 +266,7 @@ consistente con (no probado como) una llamada a través de un puntero de
 función dañado, o una escritura a través de un puntero ya liberado/movido
 que apunta a memoria fuera del proceso o a una página no mapeada en `0x0`.
 Encaja con el patrón de la arquitectura documentada en
-`docs/port-linux/00-reconocimiento.md` §1.7: el motor resuelve comandos
+`docs/port-linux/00-reconnaissance.md` §1.7: el motor resuelve comandos
 dinámicamente vía `GetProcAddress` sobre tablas generadas por MKCMD, así
 que un puntero de función corrupto en esa zona (tabla de despacho, no la
 pila) produciría exactamente esta forma de fallo. **Esto es una lectura
@@ -339,13 +339,13 @@ que sí queda establecido con evidencia real:
   `0x00006FFFFFC1B75F` (vía `addr2line`/`nm` contra las `.so` de Wine
   instaladas, ya que `winedbg` no sirve) acotaría si el salto es a
   `user32`/`gdi32`/`ntdll`, lo que ayudaría a decidir si el puntero
-  corrupto es una tabla de comandos (§1.7 de `00-reconocimiento.md`), un
+  corrupto es una tabla de comandos (§1.7 de `00-reconnaissance.md`), un
   callback de ventana, o algo distinto.
 - **Revisar `C_FormatLineDxa` y su vecindario en `Opus/wordtech/`** a mano
   (sin herramientas dinámicas) buscando escrituras con índice/tamaño no
   acotado alrededor de estructuras que dependan de `long`/`DWORD` de 8
   bytes bajo LP64 — el mismo patrón de bug que ya causó daño real y
-  confirmado en BITAPP (`00-reconocimiento.md`, Fase 1, `bitapp.h:29`).
+  confirmado en BITAPP (`00-reconnaissance.md`, Fase 1, `bitapp.h:29`).
   No se hizo en esta tarea por ser ya análisis de causa, no diagnóstico de
   síntoma.
 - **Reportar el assert de `dbghelp.dll` aguas arriba a Wine**, si el
@@ -527,7 +527,7 @@ conectada al contrato Qt, `C_LoadFcid` sigue llamando a GDI real
 (`FSelectFont` + `GetTextMetrics`) sobre `vsci.hdcScratch` para
 `dypAscent`/`dypDescent`/`dxpOverhang` antes de decidir si la tabla de
 anchos viene de GDI o de `OpusShellCharWidths`.** Esto ya estaba anotado
-como pregunta abierta #3 en `docs/port-qt/01-frontera-nucleo-shell.md`
+como pregunta abierta #3 en `docs/port-qt/01-core-shell-boundary.md`
 (referenciada en el prompt de esta tarea); esta sesión no la resuelve,
 solo confirma por lectura directa que el mecanismo es exactamente ese
 (`GetTextMetrics` incondicional en `LNewMetrics`, línea 349) y que no hay
@@ -1094,12 +1094,12 @@ Dos firmas nuevas (`invalid pointer`, `double free or corruption (!prev)`)
 que no aparecían en Fedora ni Debian — refuerza la lectura de §1: es
 corrupción de heap real y timing-dependiente, no un bug determinista de
 lógica. **hp-15 reproduce de forma consistente (4/4)**, a diferencia del VPS
-(Debian/GCC 14.2/wine 10.0, confirmado que no reproduce, `02-pendientes-fedora.md`)
+(Debian/GCC 14.2/wine 10.0, confirmado que no reproduce, `02-fedora-pending.md`)
 — GCC ≥15 parece ser la variable relevante, no la distro.
 
 ### 2. Hito 2 ejecutado por primera vez: `WINEDEBUG=+heap`
 
-Nunca corrido antes en ningún entorno (§2 de `02-pendientes-fedora.md` lo
+Nunca corrido antes en ningún entorno (§2 de `02-fedora-pending.md` lo
 dejaba como recomendación pendiente). Resultado: **888.073 líneas**,
 crash real en la línea 24273 — el resto son hilos que siguieron corriendo
 después del `abort()` de este hilo (no es que el proceso siguiera vivo; es
@@ -1239,7 +1239,7 @@ general.
 4. La técnica de escaneo manual de stack (sin depender de `bt`/unwind roto)
    y la de canario post-buffer (sin depender de ASan/valgrind, ambos ya
    descartados en Fedora por chocar con `wine-preloader`, §7 de
-   `02-pendientes-fedora.md`) quedan como métodos reutilizables para
+   `02-fedora-pending.md`) quedan como métodos reutilizables para
    cualquier crash futuro sin DWARF/CFI confiable en este proyecto — no son
    específicos de este bug.
 
@@ -1361,7 +1361,7 @@ fuente. Quedan dos lecturas posibles, ninguna instrumentada aún:
    (crecimiento/realloc) o en algo fuera de este archivo que corrompe un
    chunk vecino que luego se libera aquí — ninguna de las dos vías tiene
    un método de canario directo aplicable; requeriría una herramienta
-   distinta (el checklist de `02-pendientes-fedora.md` §3, symbolizar
+   distinta (el checklist de `02-fedora-pending.md` §3, symbolizar
    frame #0, sigue siendo la vía más prometedora sin explorar).
 
 **Build restaurado:** `opus_original_engine` y `WORD1` reconstruidos de
@@ -1374,7 +1374,7 @@ resultado), se probó el ángulo complementario: en vez de seguir buscando
 en Arch (donde el crash reproduce), comparar contra el entorno que
 **no** reproduce (Debian 13/GCC 14.2/wine-10.0, el VPS de
 `~/.ssh/config` alias `vps`) para acotar la variable de entorno, tal
-como quedaba pendiente en `02-pendientes-fedora.md` ("No se sabe
+como quedaba pendiente en `02-fedora-pending.md` ("No se sabe
 todavía cuál de estas variables... es la que hace la diferencia").
 
 **Reconstrucción y reconfirmación del baseline.** Repo del VPS ya estaba
@@ -1415,7 +1415,7 @@ secciones instrumentando— se ejecuta completo y sin abortar en este
 entorno.
 
 **Hallazgo colateral: no hay `wine-preloader` en este paquete Debian.**
-`02-pendientes-fedora.md` §7 atribuye el bloqueo de ASan/valgrind
+`02-fedora-pending.md` §7 atribuye el bloqueo de ASan/valgrind
 específicamente a la reserva de espacio de direcciones de
 `wine-preloader` en Fedora. Buscar ese binario en el VPS
 (`/usr/lib/wine/`) no encuentra nada — y tampoco existe en Arch/hp-15
@@ -1459,7 +1459,7 @@ es evidencia de que valgrind no es una herramienta útil para esta
 corrupción específica, en ningún entorno probado hasta ahora, por un
 motivo más amplio que el bloqueo por `wine-preloader` ya documentado
 para Fedora. `valgrind` se re-cierra como vía, con esta razón nueva y
-más general — actualizado en `02-pendientes-fedora.md` §7.
+más general — actualizado en `02-fedora-pending.md` §7.
 
 **Lo único que queda como resultado sólido de esta sección:** la
 reconfirmación independiente de que Debian/GCC 14.2/wine-10.0 no
@@ -1477,10 +1477,10 @@ sesión.
 **Procesos limpiados:** ninguno quedó residual ni en el VPS (`timeout`
 mató todo, verificado con `pgrep`) ni en local (verificado igual).
 
-### 9. Symbolizar frame #0 — hecho, con precisión de línea; refuta la hipótesis "DLL de Wine" de `02-pendientes-fedora.md` §3
+### 9. Symbolizar frame #0 — hecho, con precisión de línea; refuta la hipótesis "DLL de Wine" de `02-fedora-pending.md` §3
 
 Pendiente arrastrado desde Fedora (§5/§7 de este documento, y §3 de
-`02-pendientes-fedora.md`), donde la dirección de frame #0
+`02-fedora-pending.md`), donde la dirección de frame #0
 (`0x00006FFFFFC1B75F`) no caía dentro de `WORD1` y se hipotetizaba sin
 confirmar que fuera `user32`/`gdi32`/`ntdll`. hp-15 §3 ya había acotado
 la región a `libc.so.6` por inspección de `$pc` a ojo; esta sesión lo
@@ -1509,7 +1509,7 @@ consistente con que las cuatro firmas de §1/hp-15-§1 compartan este
 mismo frame #0.
 
 **Conclusión:** frame #0 **no es una DLL de Wine** — la hipótesis de
-`02-pendientes-fedora.md` §3 (basada en una dirección de un build viejo
+`02-fedora-pending.md` §3 (basada en una dirección de un build viejo
 de Fedora que ya no aplica, `WORD1+0x1FD57C`) queda refutada. Es, como
 ya sugería hp-15 §3 de forma más gruesa, código interno de glibc — y al
 ser la maquinaria genérica de entrega de señal, **no aporta información
@@ -1522,7 +1522,7 @@ stack de hp-15 §3 (no un unwind real, pero cruzado con `addr2line` sobre
 `locate_source_combos`, agotada en §4/§6/§7 de este documento sin
 resultado.
 
-**Ítem de `02-pendientes-fedora.md` §3 cerrado** con este resultado —
+**Ítem de `02-fedora-pending.md` §3 cerrado** con este resultado —
 no queda pendiente de reintentar en Fedora, la dirección/símbolo es
 consistente entre entornos (misma clase de dirección genérica de
 glibc), solo cambia numéricamente por ASLR/versión de glibc, no en
@@ -1579,7 +1579,7 @@ primer pase de formateo de línea.
 descarta que sea la causa de *este* crash de arranque específico. Sigue
 siendo candidata legítima para cualquier crash que involucre paginación
 real (con texto tipeado), camino que `opus_word1_ui_test --typing`/
-`--font-typing` (`02-pendientes-fedora.md` §5, nunca ejecutado) sí
+`--font-typing` (`02-fedora-pending.md` §5, nunca ejecutado) sí
 alcanzaría — pero es un bug distinto, con un repro distinto, no el que
 este documento viene rastreando desde §1.
 
@@ -3337,7 +3337,7 @@ arnés para que Tasks 3-10 puedan fiarse de los mensajes de fallo.
 **Investigado a pedido explícito, en exia**, tras haber quedado
 documentado en 9 lugares distintos de este proyecto (§27 más abajo en
 este mismo archivo, y 5 secciones de
-`03-comportamiento-word1-startup-blocked.md`) como "gating, cuelga sin
+`03-word1-startup-blocked-behavior.md`) como "gating, cuelga sin
 imprimir nada, pre-existente, sin relación con nada, sin investigar".
 Cada mención citaba la misma evidencia: `rc=124` bajo `timeout 40`,
 cero salida. Nadie lo había investigado más allá de reconstruir el
@@ -3399,7 +3399,7 @@ no específicamente el diálogo de abrir archivo -- se desvía derecho a
 `GetOpenFileNameA`, el diálogo de archivo **real** de Win32/Wine. Nada
 en este arnés headless mueve ese diálogo (ningún clic en Cancelar, ningún
 Escape) -- se queda esperando input real para siempre. Este caso especial
-(§26 de `03-comportamiento-word1-startup-blocked.md` documenta cuándo se
+(§26 de `03-word1-startup-blocked-behavior.md` documenta cuándo se
 integró `run_word95_common_file_dialog`) es **más nuevo** que este test:
 `hid=3` funcionaba cuando se escribió el test, antes de que
 `kIddOpen`/`kIddSaveAs` tuvieran este atajo -- una regresión real, silenciosa,

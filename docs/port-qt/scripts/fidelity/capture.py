@@ -12,7 +12,7 @@ Uso:
 
 No forma parte del build -- se ejecuta a mano cuando cambia la version de
 Wine/fuentes instaladas y hace falta re-capturar el oraculo (docs/port-qt/
-01-frontera-nucleo-shell.md Sec.B2.3, ultima linea de la seccion).
+01-core-shell-boundary.md Sec.B2.3, ultima linea de la seccion).
 """
 import subprocess, os
 

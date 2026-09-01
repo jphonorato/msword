@@ -6,7 +6,7 @@ puede enlazar contra `opus_shell_config` (gcc/g++ nativo + Qt6) y llamar
 con éxito a una función real ya implementada. No forma parte del build.
 
 Ver "Verificación de la frontera física" en
-`docs/port-qt/01-frontera-nucleo-shell.md` para el veredicto completo y
+`docs/port-qt/01-core-shell-boundary.md` para el veredicto completo y
 los dos ajustes que hicieron falta.
 
 | Archivo | Qué hace |

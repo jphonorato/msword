@@ -2,7 +2,7 @@
  *
  * Implementación del contrato de sustitución de fuentes de época
  * (src/core/include/OpusShellFontSubstitution.h,
- * docs/port-qt/01-frontera-nucleo-shell.md §B2.6).
+ * docs/port-qt/01-core-shell-boundary.md §B2.6).
  *
  * Tabla estática, medida una vez contra el oráculo Winelib -- no vuelve a
  * medir en tiempo de ejecución. Ver §B2.6 para el método de medición

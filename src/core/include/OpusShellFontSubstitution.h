@@ -3,7 +3,7 @@
 /* src/core/include/OpusShellFontSubstitution.h
  *
  * Contrato de sustitución de fuentes de época entre el núcleo Qt y el
- * shell. Diseño: docs/port-qt/01-frontera-nucleo-shell.md, §B2.6.
+ * shell. Diseño: docs/port-qt/01-core-shell-boundary.md, §B2.6.
  *
  * Cubre únicamente los 4 nombres que Opus/initwin.c carga en la tabla
  * maestra de fuentes al arrancar (Tms Rmn, Symbol, Helv, Courier). La ruta

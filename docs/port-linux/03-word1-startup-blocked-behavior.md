@@ -2,7 +2,7 @@
 
 Fecha original: 2026-08-15 · Rama `fix/winelib-startup-blocked`. Esta
 serie parte de la tabla de §26 de
-[`01-diagnostico-heap-corruption-arranque.md`](01-diagnostico-heap-corruption-arranque.md)
+[`01-heap-corruption-startup-diagnosis.md`](01-heap-corruption-startup-diagnosis.md)
 (los 7 fallos de comportamiento real que quedaron cuando el arnés dejó
 de crashear). Cada sección es un ítem de esa lista.
 
@@ -1441,7 +1441,7 @@ Quedan las líneas 455 y 491. La 455 es un fallo de `HqAllocLcb` (asignación de
     if (!pfti->fPrinter && !vfPrvwDisp)
         {
         /* Camino de pantalla, paso variable: contrato Qt del shell
-           (docs/port-qt/01-frontera-nucleo-shell.md SB2) en vez de
+           (docs/port-qt/01-core-shell-boundary.md SB2) en vez de
            GetCharWidth/OurGetCharWidth. ... */
         shellKey.ftc = fcid.ibstFont;
         shellKey.ps = fcid.hps;
@@ -1798,7 +1798,7 @@ comando ni por el diálogo real. Ver "Causa raíz" abajo.
   resultado en las dos (ver "Causa raíz"). Se recupera el PID desde la
   ventana con el mismo workaround que el proceso 1 (PID cero de
   `CreateProcessW` para binarios Winelib externos, documentado en
-  §25 de `01-diagnostico-heap-corruption-arranque.md`).
+  §25 de `01-heap-corruption-startup-diagnosis.md`).
 - **Detección de apertura por línea de comando:** se espera hasta 8 s
   a que la ventana de clase `OpusApp` (no clase `nullptr`: un intento
   fallido deja un `MessageBoxA` -- también clase `#32770`, también con
@@ -2063,7 +2063,7 @@ código de este proyecto: en la plomería propia de Wine/Winelib
 código de salida de `GetExitCodeProcess`/`CreateProcessW` para
 binarios winelib lanzados externamente como proceso hijo) -- ya hay
 precedente documentado de comportamiento no estándar de Wine en este
-punto exacto, ver `01-diagnostico-heap-corruption-arranque.md`
+punto exacto, ver `01-heap-corruption-startup-diagnosis.md`
 §25-26. Investigarlo de aquí en más ya no es depurar código de
 `msword`, es depurar Wine mismo; no se continúa en esta sesión.
 
@@ -2318,7 +2318,7 @@ C++20 puro: sin `windows.h`, sin Wine, sin GUI. Se construye con gcc
 nativo. Bajo el toolchain Winelib entra en el sub-proyecto de
 `src/port/tools/host/` junto a `mkcmd`/`mkdlg`/`bitapp`/`dibapp`, por
 el mismo motivo que ellos y que está razonado en
-`00-reconocimiento.md`: no depende de Win32 ni del ABI del motor, así
+`00-reconnaissance.md`: no depende de Win32 ni del ABI del motor, así
 que pasarla por winegcc no aportaría nada y sí la expondría a los
 modos de fallo de la capa Winelib. Se instala como
 `<build>/host-tools/bin/doc_inspector`.
@@ -2512,7 +2512,7 @@ Fusionado a `main` en `b1db7ef` y publicado
 ## Resumen
 
 Los 8 ítems de comportamiento de la lista original de §26 de
-`01-diagnostico-heap-corruption-arranque.md`, estado final tras esta
+`01-heap-corruption-startup-diagnosis.md`, estado final tras esta
 sesión (2026-08-19, exia):
 
 1. `--about` -- **arreglado** (Task 3, AV de `_setjmp`/`longjmp` ABI)

@@ -2,7 +2,7 @@
 
 /*
  * Contrato de espina de mensajes y ventanas entre el núcleo Qt y el shell.
- * Diseño: docs/port-qt/01-frontera-nucleo-shell.md, §B4.
+ * Diseño: docs/port-qt/01-core-shell-boundary.md, §B4.
  *
  * La inversión de control (el bucle de mensajes pasa a pertenecer a
  * QCoreApplication) es el trabajo estructural de esta frontera y es el

@@ -4,7 +4,7 @@
 # PE .exe run under Wine, but the ELF that winegcc itself emits
 # (<name>.exe.so, invoked through its <name>.exe stub), linked directly
 # against Wine's own Win32 API implementation. See
-# docs/port-linux/00-reconocimiento.md §6.1 for the reconnaissance that
+# docs/port-linux/00-reconnaissance.md §6.1 for the reconnaissance that
 # established this works with an unmodified CMake + Ninja setup.
 #
 # Selected by the linux-winelib-debug / linux-winelib-release presets in

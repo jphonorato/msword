@@ -1,7 +1,7 @@
 /* src/core/src/OpusShellFontSubstitution_test.cpp
  *
  * Prueba propia de OpusShellFontSubstitution.h
- * (docs/port-qt/01-frontera-nucleo-shell.md §B2.6). Sin Qt: es una tabla
+ * (docs/port-qt/01-core-shell-boundary.md §B2.6). Sin Qt: es una tabla
  * de datos estática, mismo patrón de Check() que OpusShellConfig_test.cpp.
  */
 #include "OpusShellFontSubstitution.h"

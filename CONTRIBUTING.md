@@ -11,7 +11,7 @@ are welcome, but please understand the project scope and constraints.
 
 ## Before Contributing
 
-1. Read `docs/port-linux/00-reconocimiento.md` — comprehensive technical history
+1. Read `docs/port-linux/00-reconnaissance.md` — comprehensive technical history
    - Describes all phases (0–5) and decisions taken
    - Lists known limitations and blocked issues
    - Explains architecture choices (guardas `#if __GNUC__`, etc.)
@@ -59,15 +59,15 @@ Include:
 - Phase/area affected (e.g., "Phase 6: e2e startup")
 - Expected vs. actual behavior
 - Reproduction steps (if applicable)
-- Reference to `00-reconocimiento.md` section (if relevant)
+- Reference to `00-reconnaissance.md` section (if relevant)
 
 ## PR Guidelines
 
 - Test: `ninja -k 0` must complete with 0 errors on the motor target
-- Document: add a note to `docs/port-linux/00-reconocimiento.md` if architecture changes
+- Document: add a note to `docs/port-linux/00-reconnaissance.md` if architecture changes
 - Guard: all `src/Opus/` changes use `#if defined(__GNUC__) && !defined(_MSC_VER)`
 - No force-push; history is part of the documentation
 
 ## Contact
 
-Questions? Start with `docs/port-linux/00-reconocimiento.md` — it likely covers it.
+Questions? Start with `docs/port-linux/00-reconnaissance.md` — it likely covers it.

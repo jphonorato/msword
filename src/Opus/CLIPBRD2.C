@@ -59,7 +59,7 @@ DEBUGASSERTSZ            /* WIN - bogus macro for assert string */
  * port/original/opus_x64_compat.h because translation units such as
  * CREATE2.C include a reduced Windows header where BITMAPINFOHEADER and
  * friends do not exist.  Signatures per the Win32 SDK; see
- * docs/port-linux/00-reconocimiento.md. */
+ * docs/port-linux/00-reconnaissance.md. */
 typedef HBITMAP (WINAPI *OPUS_PFN_CREATEDIBITMAP)(
 	HDC, const BITMAPINFOHEADER *, DWORD, const void *,
 	const BITMAPINFO *, UINT);

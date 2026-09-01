@@ -5,7 +5,7 @@ La línea original de este campo ("diseño, sin implementar") describía la fase
 en que se abrió el documento; se corrige aquí porque el resto del documento
 (§B3.5, §B4.4, §B5.1/§B5.2) ya registra implementación real que esa línea
 contradecía. Ver "Estado real de hoy" abajo antes que nada.
-**Insumo:** `docs/port-qt/00-inventario-win32.md`, en su versión posterior a la
+**Insumo:** `docs/port-qt/00-win32-inventory.md`, en su versión posterior a la
 exclusión de comentarios y literales.
 **Decisiones de alcance cerradas:** fidelidad de paginación idéntica byte a
 byte contra el oráculo Winelib; `Opus/interp/` es núcleo; `OpusEtAl/` por
@@ -525,7 +525,7 @@ Implementado como tabla estática en
 `src/core/src/OpusShellFontSubstitution.cpp` — ver ese header para el
 contrato. Solo cubre estos 4 nombres; `Script` y `Modern` quedan fuera de
 alcance de esta medición (no están en la tabla maestra de arranque, ver
-`01-frontera-nucleo-shell.md`, "Secuencia recomendada para Qt-2", paso 2).
+`01-core-shell-boundary.md`, "Secuencia recomendada para Qt-2", paso 2).
 
 ### B2.7 Conexión real al primer llamador: `C_LoadFcid`
 

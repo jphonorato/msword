@@ -1,6 +1,6 @@
 /*
  * Verificación de round-trip de handle real (Qt-2, B3, Fase 3).
- * docs/port-qt/01-frontera-nucleo-shell.md, sección de verificación B3.
+ * docs/port-qt/01-core-shell-boundary.md, sección de verificación B3.
  *
  * A diferencia de docs/port-qt/scripts/link-check/ (que probó paso de
  * valores por copia), esto cruza un handle/puntero real por la frontera:

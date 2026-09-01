@@ -8,7 +8,7 @@
  * §3 (verificación del punto de instalación) y §4 (prueba de round-trip).
  *
  * Qué resuelve: src/core/ no incluye Win32 por construcción (frontera
- * núcleo/shell, docs/port-qt/01-frontera-nucleo-shell.md), así que
+ * núcleo/shell, docs/port-qt/01-core-shell-boundary.md), así que
  * OpusShellMemory.cpp no puede llamar GlobalAlloc/GlobalLock/... por sí
  * mismo. Un bloque marcado OPUS_MEM_FOREIGN -- compartible entre procesos
  * (DDE), en memoria "baja" (hook de journal-playback), o que simplemente

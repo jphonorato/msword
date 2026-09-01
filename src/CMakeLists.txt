@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.25)
 
 # RC is enabled below, only for a native Windows configure. On Linux no
 # CMAKE_RC_COMPILER exists (confirmed in reconnaissance,
-# docs/port-linux/00-reconocimiento.md §3.3); resources there are compiled
+# docs/port-linux/00-reconnaissance.md §3.3); resources there are compiled
 # by wrc through an add_custom_command instead (Fase 4 of that same
 # document), not through CMake's RC language.
 project(MicrosoftWordX64Port VERSION 0.2.0 LANGUAGES C CXX)
@@ -144,7 +144,7 @@ set_target_properties(opus_generated_elxinfo PROPERTIES
 # Under the Winelib toolchain these four are built by a separate sub-project
 # with the native gcc/g++ instead of winegcc.  They are pure build-machine
 # generators with no Win32 or engine-ABI dependency (audited include by
-# include; see docs/port-linux/00-reconocimiento.md), so compiling them with
+# include; see docs/port-linux/00-reconnaissance.md), so compiling them with
 # winegcc gained nothing and exposed them to the Winelib layer's failure
 # modes.  opus_cabi_tool is excluded from this split on purpose: it measures
 # the engine's own sizeof() through <windows.h> and must stay on the same
@@ -202,7 +202,7 @@ else()
     set(OPUS_DIBAPP_TOOL_DEP opus_dibapp_tool)
 endif()
 
-# Núcleo Qt (rama Qt-2, docs/port-qt/01-frontera-nucleo-shell.md): código
+# Núcleo Qt (rama Qt-2, docs/port-qt/01-core-shell-boundary.md): código
 # nuevo, sin windows.h, que nunca pasa por winegcc/wineg++. Bajo el
 # toolchain Winelib se construye con el mismo esquema de sub-proyecto nativo
 # que los host tools de arriba, porque necesita su propio compilador y su
@@ -241,7 +241,7 @@ if(OPUS_WINELIB_BUILD)
     add_dependencies(opus_shell_font_substitution_test opus_core_build)
 
     # opus_shell_config es la biblioteca real que WORD1 enlaza (contrato
-    # OpusShellProfile*, §B5 de docs/port-qt/01-frontera-nucleo-shell.md).
+    # OpusShellProfile*, §B5 de docs/port-qt/01-core-shell-boundary.md).
     # opus_shell_config_test arriba solo importa el binario de test, no
     # basta para resolver los call sites migrados en Opus/. find_package
     # aquí (además del que ya corre dentro de core/CMakeLists.txt, en un
@@ -328,7 +328,7 @@ if(OPUS_WINELIB_BUILD)
     # que cableó el call site real en src/Opus/ pero no agregó la
     # dependencia de enlace aquí -- WORD1 quedaba con una referencia sin
     # definir a OpusShellReportError en cuanto se intentaba enlazar de
-    # punta a punta (ver docs/port-qt/01-frontera-nucleo-shell.md).
+    # punta a punta (ver docs/port-qt/01-core-shell-boundary.md).
     add_library(opus_shell_spine STATIC IMPORTED GLOBAL)
     set_target_properties(opus_shell_spine PROPERTIES
         IMPORTED_LOCATION "${OPUS_CORE_PREFIX}/lib/libopus_shell_spine.a"
@@ -1371,7 +1371,7 @@ if(OPUS_WINELIB_BUILD)
     list(APPEND WORD1_SOURCES port/original/opus_x64_setjmp.cpp)
 endif()
 # Under OPUS_WINELIB_BUILD, port/word1.rc is instead compiled by wrc into a
-# .res and linked in directly (Fase 4 of docs/port-linux/00-reconocimiento.md);
+# .res and linked in directly (Fase 4 of docs/port-linux/00-reconnaissance.md);
 # RC is not an enabled CMake language there (see the project() call above),
 # so these two sources cannot be listed on this add_executable yet.
 add_executable(WORD1 WIN32 ${WORD1_SOURCES})
