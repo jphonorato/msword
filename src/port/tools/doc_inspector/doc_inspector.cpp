@@ -34,6 +34,19 @@
  *     byte is how a writer and a reader that disagree about a length field
  *     show up from outside the engine.
  *
+ *   - Four PLCs whose generic cb/cp checks (above) are not enough on their
+ *     own, because their invariant spans two tables or a record's own
+ *     fields: plcfpgd's struct PGD (Opus/wordtech/doc.h), whose bkc must be
+ *     one of the five codes props.h names; the plcfbkf/plcfbkl bookmark
+ *     pair (struct BKF, doc.h), whose ibkl has to index a real plcfbkl
+ *     entry and whose cpFirst has to precede that entry's cpLim
+ *     (Opus/EDIT.C asserts the two plcs share an iMac); the
+ *     plcffndRef/plcffndTxt footnote pair, which the same iMac argument
+ *     applies to; and the five plcffld* PLCs (struct FLD, field.h), whose
+ *     chFieldBegin/Separate/End marks (Opus/ch.h) have to nest without ever
+ *     going negative or being left open, the invariant fieldcr.c's own walk
+ *     assumes.
+ *
  * The one subtlety that makes this tool more than a hexdump: the cp/fc arrays
  * of a PLC, every field of the FIB, every plcfsed record and (since PutFcFkp)
  * every FKP rgfc entry are 4-byte quantities on disk regardless of the host.
@@ -1421,6 +1434,329 @@ void PrintSectionTable(const Doc& doc, const Fib& fib, int fc_width,
 		}
 	}
 
+/* -------------------------------------------------------------- page table */
+
+/* plcfpgd -- struct PGD (Opus/wordtech/doc.h), cbPGD == 20: one 4-byte flags
+ * word, then lnn, cl, pgn, dcpDepend as plain 4-byte ints.  The flags word
+ * is a union of two 16-bit-wide bit layouts; plcfpgd (unlike plcfpgdFtn)
+ * always uses the general one -- fContinue/fUnk/fRight/fPgnRestart/
+ * fEmptyPage/fAllFtn, then an 8-bit bkc "section break code" from bit 8 --
+ * so only plcfpgd gets this decode.  bkc's only valid values are the five
+ * named in Opus/wordtech/props.h. */
+constexpr int kBkcMax = 4;             /* bkcOddPage, Opus/wordtech/props.h */
+
+struct PgdView
+	{
+	bool f_continue = false;
+	bool f_unk = false;
+	bool f_right = false;
+	bool f_pgn_restart = false;
+	bool f_empty_page = false;
+	bool f_all_ftn = false;
+	int bkc = 0;
+	std::int32_t lnn = 0;
+	std::int32_t cl = 0;
+	std::int32_t pgn = 0;
+	std::int32_t dcp_depend = 0;
+	};
+
+PgdView ReadPgd(const Doc& doc, std::size_t offset)
+	{
+	PgdView pgd;
+	const std::uint32_t f =
+			static_cast<std::uint32_t>(doc.DiskLong(offset));
+	pgd.f_continue = (f & 0x0001) != 0;
+	pgd.f_unk = (f & 0x0002) != 0;
+	pgd.f_right = (f & 0x0008) != 0;
+	pgd.f_pgn_restart = (f & 0x0010) != 0;
+	pgd.f_empty_page = (f & 0x0020) != 0;
+	pgd.f_all_ftn = (f & 0x0040) != 0;
+	pgd.bkc = static_cast<int>((f >> 8) & 0xff);
+	pgd.lnn = doc.DiskLong(offset + 4);
+	pgd.cl = doc.DiskLong(offset + 8);
+	pgd.pgn = doc.DiskLong(offset + 12);
+	pgd.dcp_depend = doc.DiskLong(offset + 16);
+	return pgd;
+	}
+
+void PrintPageTable(const Doc& doc, const Fib& fib, int fc_width,
+		bool verbose, Report& report)
+	{
+	Section("plcfpgd -- page table");
+
+	const PlcSpec& spec = SpecNamed("plcfpgd");
+	const PlcView view = ViewPlc(doc, fib, spec, fc_width);
+	Field("fcPlcfpgd", view.fc);
+	Field("cbPlcfpgd", view.cb);
+	if (!view.present)
+		{
+		std::cout << "  empty: no page table (pagination has not run since "
+				"the last edit)\n";
+		return;
+		}
+	Field("pages", std::to_string(view.records),
+			view.aligned ? "OK" : "MISALIGNED");
+	if (!view.aligned || !view.readable)
+		return;                 /* PrintPlcTables already filed the problem */
+
+	std::cout << "\n  " << std::left << std::setw(6) << "ipgd"
+			<< std::setw(11) << "cpFirst" << std::setw(11) << "cpLim"
+			<< std::setw(6) << "bkc" << std::setw(7) << "lnn"
+			<< std::setw(8) << "pgn" << "flags\n";
+	for (long long i = 0; i < view.records; ++i)
+		{
+		const std::string where = "plcfpgd[" + std::to_string(i) + "]";
+		const PgdView pgd = ReadPgd(doc, view.foo_base +
+				static_cast<std::size_t>(i) * view.foo);
+
+		if (pgd.bkc > kBkcMax)
+			report.Problem(where + ": bkc " + std::to_string(pgd.bkc) +
+					" is past bkcOddPage (" + std::to_string(kBkcMax) + ')');
+		if (pgd.lnn < -1)
+			report.Problem(where + ": lnn " + std::to_string(pgd.lnn) +
+					" is neither -1 (no line numbering) nor a line number");
+
+		if (verbose)
+			std::cout << "  " << std::left << std::setw(6) << i
+					<< std::setw(11) << view.cps[static_cast<std::size_t>(i)]
+					<< std::setw(11)
+					<< view.cps[static_cast<std::size_t>(i) + 1]
+					<< std::setw(6) << pgd.bkc << std::setw(7) << pgd.lnn
+					<< std::setw(8) << pgd.pgn << "fRight=" << pgd.f_right
+					<< " fPgnRestart=" << pgd.f_pgn_restart
+					<< " fEmptyPage=" << pgd.f_empty_page
+					<< " fAllFtn=" << pgd.f_all_ftn << '\n';
+		}
+	}
+
+/* ----------------------------------------------------------------- fields */
+
+/* plcffldMom/Hdr/Ftn/Atn/Mcr -- struct FLD (Opus/wordtech/field.h), cbFLD ==
+ * 8: a {ch:7, fDirty:1} bitfield word, then a union word whose meaning
+ * depends on ch -- flt for chFieldBegin, bData for chFieldSeparate, a grpf
+ * bitfield for chFieldEnd.  Each of the five field PLCs uses the same
+ * record shape, one entry per field character in that stream (main
+ * document, header/footer, footnote, annotation, macro).  ch's only valid
+ * values are the three named in Opus/ch.h, and every walk of this table in
+ * fieldcr.c (FindFldBounds() and friends) assumes a Begin/[Separate]/End
+ * nesting that never goes negative and closes flush by the end of the
+ * stream: a Separate or End with no open Begin, or a Begin nothing ever
+ * closes, is exactly what corruption of this table looks like from outside
+ * the engine. */
+constexpr int kChFieldBegin = 19;      /* Opus/ch.h */
+constexpr int kChFieldSeparate = 20;
+constexpr int kChFieldEnd = 21;
+
+void PrintFieldTable(const Doc& doc, const Fib& fib, int fc_width,
+		const char *name, bool verbose, Report& report)
+	{
+	const PlcSpec& spec = SpecNamed(name);
+	const PlcView view = ViewPlc(doc, fib, spec, fc_width);
+	Field(name, "fc " + std::to_string(view.fc) + ", cb " +
+			std::to_string(view.cb) + " -> " + std::to_string(view.records) +
+			" field mark(s)");
+	if (!view.present)
+		return;
+	if (!view.aligned || !view.readable)
+		return;                 /* PrintPlcTables already filed the problem */
+
+	int depth = 0;
+	for (long long i = 0; i < view.records; ++i)
+		{
+		const std::string where = std::string(name) + "[" +
+				std::to_string(i) + "]";
+		const std::size_t at = view.foo_base +
+				static_cast<std::size_t>(i) * view.foo;
+		const int ch = static_cast<int>(doc.DiskLong(at) & 0x7f);
+		const int second = static_cast<int>(doc.DiskLong(at + 4) & 0xff);
+
+		if (ch != kChFieldBegin && ch != kChFieldSeparate &&
+				ch != kChFieldEnd)
+			report.Problem(where + ": ch " + std::to_string(ch) +
+					" is none of chFieldBegin/Separate/End (19/20/21)");
+		else if (ch == kChFieldBegin)
+			++depth;
+		else if (ch == kChFieldSeparate)
+			{
+			if (depth == 0)
+				report.Problem(where + ": chFieldSeparate with no open "
+						"chFieldBegin");
+			}
+		else /* chFieldEnd */
+			{
+			if (depth == 0)
+				report.Problem(where + ": chFieldEnd with no open "
+						"chFieldBegin");
+			else
+				--depth;
+			}
+
+		if (verbose)
+			std::cout << "      [" << i << "] cp "
+					<< view.cps[static_cast<std::size_t>(i)] << "  ch " << ch
+					<< "  byte2 " << second << '\n';
+		}
+	if (depth != 0)
+		report.Problem(std::string(name) + ": " + std::to_string(depth) +
+				" field(s) left open at the end of the stream");
+	}
+
+void PrintFields(const Doc& doc, const Fib& fib, int fc_width, bool verbose,
+		Report& report)
+	{
+	Section("plcffld* -- fields");
+	static const char *const kNames[] = {
+		"plcffldMom", "plcffldHdr", "plcffldFtn", "plcffldAtn", "plcffldMcr",
+	};
+	for (const char *name : kNames)
+		PrintFieldTable(doc, fib, fc_width, name, verbose, report);
+	}
+
+/* ------------------------------------------------------------- footnotes */
+
+/* plcffndRef / plcffndTxt -- Word 1.x's FIB has no single "plcfftn" field
+ * either; footnotes are the same kind of matched pair as bookmarks.  Per
+ * Opus/wordtech/doc.h: "footnote table: FND is <empty>, rgcp in the plc
+ * carries all the information.  In a fDoc doc the cp's are references, in
+ * fFtn doc, the cp's are footnote bounds."  plcffndRef's cp's mark each
+ * footnote's reference mark in the main document; plcffndTxt's cp's bound
+ * each footnote's body in the footnote subdocument, in the same order --
+ * one footnote is one entry in each, so the two plcs' record counts have to
+ * match or the i-th reference and the i-th body have come uncoupled. */
+void PrintFootnotes(const Doc& doc, const Fib& fib, int fc_width,
+		bool verbose, Report& report)
+	{
+	Section("plcffndRef / plcffndTxt -- footnotes");
+
+	const PlcSpec& ref_spec = SpecNamed("plcffndRef");
+	const PlcSpec& txt_spec = SpecNamed("plcffndTxt");
+	const PlcView ref = ViewPlc(doc, fib, ref_spec, fc_width);
+	const PlcView txt = ViewPlc(doc, fib, txt_spec, fc_width);
+
+	Field("plcffndRef", "fc " + std::to_string(ref.fc) + ", cb " +
+			std::to_string(ref.cb) + " -> " + std::to_string(ref.records) +
+			" footnote(s)");
+	Field("plcffndTxt", "fc " + std::to_string(txt.fc) + ", cb " +
+			std::to_string(txt.cb) + " -> " + std::to_string(txt.records) +
+			" footnote(s)");
+
+	if (!ref.present && !txt.present)
+		{
+		std::cout << "  no footnotes\n";
+		return;
+		}
+	if ((ref.present && (!ref.aligned || !ref.readable)) ||
+			(txt.present && (!txt.aligned || !txt.readable)))
+		{
+		std::cout << "  (structural problems above; skipping semantic check)\n";
+		return;
+		}
+
+	if (ref.records != txt.records)
+		report.Problem("plcffndRef has " + std::to_string(ref.records) +
+				" footnote(s) but plcffndTxt has " +
+				std::to_string(txt.records) + ": the reference marks in the "
+				"main document and the bodies in the footnote subdocument "
+				"must be in 1:1 correspondence");
+
+	if (verbose)
+		for (long long i = 0; i < ref.records && i < txt.records; ++i)
+			std::cout << "  [" << i << "] ref cp "
+					<< ref.cps[static_cast<std::size_t>(i)] << "  body cp "
+					<< txt.cps[static_cast<std::size_t>(i)] << " .. "
+					<< txt.cps[static_cast<std::size_t>(i) + 1] << '\n';
+	}
+
+/* ----------------------------------------------------------------- bookmarks */
+
+/* plcfbkf / plcfbkl -- Word 1.x's FIB has no single "plcfbkm" field; the pair
+ * is the bookmark table.  plcfbkf's foo is struct BKF { int ibkl; }
+ * (Opus/wordtech/doc.h): a bookmark's cpFirst lives in plcfbkf's own cp
+ * array, its cpLim in plcfbkl's cp array (cbBKL is 0 -- plcfbkl carries no
+ * foo of its own, just cp's), and ibkl is the index of that cpLim inside
+ * plcfbkl.  DeleteIbkf() and FInsertBkmk() in Opus/EDIT.C both
+ * Assert(IMacPlc(hplcbkf) == IMacPlc(hplcbkl)): the two plcs are kept in
+ * lockstep, and CpPlc(hplcbkl, bkf.ibkl) (EDIT.C:2198, 2387) is how the
+ * engine turns a plcfbkf entry into a bookmark's cpLim -- an ibkl that does
+ * not index a real plcfbkl entry is not caught by generic PLC alignment or
+ * range checks, only by walking the pair together as done here.
+ *
+ * The generic entries for both tables in kPlcSpecs already cover cb
+ * alignment ((N + 1) * sizeof(CP) + N * sizeof(BKF) for plcfbkf, since
+ * cbBKF == 4) and per-cp range bounding via PrintPlcTables; this pass adds
+ * the cross-table semantics that only make sense once plcfbkf and plcfbkl
+ * are read together. */
+void PrintBookmarks(const Doc& doc, const Fib& fib, int fc_width, bool verbose,
+		Report& report)
+	{
+	Section("plcfbkf / plcfbkl -- bookmarks");
+
+	const PlcSpec& bkf_spec = SpecNamed("plcfbkf");
+	const PlcSpec& bkl_spec = SpecNamed("plcfbkl");
+	const PlcView bkf = ViewPlc(doc, fib, bkf_spec, fc_width);
+	const PlcView bkl = ViewPlc(doc, fib, bkl_spec, fc_width);
+
+	Field("plcfbkf", "fc " + std::to_string(bkf.fc) + ", cb " +
+			std::to_string(bkf.cb) + " -> " + std::to_string(bkf.records) +
+			" bookmark(s)");
+	Field("plcfbkl", "fc " + std::to_string(bkl.fc) + ", cb " +
+			std::to_string(bkl.cb) + " -> " + std::to_string(bkl.records) +
+			" entr(y/ies)");
+
+	if (!bkf.present && !bkl.present)
+		{
+		std::cout << "  no bookmarks\n";
+		return;
+		}
+	/* PrintPlcTables has already filed alignment/range problems against
+	 * kPlcSpecs's generic entries for either table; the semantic check below
+	 * needs both cp arrays intact, so it stays out of the way of a table
+	 * that is already known to be broken. */
+	if ((bkf.present && (!bkf.aligned || !bkf.readable)) ||
+			(bkl.present && (!bkl.aligned || !bkl.readable)))
+		{
+		std::cout << "  (structural problems above; skipping semantic check)\n";
+		return;
+		}
+
+	if (bkf.records != bkl.records)
+		report.Problem("plcfbkf has " + std::to_string(bkf.records) +
+				" bookmark(s) but plcfbkl has " + std::to_string(bkl.records) +
+				": the two plcs must stay in lockstep (Opus/EDIT.C asserts "
+				"IMacPlc(hplcbkf) == IMacPlc(hplcbkl))");
+
+	const long long ibkl_max = bkl.records;    /* valid ibkl: 0 .. ibkl_max-1 */
+	for (long long i = 0; i < bkf.records; ++i)
+		{
+		const std::string where = "plcfbkf[" + std::to_string(i) + "]";
+		const std::int32_t ibkl = static_cast<std::int32_t>(doc.DiskLong(
+				bkf.foo_base + static_cast<std::size_t>(i) * bkf.foo));
+		const std::int64_t cp_first = bkf.cps[static_cast<std::size_t>(i)];
+
+		if (ibkl < 0 || ibkl >= ibkl_max)
+			{
+			report.Problem(where + ": ibkl " + std::to_string(ibkl) +
+					" is outside 0.." + std::to_string(ibkl_max - 1) +
+					", the valid index range of plcfbkl");
+			if (verbose)
+				std::cout << "      [" << i << "] cpFirst " << cp_first
+						<< "  ibkl " << ibkl << "  <<< out of range\n";
+			continue;
+			}
+
+		const std::int64_t cp_lim = bkl.cps[static_cast<std::size_t>(ibkl)];
+		if (cp_first >= cp_lim)
+			report.Problem(where + ": cpFirst " + std::to_string(cp_first) +
+					" >= cpLim " + std::to_string(cp_lim) + " (plcfbkl[" +
+					std::to_string(ibkl) +
+					"]): empty or backwards bookmark range");
+
+		if (verbose)
+			std::cout << "      [" << i << "] cpFirst " << cp_first
+					<< "  cpLim " << cp_lim << "  (ibkl " << ibkl << ")\n";
+		}
+	}
+
 /* --------------------------------------------------- table row properties */
 
 /* Walk the PAPX FKPs looking for table rows: a papx whose grpprl carries
@@ -1590,9 +1926,10 @@ void PrintUsage(std::ostream& out)
 	out << "usage: doc_inspector [options] FILE.doc\n"
 			"\n"
 			"Parses a Word 1.x (Opus) document without Wine and reports\n"
-			"whether its FIB, FKPs, PLC tables, section table (plcfsed)\n"
-			"and table row properties (sprmTDefTable) are structurally\n"
-			"sound.\n"
+			"whether its FIB, FKPs, PLC tables, section table (plcfsed),\n"
+			"table row properties (sprmTDefTable), page table (plcfpgd),\n"
+			"bookmarks (plcfbkf/plcfbkl), footnotes (plcffndRef/Txt) and\n"
+			"fields (plcffld*) are structurally and semantically sound.\n"
 			"\n"
 			"options:\n"
 			"  --fc-width=auto|4|8  width of FKP rgfc entries (default auto;\n"
@@ -1739,6 +2076,10 @@ int main(int argc, char **argv)
 	PrintTableFkps(doc, fib, fc_width, max_runs, report);
 	PrintPlcTables(doc, fib, fc_width, verbose, report);
 	PrintSectionTable(doc, fib, fc_width, report);
+	PrintPageTable(doc, fib, fc_width, verbose, report);
+	PrintFootnotes(doc, fib, fc_width, verbose, report);
+	PrintFields(doc, fib, fc_width, verbose, report);
+	PrintBookmarks(doc, fib, fc_width, verbose, report);
 
 	if (fib.At(iwPnNext) != 0)
 		report.Note("pnNext is " + std::to_string(fib.At(iwPnNext)) +
