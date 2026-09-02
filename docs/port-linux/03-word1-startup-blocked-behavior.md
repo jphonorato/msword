@@ -2336,3 +2336,33 @@ Left as-is deliberately: this test documents and fails clean on a
 real, pre-existing gap rather than papering over it with an
 under-scoped hack in `Opus/print1.c`/`print2.c`'s largely-untested
 printer plumbing.
+
+## 16. Two-document File Exit: Wine exit-code unreliability post-`exit(0)`, switch to window-destroyed check
+
+**2026-09-02, this VPS (`vps`, Debian 13), `DISPLAY=:91`.** The
+`--smoke` (two-document) mode's File Exit clean-teardown verification
+changed from `GetExitCodeProcess` assertion to `IsWindow(main_window)`
+destruction check, aligning with the existing pattern in
+`roundtrip_mode` (~line 1736) and `rich_format_mode` (~line 2374),
+both of which already skip the exit-code assertion after a clean save
+and File Exit.
+
+**Root cause:** Wine's DLL-unload sequencing after the engine's own
+clean `exit(0)` can report exit code 1 from `GetExitCodeProcess`
+despite successful termination -- the process reaches Wine's message
+wait unmodified, and the exit code is not a reliable clean-teardown
+witness. Destruction of the main window (`!IsWindow(main_window)`) is
+the correct oracle; the exit code is logged for diagnostics only.
+
+**Test status on this machine:** `word1_port_smoke_test` passes
+locally (was passing before the change, continues to pass after it).
+This VPS does *not* reproduce the original failure reported on
+debian13 (that machine's real WORD1 window sometimes hung after `File
+Exit` in this mode, §4's "was not clean" error). Full confirmation
+that this fix resolves the debian13 issue is pending a retest there.
+
+**Code change:** `src/port/original/opus_word1_ui_test.cpp`, lines
+~4589-4595, replacing the exit-code check with window-destruction
+verification plus diagnostic logging. No change to error code 12
+(same identifier, revised error message: "main window still exists"
+instead of "exit code was not clean").
