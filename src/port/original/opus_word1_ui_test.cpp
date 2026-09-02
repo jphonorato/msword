@@ -267,6 +267,26 @@ HWND wait_for_descendant_by_class(const HANDLE process, const HWND parent,
     return nullptr;
 }
 
+// wait_for_window_to_close is top-level-only (EnumWindows). OpusPmt is a
+// child of OpusApp and RestorePrompt often hides it rather than destroying
+// it, so "gone" here means not found or not visible.
+bool wait_for_descendant_hidden(const HANDLE process, const HWND parent,
+                                const wchar_t* expected_class,
+                                const DWORD timeout_ms) {
+    const ULONGLONG deadline = GetTickCount64() + timeout_ms;
+    do {
+        if (WaitForSingleObject(process, 0) == WAIT_OBJECT_0) {
+            return false;
+        }
+        const HWND found = find_descendant_by_class(parent, expected_class);
+        if (found == nullptr || IsWindowVisible(found) == FALSE) {
+            return true;
+        }
+        Sleep(50);
+    } while (GetTickCount64() < deadline);
+    return false;
+}
+
 void collect_descendants_by_class(const HWND parent,
                                   const wchar_t* expected_class,
                                   std::vector<HWND>& matches) {
@@ -2849,14 +2869,12 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
                 // prompt so the saved .doc still inspects clean; the
                 // mechanism is documented, not silently skipped.
                 send_virtual_key(VK_ESCAPE);
-                const ULONGLONG prompt_deadline = GetTickCount64() + 3000;
-                while (GetTickCount64() < prompt_deadline) {
-                    const HWND still =
-                        find_descendant_by_class(main_window, L"OpusPmt");
-                    if (still == nullptr || IsWindowVisible(still) == FALSE) {
-                        break;
-                    }
-                    Sleep(50);
+                if (!wait_for_descendant_hidden(process.hProcess, main_window,
+                                                L"OpusPmt", 3000)) {
+                    dump_dialog_tree_diagnostic(main_window);
+                    return fail(process, 328,
+                                "InsertBookmark OpusPmt prompt did not "
+                                "close after Escape");
                 }
                 if (!window_is_responsive(process.hProcess, main_window)) {
                     return fail(process, 329,
