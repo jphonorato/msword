@@ -796,14 +796,43 @@ bool is_toolbar_descendant(HWND toolbar, HWND candidate) {
 }
 
 std::string combo_item(HWND combo, int index) {
-    const LRESULT length = SendMessageA(combo, CB_GETLBTEXTLEN, index, 0);
+    /* CB_GETLBTEXTLEN on the ANSI path can report 1 TCHAR for a two-digit
+       point size stored as UTF-16 ('1', 0, '0', 0 looks like a 1-byte C
+       string). The matching CB_GETLBTEXT copy then keeps a leftover
+       one-digit item, so the ribbon list reads 8, 9, 9, 9... instead of
+       8, 9, 10, 11, 12. Read the Unicode listbox directly, with a buffer
+       large enough for the real scale, and ignore the ANSI length. */
+    COMBOBOXINFO info{};
+    info.cbSize = sizeof(info);
+    const bool got_list =
+        GetComboBoxInfo(combo, &info) && info.hwndList != nullptr;
+    const HWND reader = got_list ? info.hwndList : combo;
+    const UINT get_message = got_list ? LB_GETTEXT : CB_GETLBTEXT;
+    const UINT len_message = got_list ? LB_GETTEXTLEN : CB_GETLBTEXTLEN;
+    LRESULT length = SendMessageW(reader, len_message, index, 0);
     if (length == CB_ERR || length < 0) {
+        length = 32;
+    }
+    const std::size_t capacity =
+        static_cast<std::size_t>((std::max)(length, static_cast<LRESULT>(32))) +
+        1;
+    /* Non-zero fill: some A/W thunks size the destination with strlenW
+       of the caller's buffer, and a zeroed buffer would copy nothing. */
+    std::vector<wchar_t> text(capacity, L'x');
+    text.back() = L'\0';
+    const LRESULT copied = SendMessageW(
+        reader, get_message, index, reinterpret_cast<LPARAM>(text.data()));
+    if (copied == CB_ERR || copied < 0) {
         return {};
     }
-    std::vector<char> text(static_cast<std::size_t>(length) + 1);
-    SendMessageA(combo, CB_GETLBTEXT, index,
-                 reinterpret_cast<LPARAM>(text.data()));
-    return text.data();
+    const std::size_t used =
+        (std::min)(static_cast<std::size_t>(copied), capacity - 1);
+    text[used] = L'\0';
+    std::vector<char> ansi(used + 1, '\0');
+    WideCharToMultiByte(CP_ACP, 0, text.data(), static_cast<int>(used + 1),
+                        ansi.data(), static_cast<int>(ansi.size()), nullptr,
+                        nullptr);
+    return ansi.data();
 }
 
 bool combo_contains(HWND combo, const char* value) {
@@ -888,8 +917,8 @@ void sync_combo(HWND mirror, HWND source, int& copied_count) {
         GetWindowTextW(mirror, &mirror_text[0], mirror_length + 1);
         SendMessageW(mirror, CB_RESETCONTENT, 0, 0);
         for (int index = 0; index < count; ++index) {
-            const std::wstring item = wide_from_ansi(combo_item(source, index));
-            SendMessageW(mirror, CB_ADDSTRING, 0,
+            const std::string item = combo_item(source, index);
+            SendMessageA(mirror, CB_ADDSTRING, 0,
                          reinterpret_cast<LPARAM>(item.c_str()));
         }
         SetWindowTextW(mirror, mirror_text.c_str());

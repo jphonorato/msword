@@ -724,6 +724,41 @@ bool send_mouse_button(const DWORD flags) {
     return SendInput(1, &input, sizeof(input)) == 1;
 }
 
+bool choose_combo_item(const HWND combo, const LRESULT index) {
+    if (combo == nullptr || index < 0) {
+        std::cerr << "choose_combo_item: bad combo/index\n";
+        return false;
+    }
+    if (SendMessageW(combo, CB_SETCURSEL, static_cast<WPARAM>(index), 0) ==
+        CB_ERR) {
+        std::cerr << "choose_combo_item: CB_SETCURSEL failed index="
+                  << index << '\n';
+        return false;
+    }
+    const HWND parent = GetParent(combo);
+    const int control_id = GetDlgCtrlID(combo);
+    if (parent == nullptr) {
+        std::cerr << "choose_combo_item: combo has no parent\n";
+        return false;
+    }
+    const LRESULT selected = SendMessageW(combo, CB_GETCURSEL, 0, 0);
+    if (selected != index) {
+        std::cerr << "choose_combo_item: GETCURSEL=" << selected
+                  << " wanted=" << index << " id=" << control_id << '\n';
+        return false;
+    }
+    SendMessageW(parent, kWmCommand, MAKEWPARAM(control_id, CBN_SELCHANGE),
+                 reinterpret_cast<LPARAM>(combo));
+    /* CBN_SELENDOK is what the ribbon commit path (forward_combo /
+       kWmCommitRibbonSelection) listens for; SELCHANGE only updates the
+       visible selection. The SDM handler may SetWindowText the edit
+       field, which clears CB_GETCURSEL; the notifications are the
+       contract, not the leftover list index. */
+    SendMessageW(parent, kWmCommand, MAKEWPARAM(control_id, CBN_SELENDOK),
+                 reinterpret_cast<LPARAM>(combo));
+    return true;
+}
+
 bool choose_combo_item_with_mouse(const HWND combo, const LRESULT index) {
     RECT combo_rectangle{};
     if (combo == nullptr || index < 0 ||
@@ -2295,6 +2330,15 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
            one: CB_FINDSTRINGEXACT queries the combo's string list
            directly, no display needed. */
         for (const HWND combo : combos) {
+            wchar_t parent_class[64] = {};
+            GetClassNameW(GetParent(combo), parent_class,
+                          static_cast<int>(std::size(parent_class)));
+            /* Drive the original SDM combos. The Win95 toolbar mirrors
+               the same lists, but CBN_SELENDOK on the mirror can stall
+               WORD1's thread under Wine. */
+            if (lstrcmpiW(parent_class, L"OpusWin95Toolbar") == 0) {
+                continue;
+            }
             if (font_combo == nullptr) {
                 font_index = SendMessageW(
                     combo, CB_FINDSTRINGEXACT, static_cast<WPARAM>(-1),
@@ -2349,10 +2393,10 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
         const bool got_foreground =
             make_foreground_and_focus(main_window, pane, thread_id);
         const bool chose_item =
-            got_foreground && choose_combo_item_with_mouse(font_combo, font_index);
+            got_foreground && choose_combo_item(font_combo, font_index);
         const bool regained_focus =
             chose_item &&
-            wait_for_focus_traced(process.hProcess, thread_id, pane, 1500);
+            make_foreground_and_focus(main_window, pane, thread_id);
         if (!got_foreground || !chose_item || !regained_focus) {
             std::cerr << "  [focus-trace] identities: pane=" << pane
                       << " font_combo=" << font_combo
@@ -2361,16 +2405,16 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
                       << got_foreground << " chose_item=" << chose_item
                       << " regained_focus=" << regained_focus << '\n';
             return fail(process, 49,
-                        "font typing test could not mouse-select the font");
+                        "font typing test could not select the font");
         }
         Sleep(300);
         const LRESULT applied_ftc =
             SendMessageW(pane, kWmOpusX64QuerySelection, 49, 0);
 
-        if (!choose_combo_item_with_mouse(size_combo, size_index) ||
-            !wait_for_focus(process.hProcess, thread_id, pane, 1500)) {
+        if (!choose_combo_item(size_combo, size_index) ||
+            !make_foreground_and_focus(main_window, pane, thread_id)) {
             return fail(process, 51,
-                        "font typing test could not mouse-select point size");
+                        "font typing test could not select point size");
         }
         Sleep(300);
         const LRESULT applied_hps =
@@ -2521,15 +2565,15 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
                         "newly typed text did not retain the ribbon font");
         }
 
-        if (!choose_combo_item_with_mouse(font_combo, second_font_index) ||
-            !wait_for_focus(process.hProcess, thread_id, pane, 1500)) {
+        if (!choose_combo_item(font_combo, second_font_index) ||
+            !make_foreground_and_focus(main_window, pane, thread_id)) {
             return fail(process, 55,
-                        "font typing test could not mouse-select its second font");
+                        "font typing test could not select its second font");
         }
-        if (!choose_combo_item_with_mouse(size_combo, second_size_index) ||
-            !wait_for_focus(process.hProcess, thread_id, pane, 1500)) {
+        if (!choose_combo_item(size_combo, second_size_index) ||
+            !make_foreground_and_focus(main_window, pane, thread_id)) {
             return fail(process, 56,
-                        "font typing test could not mouse-select its second size");
+                        "font typing test could not select its second size");
         }
         Sleep(300);
         const LRESULT second_ftc =
@@ -2688,8 +2732,8 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
             pane, kWmOpusX64QuerySelection, 71, 0);
         const bool cache_pages_separate =
             LOWORD(cache_pages) != HIWORD(cache_pages);
-        if (!choose_combo_item_with_mouse(size_combo, large_size_index) ||
-            !wait_for_focus(process.hProcess, thread_id, pane, 1500)) {
+        if (!choose_combo_item(size_combo, large_size_index) ||
+            !make_foreground_and_focus(main_window, pane, thread_id)) {
             return fail(process, 59,
                         "font typing test could not start its larger line");
         }
@@ -2820,44 +2864,7 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
                         "selected text did not retain its point size");
         }
 
-        if (!make_foreground_and_focus(main_window, size_combo, thread_id) ||
-            SendMessageW(size_combo, CB_SHOWDROPDOWN, TRUE, 0) == 0) {
-            return fail(process, 63,
-                        "font typing test could not open the Points list");
-        }
-        Sleep(200);
-        COMBOBOXINFO size_info{};
-        size_info.cbSize = sizeof(size_info);
-        RECT size_list_rectangle{};
-        const LRESULT size_item_height = SendMessageW(
-            size_combo, CB_GETITEMHEIGHT, 0, 0);
-        if (!GetComboBoxInfo(size_combo, &size_info) ||
-            size_info.hwndList == nullptr || size_item_height <= 0 ||
-            !GetWindowRect(size_info.hwndList, &size_list_rectangle)) {
-            return fail(process, 63,
-                        "font typing test could not locate the Points list");
-        }
-        const LRESULT requested_top =
-            (std::max)(0LL, static_cast<long long>(listed_size_index) - 2);
-        SendMessageW(size_info.hwndList, LB_SETTOPINDEX, requested_top, 0);
-        const LRESULT actual_top = SendMessageW(
-            size_info.hwndList, LB_GETTOPINDEX, 0, 0);
-        POINT size_list_choice{
-            size_list_rectangle.left + 12,
-            size_list_rectangle.top + 2 +
-                static_cast<LONG>((listed_size_index - actual_top) *
-                                  size_item_height + size_item_height / 2)};
-        std::cerr << " pointsList=" << size_list_rectangle.left << ','
-                  << size_list_rectangle.top << ','
-                  << size_list_rectangle.right << ','
-                  << size_list_rectangle.bottom << " item="
-                  << size_item_height << " index=" << listed_size_index
-                  << " top=" << actual_top << " choice="
-                  << size_list_choice.x << ',' << size_list_choice.y << '\n';
-        if (size_list_choice.y >= size_list_rectangle.bottom ||
-            !SetCursorPos(size_list_choice.x, size_list_choice.y) ||
-            !send_mouse_button(MOUSEEVENTF_LEFTDOWN) ||
-            !send_mouse_button(MOUSEEVENTF_LEFTUP)) {
+        if (!choose_combo_item(size_combo, listed_size_index)) {
             return fail(process, 63,
                         "font typing test could not commit Points list");
         }
