@@ -2570,3 +2570,102 @@ relacionado con ningún fix de esta sesión).
 
 Rama `fix/winelib-startup-blocked`, no fusionada a `main`. Todo
 pusheado a `origin/fix/winelib-startup-blocked`.
+
+## 14. Save As on debian13: "Not a valid file name" in a clean checkout, passes in the long-lived one -- environmental, cause not yet found
+
+**2026-09-02, debian13 VM, `DISPLAY=:91`.** Surfaced while verifying
+`doc_inspector`'s new bookmark/page/footnote/field checks
+end-to-end: `opus_word1_roundtrip_test` and `opus_word1_formatting_test`
+are the fixtures that produce the `.doc` `opus_doc_inspector_test`
+inspects, so a full `ctest -R opus_doc_inspector_test` run needs them
+green first.
+
+**Symptom.** A fresh `git worktree add` off `origin/main` (`6fae091`),
+configured and built clean (`opus_original_engine`, `WORD1`,
+`opus_word1_ui_test`), fails `opus_word1_roundtrip_test` and
+`opus_word1_formatting_test` every time: `opus_word1_ui_test.cpp`
+(around line 1396-1475) resolves `GetTempPathA()`, builds an 8.3-safe
+`oprtXXXX.doc` name, sets it into the Save As dialog's filename field
+(`cmb13`, `0x047C`) via `WM_SETTEXT` -- not simulated typing -- and
+reads it back correctly (`roundtrip filename field=... reads back
+'C:\users\pablo\AppData\Local\Temp\oprt0134.doc'`). After the dialog
+is dismissed, a second `#32770 caption='Microsoft Word'` dialog
+appears with a static control reading `"Not a valid file name"`
+(id=65535) and an `"Aceptar"` OK button (id=1); the target `.doc`
+is never written. This is `WORD1`'s own path validator rejecting the
+path post-submit, not a harness typing or timing bug.
+
+The **same commit**, built and run the same way in the long-lived
+original checkout (`/home/pablo/msword` on the same VM, same shared
+Wine prefix, same `DISPLAY=:91`), **passes reliably**.
+
+**Three hypotheses tested and refuted:**
+
+1. **First-run `WINWORD.INI`/`W95TEMP` state.** The original
+   checkout's `bin/WINWORD.INI` records a hardcoded absolute scratch
+   path (`Z:\HOME\PABLO\MSWORD\BIN\W95TEMP\W95E790.DOC`). Moved both
+   `WINWORD.INI` and `bin/W95TEMP` out of the original checkout and
+   reran `opus_word1_roundtrip_test` there: still passed, and
+   regenerated both on its own. Not the cause; restored afterward.
+2. **Simulated-typing race.** Ruled out by reading the code first
+   (`WM_SETTEXT`, not keystrokes) and confirmed empirically: the
+   filename field reads back the exact intended path every time, and
+   the fresh worktree failed identically and deterministically across
+   3 consecutive runs (not intermittent).
+3. **The uncommitted Search/Replace feature** (see below) **causing
+   it as a side effect.** Copied all five of its files verbatim onto
+   the clean worktree, rebuilt `opus_original_engine` + `WORD1` +
+   `opus_word1_ui_test`, reran 3x: failed identically every time.
+   Refuted.
+
+**Refuting (3) closes off the source-code angle entirely.** debian13's
+long-lived checkout had 15 git-tracked files modified but uncommitted
+(`main` there is stale at `4c98436`, three commits behind
+`origin/main`). All 15 are now accounted for:
+
+- **9 are phantom** -- byte-identical to what commit `5b52dc6` ("pack
+  FKP rgfc entries to a 4-byte disk format") already merged and
+  pushed: `Opus/debug/debugfn.c`, `Opus/filewin.c`, `Opus/openrare.c`,
+  `Opus/wordtech/fetch.c`, `Opus/wordtech/file.h`,
+  `Opus/wordtech/fkp.h`, `Opus/wordtech/inssubs.c`,
+  `Opus/wordtech/prm.h`, `Opus/wordtech/savefast.c`, plus the
+  non-bookmark comment updates already folded into
+  `doc_inspector.cpp`. `git status` shows them "modified" only
+  because that machine's `main` never pulled past the commit before
+  `5b52dc6` -- the content itself matches `origin/main` exactly.
+  **Nothing to commit here.**
+- **5 are a real, complete, unreviewed feature**: a Search/Replace
+  dialog. `Opus/wproc.c` gains a `case 85` exposing `vtmcFocus` for
+  polling; `port/original/opus_sdm_runtime.cpp` gains
+  `kIddSearch`/`kIddReplace` materialization (~200 new lines: CAB
+  structs mirroring `search.hs`/`replace.hs`, `read_search_cab` /
+  `sync_search_cab` / `read_replace_cab` / `sync_replace_cab`,
+  `materialize_search_template` / `materialize_replace_template`);
+  `port/original/opus_word1_ui_test.cpp` gains a `--find-replace` test
+  mode driving the real dialog end to end; `port/original/replace.sdm`
+  and `search.sdm` go from stub `dltReplace`/`dltSearch = { 0 }` to
+  real `DLT` tables built from `Opus/dlg/replace.des` /
+  `search.des`. Confirmed by direct application (above) that this
+  feature is **not** the Save As cause -- it stands as its own,
+  independent, still-uncommitted piece of work.
+
+With those 15 files accounted for and proven not to explain the
+symptom, the two checkouts' git-tracked source is byte-identical, yet
+one passes and the other fails. **The cause is not in git-tracked
+code.** Untested candidates for the next session:
+
+- Wine's per-executable `HKCU\Software\Wine\AppDefaults\<name>\...`
+  settings, if keyed by the full path of the `.exe` rather than just
+  its basename (`WORD1.exe` is the same name in both checkouts, but
+  the checkouts live at different absolute paths).
+- Non-determinism or an unaudited difference in the *generated,
+  non-git-tracked* build output between the two separate
+  `port/tools/host` sub-builds (`opus_mkcmd_tool`/`opus_mkdlg_tool`
+  regenerating `word1.rc`/`word1.spec` from `Opus/dlg/*.des` and
+  `opuscmd_native.inc`) -- never diffed against each other.
+
+**State left clean:** the verification worktree this investigation
+used has been removed (`git worktree remove --force`); the original
+checkout's `WINWORD.INI`/`W95TEMP` were restored; nothing was
+committed on debian13. To resume, recreate a worktree off
+`origin/main` and start from the "Untested candidates" list above.
