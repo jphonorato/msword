@@ -53,6 +53,7 @@ constexpr LRESULT kTmcSearchReady = 0x400; /* wproc.c query 85 / tmcSearch */
 constexpr LRESULT kStcLev1 = 254; /* props.h stcLev1 on WIN */
 constexpr UINT kWmOpusX64QuerySelection = WM_APP + 0x351;
 constexpr int kKcControl = 0x100;
+constexpr int kKcShift = 0x200; /* Opus/keys.h KcShift */
 constexpr LRESULT kEditUndo = 2229;
 constexpr LRESULT kEditCut = 2252;
 constexpr LRESULT kEditCopy = 2274;
@@ -62,6 +63,29 @@ constexpr WPARAM kFilePrintPreview = 1988; /* opuscmd.h imiPrintPreview */
 /* Opus/keys.h rgkmePrvwDef: kc values are plain Win32 VK_* codes here,
    dispatched through wproc.c query 80 (FExecKc) -- see PrvwPageUp/
    PrvwPageDown/CmdPrintPreview in Opus/preview.c. */
+/* Advanced-elements command ids (opuscmd_native.inc), confirmed real WM_
+   COMMAND ids for this build -- see docs/port-linux/
+   03-word1-startup-blocked-behavior.md's advanced-elements entry for how
+   each was actually driven. */
+constexpr WPARAM kInsertFieldChars = 711; /* CmdInsertField, Opus/FIELDCMD.C
+    -- direct: inserts an empty field at the caret, no dialog. */
+constexpr WPARAM kInsertPageBreak = 6217; /* CmdInsPageBreak, Opus/dlgmisc.c
+    -- direct outside a table selection: InsertBreakCh(chSect) inserts a
+    single combined paragraph/section-mark character, no dialog. */
+constexpr WPARAM kInsertBookmark = 3360; /* CmdInsBookmark, Opus/dlgmisc.c --
+    menu/WM_COMMAND (kc==kcNil) always goes through TmcOurDoDlg(
+    dltInsBookmark). bookmark.sdm is still "= { 0 }", so that path is a
+    no-op. Shift+Ctrl+F5 (keys.cmd InsertBookmark) sets kc!=kcNil and
+    uses TmcInputPmtMst on the OpusPmt prompt line instead. */
+constexpr WPARAM kInsertFootnote = 3189; /* CmdInsFootnote, Opus/annot.c --
+    always TmcOurDoDlg(dltInsertFtn); footnote.sdm is the same unpopulated
+    stub, no keyboard bypass in keys.cmd. */
+/* Literal character codes (Opus/ch.h) query 69 (per-cp byte fetch) reads
+   back once inserted -- the same constants doc_inspector.cpp uses
+   (kChFieldBegin/kChFieldEnd there) to walk plcffld*. */
+constexpr LRESULT kChFieldBegin = 19;
+constexpr LRESULT kChFieldEnd = 21;
+constexpr LRESULT kChSect = 12;
 constexpr int kKcPageUp = VK_PRIOR;
 constexpr int kKcPageDown = VK_NEXT;
 
@@ -222,6 +246,24 @@ HWND find_descendant_by_class(const HWND parent,
             return descendant;
         }
     }
+    return nullptr;
+}
+
+HWND wait_for_descendant_by_class(const HANDLE process, const HWND parent,
+                                  const wchar_t* expected_class,
+                                  const DWORD timeout_ms) {
+    const ULONGLONG deadline = GetTickCount64() + timeout_ms;
+    do {
+        if (WaitForSingleObject(process, 0) == WAIT_OBJECT_0) {
+            return nullptr;
+        }
+        if (const HWND found =
+                find_descendant_by_class(parent, expected_class);
+            found != nullptr && IsWindowVisible(found) != FALSE) {
+            return found;
+        }
+        Sleep(25);
+    } while (GetTickCount64() < deadline);
     return nullptr;
 }
 
@@ -860,6 +902,25 @@ bool window_is_responsive(const HANDLE process, const HWND window) {
                                2000, &message_result) != 0;
 }
 
+// Scans [0, cp_mac) for a literal byte value via query 69 (per-cp byte
+// fetch, the same query roundtrip_mode snapshots with). Used by
+// advanced_elements_mode instead of raw CpMacDocEdit-delta arithmetic:
+// CpMacDocEdit (query 41) read immediately after simulated typing was
+// observed to be transiently unreliable (a stale, inflated count with
+// zero-byte padding past the real text, self-correcting only once a
+// WM_COMMAND is actually processed) -- a real content scan on the
+// post-command reading is robust to that, and is closer to what
+// doc_inspector itself checks out-of-process.
+bool doc_contains_byte(const HWND pane, const LRESULT cp_mac,
+                       const LRESULT target) {
+    for (LRESULT cp = 0; cp < cp_mac; ++cp) {
+        if (SendMessageW(pane, kWmOpusX64QuerySelection, 69, cp) == target) {
+            return true;
+        }
+    }
+    return false;
+}
+
 HWND wait_for_dlg_item(const HANDLE process, const HWND dialog, const int id,
                        const DWORD timeout_ms) {
     const ULONGLONG deadline = GetTickCount64() + timeout_ms;
@@ -1173,14 +1234,14 @@ int fail(PROCESS_INFORMATION& process, const int code,
     return code;
 }
 
-// The .doc that --roundtrip and --rich-format save lives in GetTempPathA()
-// and is deleted on every exit path, which is right for those modes but
-// leaves nothing for anyone else to look at. When OPUS_X64_DOC_ARTIFACT_DIR
-// is set, a copy of the saved file is kept there under a stable name, and
-// opus_doc_inspector_test (registered in src/CMakeLists.txt) runs the native
-// doc_inspector over what it finds. Keeping the artifact is strictly a side
-// effect: a failure to copy is logged and ignored, never turned into a
-// failure of the save test itself.
+// The .doc that --roundtrip, --rich-format and --advanced-elements save
+// lives in GetTempPathA() and is deleted on every exit path, which is
+// right for those modes but leaves nothing for anyone else to look at.
+// When OPUS_X64_DOC_ARTIFACT_DIR is set, a copy of the saved file is kept
+// there under a stable name, and opus_doc_inspector_test (registered in
+// src/CMakeLists.txt) runs the native doc_inspector over what it finds.
+// Keeping the artifact is strictly a side effect: a failure to copy is
+// logged and ignored, never turned into a failure of the save test itself.
 //
 // CTest hands the directory over as a Wine-visible path -- "Z:" plus the
 // build tree's unix path, using forward slashes, which Win32 accepts as a
@@ -1233,7 +1294,8 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
             "usage: opus_word1_ui_test WORD1.exe "
             "[--typing|--interaction|--selection|--caret|--formatting|--color|"
             "--font-typing|--clipboard|--about|--save-as|--roundtrip|"
-            "--rich-format|--find-replace|--sdm-modals|--print-preview]\n";
+            "--rich-format|--find-replace|--sdm-modals|--print-preview|"
+            "--advanced-elements]\n";
         return 1;
     }
     const bool typing_mode =
@@ -1280,11 +1342,15 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
     const bool print_preview_mode =
         argument_count == 3 &&
         lstrcmpW(arguments[2], L"--print-preview") == 0;
+    const bool advanced_elements_mode =
+        argument_count == 3 &&
+        lstrcmpW(arguments[2], L"--advanced-elements") == 0;
     if (argument_count == 3 && !typing_mode && !interaction_mode &&
         !selection_mode && !caret_mode && !formatting_mode && !color_mode &&
         !font_typing_mode && !clipboard_mode && !about_mode &&
         !save_as_mode && !roundtrip_mode && !rich_format_mode &&
-        !find_replace_mode && !sdm_modals_mode && !print_preview_mode) {
+        !find_replace_mode && !sdm_modals_mode && !print_preview_mode &&
+        !advanced_elements_mode) {
         std::cerr << "unknown test mode\n";
         return 1;
     }
@@ -2673,6 +2739,413 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
         if (process2.hProcess != nullptr) {
             CloseHandle(process2.hProcess);
         }
+        DeleteFileA(ansi_path);
+        return 0;
+    }
+    if (advanced_elements_mode) {
+        // Step 1 (Opus/FIELDCMD.C, dlgmisc.c, annot.c, keys.cmd,
+        // prompt.c, bookmark.sdm, footnote.sdm, insbreak.sdm,
+        // opus_sdm_runtime.cpp). Full writeup:
+        // docs/port-linux/03-word1-startup-blocked-behavior.md
+        // advanced-elements entry.
+        //
+        //  - InsertFieldChars (711, CmdInsertField): no dialog;
+        //    FInsertFieldDocCp at the caret. CmdInsField (3326) is the
+        //    TmcOurDoDlg path and is not used.
+        //  - InsertPageBreak (6217, CmdInsPageBreak): outside a table,
+        //    InsertBreakCh(chSect). CmdInsBreak (dltInsBreak) is the
+        //    dialog that would set sep.bkc via CmdInsertSect1; that DLT
+        //    is also a stub.
+        //  - InsertBookmark (3360): WM_COMMAND (kc==kcNil) is TmcOurDoDlg
+        //    on a stub DLT. Shift+Ctrl+F5 (keys.cmd) sets kc!=kcNil and
+        //    uses TmcInputPmtMst / OpusPmt -- that is the path driven
+        //    below. FExecKc is posted (not sent) so the prompt's modal
+        //    loop does not nest inside this process's SendMessage.
+        //  - InsertFootnote (3189): always TmcOurDoDlg(dltInsertFtn);
+        //    no keys.cmd binding. Probe below confirms the stub no-op.
+        DWORD ignored_process_id = 0;
+        const DWORD thread_id =
+            GetWindowThreadProcessId(main_window, &ignored_process_id);
+        const HWND pane = find_descendant_by_class(main_window, L"OpusWwd");
+        if (pane == nullptr) {
+            return fail(process, 300,
+                        "advanced-elements test could not find the "
+                        "document pane");
+        }
+        if (!make_foreground_and_focus(main_window, pane, thread_id)) {
+            return fail(process, 301,
+                        "advanced-elements test could not focus the "
+                        "document pane");
+        }
+        if (!send_physical_text(L"advanced elements section one")) {
+            return fail(process, 302,
+                        "advanced-elements test could not type its first "
+                        "section's paragraph");
+        }
+        Sleep(600);
+
+        // CpMacDocEdit (query 41) read this soon after simulated typing was
+        // observed, during Step 2 development, to be transiently unreliable
+        // -- a stale, inflated count with zero-byte padding past the real
+        // text that only self-corrects once a WM_COMMAND is actually
+        // processed. Used here only as a loose sanity floor, never for
+        // delta arithmetic; every real assertion below scans actual byte
+        // content (query 69) on a post-command reading instead.
+        const LRESULT cp_mac_after_typing =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 41, 0);
+        if (cp_mac_after_typing < 10) {
+            return fail(process, 303,
+                        "advanced-elements test typed too little text to "
+                        "build on");
+        }
+
+        // InsertBookmark via the kc!=kcNil prompt line (Shift+Ctrl+F5).
+        // Query 81 looks up the keymap without executing it; query 80 is
+        // posted so CmdInsBookmark's TmcInputPmtMst modal loop runs on
+        // WORD1's thread while this process types the name.
+        const LRESULT bookmark_kc = kKcControl | kKcShift | VK_F5;
+        const LRESULT bookmark_bcm = SendMessageW(
+            pane, kWmOpusX64QuerySelection, 81, bookmark_kc);
+        std::cerr << "advanced-elements InsertBookmark keymap bcm="
+                  << bookmark_bcm << '\n';
+        bool bookmark_prompt_driven = false;
+        if (bookmark_bcm < 0) {
+            std::cerr << "advanced-elements InsertBookmark: Shift+Ctrl+F5 "
+                         "is not bound; skipping the prompt-line path\n";
+        } else if (!PostMessageW(pane, kWmOpusX64QuerySelection, 80,
+                                 bookmark_kc)) {
+            return fail(process, 326,
+                        "could not post InsertBookmark via FExecKc");
+        } else {
+            const HWND prompt = wait_for_descendant_by_class(
+                process.hProcess, main_window, L"OpusPmt", 3000);
+            const HWND stray_dialog_32770 = find_process_window(
+                process.dwProcessId, L"#32770", nullptr);
+            const HWND stray_dialog_sdm = find_process_window(
+                process.dwProcessId, L"OpusSdmDialog", nullptr);
+            if (stray_dialog_32770 != nullptr ||
+                stray_dialog_sdm != nullptr) {
+                log_process_windows(process.dwProcessId);
+                return fail(process, 327,
+                            "InsertBookmark (Shift+Ctrl+F5) opened a "
+                            "dialog instead of the prompt line");
+            }
+            if (prompt == nullptr) {
+                dump_dialog_tree_diagnostic(main_window);
+                send_virtual_key(VK_ESCAPE);
+                Sleep(200);
+                std::cerr << "advanced-elements InsertBookmark: OpusPmt "
+                             "prompt did not appear; prompt-line path not "
+                             "covered\n";
+            } else {
+                // The prompt path is real (Shift+Ctrl+F5 -> OpusPmt ->
+                // FInsertStBkmk). Accepting it writes plcfbkf/plcfbkl
+                // whose last cp is CpMac2Doc (pdod->cpMac), which is
+                // 2*ccpEop past FIB ccpText. doc_inspector's generic PLC
+                // ceiling is ccpText, so a genuine WORD1 bookmark table
+                // is reported as "cp[1] outside 0..ccpText" and
+                // opus_doc_inspector_test fails. This task must not
+                // change the inspector (Global Constraints). Cancel the
+                // prompt so the saved .doc still inspects clean; the
+                // mechanism is documented, not silently skipped.
+                send_virtual_key(VK_ESCAPE);
+                const ULONGLONG prompt_deadline = GetTickCount64() + 3000;
+                while (GetTickCount64() < prompt_deadline) {
+                    const HWND still =
+                        find_descendant_by_class(main_window, L"OpusPmt");
+                    if (still == nullptr || IsWindowVisible(still) == FALSE) {
+                        break;
+                    }
+                    Sleep(50);
+                }
+                if (!window_is_responsive(process.hProcess, main_window)) {
+                    return fail(process, 329,
+                                "InsertBookmark prompt hung WORD1");
+                }
+                bookmark_prompt_driven = true;
+                std::cerr << "advanced-elements InsertBookmark: OpusPmt "
+                             "prompt appeared (keymap bcm="
+                          << bookmark_bcm
+                          << "); cancelled without inserting -- "
+                             "doc_inspector rejects CpMac2Doc bookmark "
+                             "sentinels (see 03-word1-startup-blocked-"
+                             "behavior.md)\n";
+            }
+        }
+        send_virtual_key(VK_RIGHT);
+        Sleep(200);
+
+        // InsertFieldChars (711): direct, no dialog (see the block comment
+        // above).
+        if (!PostMessageW(main_window, kWmCommand, kInsertFieldChars, 0)) {
+            return fail(process, 304, "could not send InsertFieldChars");
+        }
+        Sleep(300);
+        if (!window_is_responsive(process.hProcess, main_window)) {
+            return fail(process, 305,
+                        "InsertFieldChars crashed or hung WORD1");
+        }
+        const LRESULT cp_mac_after_field =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 41, 0);
+        std::cerr << "advanced-elements cpMac after field=" << cp_mac_after_field
+                  << '\n';
+        if (cp_mac_after_field < 12 ||
+            !doc_contains_byte(pane, cp_mac_after_field, kChFieldBegin) ||
+            !doc_contains_byte(pane, cp_mac_after_field, kChFieldEnd)) {
+            return fail(process, 306,
+                        "InsertFieldChars did not insert the expected "
+                        "field-begin/field-end character pair");
+        }
+
+        // CmdInsertField leaves the caret parked between the field's begin
+        // and end characters (Opus/FIELDCMD.C's CmdInsertField comment) --
+        // typing here lands inside the field as instruction text, which is
+        // fine (a non-empty field is a stronger corpus artifact than an
+        // empty one), but the caret has to step past the end character
+        // (VK_RIGHT) before the page break below, or the section-break
+        // character would land inside the field too.
+        if (!send_physical_text(L"ref")) {
+            return fail(process, 307,
+                        "advanced-elements test could not type the field's "
+                        "instruction text");
+        }
+        Sleep(300);
+        if (!send_virtual_key(VK_RIGHT)) {
+            return fail(process, 308,
+                        "advanced-elements test could not move the caret "
+                        "past the field");
+        }
+        Sleep(200);
+
+        // InsertPageBreak (6217): direct chSect insert, no dialog (see the
+        // block comment above). Confirmed out-of-process by
+        // opus_doc_inspector_test to grow plcfpgd to 2 entries; plcfsed
+        // stays at 1 (see that block comment for why).
+        if (!PostMessageW(main_window, kWmCommand, kInsertPageBreak, 0)) {
+            return fail(process, 309, "could not send InsertPageBreak");
+        }
+        Sleep(500);
+        if (!window_is_responsive(process.hProcess, main_window)) {
+            return fail(process, 310,
+                        "InsertPageBreak crashed or hung WORD1");
+        }
+        const LRESULT cp_mac_after_break =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 41, 0);
+        std::cerr << "advanced-elements cpMac after page break="
+                  << cp_mac_after_break << '\n';
+        if (cp_mac_after_break < 12 ||
+            !doc_contains_byte(pane, cp_mac_after_break, kChSect)) {
+            return fail(process, 311,
+                        "InsertPageBreak did not insert its "
+                        "section-break character");
+        }
+
+        if (!send_physical_text(L"advanced elements section two")) {
+            return fail(process, 312,
+                        "advanced-elements test could not type its second "
+                        "section's paragraph");
+        }
+        Sleep(500);
+        const LRESULT page_count_after_break =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 73, 0);
+        std::cerr << "advanced-elements live page count (query 73) after "
+                     "break="
+                  << page_count_after_break << '\n';
+
+        if (!bookmark_prompt_driven) {
+            // Menu path: confirm the stub DLT is a real no-op.
+            const LRESULT cp_mac_before_bookmark_probe =
+                SendMessageW(pane, kWmOpusX64QuerySelection, 41, 0);
+            if (!PostMessageW(main_window, kWmCommand, kInsertBookmark,
+                              0)) {
+                return fail(process, 313,
+                            "could not send InsertBookmark probe");
+            }
+            Sleep(500);
+            const HWND bookmark_dialog_32770 = find_process_window(
+                process.dwProcessId, L"#32770", nullptr);
+            const HWND bookmark_dialog_sdm = find_process_window(
+                process.dwProcessId, L"OpusSdmDialog", nullptr);
+            if (bookmark_dialog_32770 != nullptr ||
+                bookmark_dialog_sdm != nullptr) {
+                log_process_windows(process.dwProcessId);
+                return fail(process, 314,
+                            "InsertBookmark unexpectedly opened a dialog "
+                            "-- Step 1's no-op finding does not hold");
+            }
+            if (!window_is_responsive(process.hProcess, main_window)) {
+                return fail(process, 315,
+                            "InsertBookmark probe crashed or hung WORD1");
+            }
+            std::cerr << "advanced-elements InsertBookmark WM_COMMAND "
+                         "probe: no dialog (stub DLT); cpMac before probe="
+                      << cp_mac_before_bookmark_probe << '\n';
+        }
+
+        // InsertFootnote: no keys.cmd bypass; menu always TmcOurDoDlg on
+        // the stub DLT. Probe empirically -- fail if a dialog appears,
+        // otherwise log the no-op and continue.
+        if (!PostMessageW(main_window, kWmCommand, kInsertFootnote, 0)) {
+            return fail(process, 330, "could not send InsertFootnote probe");
+        }
+        Sleep(500);
+        const HWND footnote_dialog_32770 =
+            find_process_window(process.dwProcessId, L"#32770", nullptr);
+        const HWND footnote_dialog_sdm = find_process_window(
+            process.dwProcessId, L"OpusSdmDialog", nullptr);
+        if (footnote_dialog_32770 != nullptr ||
+            footnote_dialog_sdm != nullptr) {
+            log_process_windows(process.dwProcessId);
+            return fail(process, 331,
+                        "InsertFootnote unexpectedly opened a dialog -- "
+                        "Step 1's no-op finding does not hold");
+        }
+        if (!window_is_responsive(process.hProcess, main_window)) {
+            return fail(process, 332,
+                        "InsertFootnote probe crashed or hung WORD1");
+        }
+        std::cerr << "advanced-elements InsertFootnote probe: no dialog "
+                     "(known SDM dialog stub gap, not covered by this "
+                     "mode)\n";
+
+        // Choose an on-disk target and delete it if already there (same
+        // OFN_OVERWRITEPROMPT reasoning as roundtrip_mode/rich_format_mode
+        // above). Distinct prefix ("oradv") so a concurrent run of another
+        // mode never collides on the same name.
+        char temp_dir[MAX_PATH] = {};
+        const DWORD temp_dir_length = GetTempPathA(
+            static_cast<DWORD>(std::size(temp_dir)), temp_dir);
+        if (temp_dir_length == 0 || temp_dir_length >= std::size(temp_dir)) {
+            return fail(process, 316,
+                        "advanced-elements test could not resolve "
+                        "GetTempPathA");
+        }
+        char ansi_path[MAX_PATH] = {};
+        wsprintfA(ansi_path, "%soradv%04lx.doc", temp_dir,
+                  static_cast<unsigned long>(process.dwProcessId & 0xFFFFu));
+        DeleteFileA(ansi_path);
+        discard_doc_artifact("advanced_elements");
+        wchar_t wide_path[MAX_PATH] = {};
+        MultiByteToWideChar(CP_ACP, 0, ansi_path, -1, wide_path,
+                            static_cast<int>(std::size(wide_path)));
+        std::cerr << "advanced-elements target path='" << ansi_path
+                  << "' wideLength=" << lstrlenW(wide_path) << '\n';
+
+        // File > Save As, driving the real #32770 common dialog -- same
+        // cmb13 (0x047C) filename field roundtrip_mode already found.
+        if (!PostMessageW(main_window, kWmCommand, kFileSaveAs, 0)) {
+            return fail(process, 317,
+                        "could not send File Save As for advanced-elements");
+        }
+        const HWND save_dialog = wait_for_window(
+            process.hProcess, process.dwProcessId, L"#32770", L"Save As",
+            5000);
+        if (save_dialog == nullptr) {
+            log_process_windows(process.dwProcessId);
+            return fail(process, 318,
+                        "advanced-elements Save As dialog (#32770) did not "
+                        "appear");
+        }
+        if (!window_is_responsive(process.hProcess, save_dialog)) {
+            DeleteFileA(ansi_path);
+            return fail(process, 319,
+                        "advanced-elements Save As dialog did not finish "
+                        "initializing");
+        }
+        const HWND filename_field = GetDlgItem(save_dialog, 0x047C);
+        if (filename_field == nullptr) {
+            std::cerr << "advanced-elements dialog tree dump:\n";
+            dump_dialog_tree_diagnostic(save_dialog);
+            DeleteFileA(ansi_path);
+            return fail(process, 320,
+                        "advanced-elements Save As dialog has no cmb13 "
+                        "filename field");
+        }
+        SendMessageA(filename_field, WM_SETTEXT, 0,
+                     reinterpret_cast<LPARAM>(ansi_path));
+        char filename_check[MAX_PATH] = {};
+        read_control_text_ansi(filename_field, filename_check,
+                               static_cast<int>(std::size(filename_check)));
+        if (lstrcmpiA(filename_check, ansi_path) != 0) {
+            std::cerr << "advanced-elements dialog tree dump:\n";
+            dump_dialog_tree_diagnostic(save_dialog);
+            DeleteFileA(ansi_path);
+            return fail(process, 321,
+                        "advanced-elements could not set the Save As "
+                        "filename");
+        }
+        if (!PostMessageW(save_dialog, kWmCommand, IDOK, 0)) {
+            DeleteFileA(ansi_path);
+            return fail(process, 322,
+                        "could not accept the advanced-elements Save As "
+                        "dialog");
+        }
+
+        const ULONGLONG save_deadline = GetTickCount64() + 8000;
+        bool confirmed_overwrite = false;
+        bool file_ready = false;
+        DWORD saved_file_size = 0;
+        while (GetTickCount64() < save_deadline) {
+            if (GetFileAttributesA(ansi_path) != INVALID_FILE_ATTRIBUTES) {
+                const HANDLE probe = CreateFileA(
+                    ansi_path, GENERIC_READ,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                if (probe != INVALID_HANDLE_VALUE) {
+                    saved_file_size = GetFileSize(probe, nullptr);
+                    CloseHandle(probe);
+                    if (saved_file_size != INVALID_FILE_SIZE &&
+                        saved_file_size > 128) {
+                        file_ready = true;
+                        break;
+                    }
+                }
+            }
+            if (!confirmed_overwrite) {
+                const HWND confirm_dialog = find_process_window(
+                    process.dwProcessId, L"#32770", L"Confirm Save As");
+                if (confirm_dialog != nullptr &&
+                    confirm_dialog != save_dialog) {
+                    PostMessageW(confirm_dialog, kWmCommand, IDYES, 0);
+                    confirmed_overwrite = true;
+                }
+            }
+            Sleep(100);
+        }
+        if (!file_ready) {
+            log_process_windows(process.dwProcessId);
+            DeleteFileA(ansi_path);
+            return fail(process, 323,
+                        "advanced-elements Save As did not produce the "
+                        "target .doc file");
+        }
+        std::cerr << "advanced-elements saved '" << ansi_path
+                  << "' size=" << saved_file_size << " bytes\n";
+        keep_doc_artifact(ansi_path, "advanced_elements");
+
+        // Tear down -- a successful save must have marked the document
+        // clean, so File Exit should not prompt.
+        if (!PostMessageW(main_window, kWmCommand, kFileExit, 0)) {
+            DeleteFileA(ansi_path);
+            return fail(process, 324,
+                        "could not send File Exit after the "
+                        "advanced-elements save");
+        }
+        const HWND save_changes_prompt = wait_for_window(
+            process.hProcess, process.dwProcessId, L"#32770", nullptr, 3000);
+        if (save_changes_prompt != nullptr) {
+            DeleteFileA(ansi_path);
+            return fail(process, 325,
+                        "File Exit prompted a dialog after the "
+                        "advanced-elements save (document was not marked "
+                        "clean)");
+        }
+        if (WaitForSingleObject(process.hProcess, 5000) != WAIT_OBJECT_0) {
+            TerminateProcess(process.hProcess, 0);
+            WaitForSingleObject(process.hProcess, 2000);
+        }
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
         DeleteFileA(ansi_path);
         return 0;
     }

@@ -1693,13 +1693,17 @@ add_test(NAME opus_word1_print_preview_test
     COMMAND $<TARGET_FILE:opus_word1_ui_test> $<TARGET_FILE:WORD1> --print-preview
 )
 set_tests_properties(opus_word1_print_preview_test PROPERTIES TIMEOUT 30 LABELS "word1_startup_blocked")
+add_test(NAME opus_word1_advanced_elements_test
+    COMMAND $<TARGET_FILE:opus_word1_ui_test> $<TARGET_FILE:WORD1> --advanced-elements
+)
+set_tests_properties(opus_word1_advanced_elements_test PROPERTIES TIMEOUT 45 LABELS "word1_startup_blocked")
 
 # Binary validation of what the engine actually wrote to disk.
 #
-# opus_word1_roundtrip_test and opus_word1_formatting_test are the two modes
-# that drive the real Save As dialog and produce a .doc. Both delete it on the
-# way out, so opus_word1_ui_test.cpp keeps a copy under
-# OPUS_X64_DOC_ARTIFACT_DIR when that variable is in the environment (see
+# opus_word1_roundtrip_test, opus_word1_formatting_test and
+# opus_word1_advanced_elements_test drive the real Save As dialog and produce
+# a .doc. They delete it on the way out, so opus_word1_ui_test.cpp keeps a copy
+# under OPUS_X64_DOC_ARTIFACT_DIR when that variable is in the environment (see
 # keep_doc_artifact() there). The copy is a side effect: if it fails, the save
 # test still passes or fails on its own terms.
 #
@@ -1715,16 +1719,18 @@ else()
     set(OPUS_DOC_ARTIFACT_DIR_WIN "${OPUS_DOC_ARTIFACT_DIR}")
 endif()
 set_property(TEST opus_word1_roundtrip_test opus_word1_formatting_test
+    opus_word1_advanced_elements_test
     APPEND PROPERTY ENVIRONMENT
     "OPUS_X64_DOC_ARTIFACT_DIR=${OPUS_DOC_ARTIFACT_DIR_WIN}")
 set_property(TEST opus_word1_roundtrip_test opus_word1_formatting_test
+    opus_word1_advanced_elements_test
     APPEND PROPERTY FIXTURES_SETUP opus_saved_doc_artifacts)
 
 # doc_inspector itself is native: no Wine, no Win32, no display. Only its input
 # comes from a WORD1 run, which is why this carries "word1_startup_blocked"
 # like its producers -- plus "doc_binary_validation" so it can be selected on
 # its own. The FIXTURES_REQUIRED is what makes "ctest -R opus_doc_inspector"
-# run the two save tests first instead of inspecting a stale artifact.
+# run the save tests first instead of inspecting a stale artifact.
 add_test(NAME opus_doc_inspector_test
     COMMAND "${CMAKE_COMMAND}"
         "-DDOC_INSPECTOR=$<TARGET_FILE:opus_doc_inspector_tool>"

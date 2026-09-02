@@ -2395,3 +2395,102 @@ AND the exit code must be the known-quirk value (0 or 1) -- any other
 exit code still fails, same as before this change. No change to error
 code 12 (same identifier, revised error message reflecting the two
 possible causes).
+
+## 17. `--advanced-elements`: marcadores, campos, notas al pie y saltos vía UI real
+
+**2026-09-02, this VPS, `DISPLAY=:91`.** New `opus_word1_ui_test` mode
+`--advanced-elements` (`opus_word1_advanced_elements_test`) drives WORD1
+through real insert commands, Save As, and `keep_doc_artifact(...,
+"advanced_elements")`. `opus_doc_inspector_test` picks the extra `.doc`
+up via the existing `GLOB` -- no inspector or `RunDocInspector.cmake`
+changes.
+
+This is internal corpus generation: WORD1.exe.so under Winelib **is**
+the Word 1.1a engine, so a `.doc` it writes is a genuine Win16 binary
+with the same codec as a 1990 floppy. Vintage files were not required.
+
+### Step 1 -- real UI mechanisms (read from `Opus/`, then probed)
+
+**Campo -- `InsertFieldChars` 711, `CmdInsertField` in `Opus/FIELDCMD.C`.**
+Direct, no dialog. With an insertion point (`selCur.sk == skIns`) it
+calls `FInsertFieldDocCp` and parks the caret between `chFieldBegin`
+(19) and `chFieldEnd` (21). `InsertField` 3326 (`CmdInsField` in
+`insfield.c`) is the `TmcOurDoDlg(dltInsField)` path; `insfield.sdm` is
+still `= { 0 }`, so it was not used. The harness types `ref` into the
+empty field, then `VK_RIGHT` past `chFieldEnd` so the page break does
+not land inside it. Witness: query 69 finds both field characters;
+`doc_inspector --verbose` must show a non-empty `plcffldMom`.
+
+**Salto -- `InsertPageBreak` 6217, `CmdInsPageBreak` in `Opus/dlgmisc.c`.**
+Outside a table (true here) it calls `InsertBreakCh(chSect)`. `chSect`
+is 12 (`Opus/ch.h`): Word 1.x's combined paragraph/section mark,
+inserted with `FInsertRgch`, no dialog. `Ctrl+Return` is the same
+command (`keys.cmd`). `CmdInsBreak` (`dltInsBreak` / `insbreak.sdm`,
+also a stub) is a **different** command: its Next/Odd/Even/Continuous
+cases call `CmdInsertSect1` and set `sep.bkc`, which is what actually
+splits `plcfsed`. `CmdSection` 3590 (`dlglook2.c`) is Format > Section
+on the current section, not an insert. Goal: more than one `plcfpgd`
+entry. Extra `plcfsed` entries need `CmdInsBreak` or equivalent, which
+this port cannot drive without populating `insbreak.sdm`.
+
+**Marcador -- `InsertBookmark` 3360, `CmdInsBookmark` in `Opus/dlgmisc.c`.**
+Does **not** require a prior selection: `FInsertStBkmk(&selCur.ca, ...)`
+accepts an insertion point (zero-length bookmark) as well as a range.
+Name must start with a letter (`FLegalBkmkName`). Two UI paths:
+
+1. Menu / `WM_COMMAND` (`pcmb->kc == kcNil`): `TmcOurDoDlg(dltInsBookmark)`.
+   `bookmark.sdm` is `DLT dltInsBookmark = { 0 }`. `create_dialog_host`
+   only materializes a real `OpusSdmDialog` for a hid allowlist that
+   does not include `IDDInsBookmark` (11). `TmcDoDlgDli` then returns
+   `tmcCancel` with no window -- a silent no-op. Probed with
+   `WM_COMMAND` 3360: no `#32770`, no `OpusSdmDialog`.
+2. Keyboard `Shift+Ctrl+F5` (`keys.cmd InsertBookmark`): `kc != kcNil`,
+   so `TmcInputPmtMst(mstInsBookmark, ...)` (`util2.c` / `prompt.c`)
+   creates the `OpusPmt` prompt line (`pdcInput` =
+   `pdcmPmt|pdcmCreate|pdcmPermanent`, class `OpusPmt` in
+   `initwin.c`). Typing a legal name and Return reaches
+   `FInsertStBkmk`. Query 81 confirms the keymap (`bcm=3360`); posting
+   query 80 (`FExecKc`) opens `OpusPmt` without nesting the modal loop
+   inside this process's `SendMessage`. Empirically, accepting the
+   prompt writes a real `plcfbkf`/`plcfbkl` pair (one bookmark; with
+   Select All first, `cpFirst < cpLim`). The last cp of both tables is
+   `CpMac2Doc` (`pdod->cpMac`, `EDIT.C` `FAssureBkmksForDoc` /
+   `HplcInit`), which is `2*ccpEop` past FIB `ccpText` (70 vs 66 in
+   the captured file). `doc_inspector`'s generic PLC ceiling is
+   `ccpText`, so it reports `cp[1] is outside 0..66` and fails
+   `opus_doc_inspector_test`. That ceiling is correct for
+   `plcfsed`/`plcfpgd`/`plcffldMom` (all end at 66) and wrong for
+   bookmark tables. Changing the inspector is out of this task's
+   scope (Global Constraints). The harness therefore **cancels** the
+   prompt after confirming it appeared, so the saved `.doc` still
+   inspects clean. A later inspector change (allow `CpMac2Doc` for
+   `plcfbkf`/`plcfbkl`) unblocks writing the bookmark.
+
+**Nota al pie -- `InsertFootnote` 3189, `CmdInsFootnote` in `Opus/annot.c`.**
+Always `TmcOurDoDlg(dltInsertFtn)` when `pcmb->fDialog`. `footnote.sdm`
+is the same unpopulated stub. No `keys.cmd` binding (unlike
+InsertBookmark). On `tmcOK` it would call `CmdFootnote1` (auto ref =
+`chFootnote` 2) and split a footnote pane (`FShowFtnAtn` / `wkFtn`).
+There is no no-dialog path from a menu/`WM_COMMAND` invocation.
+Probed: `WM_COMMAND` 3189, no window, WORD1 stays responsive -- genuine
+no-op, not a hung dialog. Populating `footnote.sdm` plus
+`materialize_footnote_template` (same class of work as the already-
+fixed search/replace templates) is outside this task's file list.
+
+### PLCs in the saved artifact
+
+| PLC | Expected | Mechanism |
+|---|---|---|
+| `plcffldMom` | real Begin/End pair | `CmdInsertField` 711 |
+| `plcfpgd` | more than one entry | `CmdInsPageBreak` 6217 / `chSect` |
+| `plcfsed` | typically still 1 | needs `CmdInsBreak` / `CmdInsertSect1` (stub DLT) |
+| `plcfbkf` / `plcfbkl` | empty in the saved artifact | prompt path confirmed (`OpusPmt` appears, bcm=3360); insertion cancelled because `doc_inspector` rejects `CpMac2Doc` sentinels (70 vs `ccpText` 66). Accepting the prompt produced 1 real bookmark with `cpFirst < cpLim` once the first paragraph was selected. |
+| `plcffndRef` / `plcffndTxt` | empty | stub `dltInsertFtn`; no keyboard bypass |
+
+### Test
+
+`opus_word1_advanced_elements_test` (timeout 45, label
+`word1_startup_blocked`, `FIXTURES_SETUP opus_saved_doc_artifacts`).
+Baseline on this VPS before the mode: 12/14 on that label (only
+`interaction_test` and `print_preview_test` failing, both documented).
+After: 13/15, same two known failures, plus the new test.
