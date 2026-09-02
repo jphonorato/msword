@@ -2361,19 +2361,31 @@ used as an additional oracle alongside the exit code, which is now
 only tolerated when it is the specific known-quirk value (0 or 1), not
 any value; a genuine crash-during-shutdown still fails the test.
 
-**Test status on this machine:** `opus_word1_ui_test` (which includes
-the two-document mode as its default, no-flag path) does not pass on
-this VPS, but for unrelated, earlier reasons: it fails at
-`fail(process, 8, "File New dialog did not finish")`, several steps
-before the modified two-document File Exit block is ever reached. This
-is a pre-existing issue unrelated to this change (confirmed by testing
-the pre-change version), but it also means the new code in this
-section was never actually executed by any test run in this session.
-This VPS's toolchain matches the Debian 13 reference toolchain used by
-the `debian13` systemd-nspawn container on hp-15; it was that specific
-container instance that originally hit the "was not clean" exit-code
-failure in this mode. Full confirmation that this fix resolves that
-issue is pending a retest on that container.
+**Test status on this machine:** during the fix's own development
+session, `opus_word1_ui_test` did not pass on this VPS, for unrelated,
+earlier reasons: it failed at `fail(process, 8, "File New dialog did
+not finish")`, several steps before the modified two-document File
+Exit block was ever reached -- confirmed pre-existing and unrelated to
+this change (reproduced against the pre-change version too), but it
+also meant the new code in this section was never actually executed
+by any test run in that session. That turned out to be session-level
+`wineserver`/Xvfb degradation from heavy iteration (many
+`SIGKILL`-terminated `WORD1.exe.so` processes accumulated while
+debugging an unrelated task on the same shared display), not a
+standing defect: **on a fresh build in a clean checkout right after
+merge, `opus_word1_ui_test` passed cleanly (3.76s)** -- the modified
+two-document File Exit block was exercised end to end for the first
+time and passed, and the full `word1_startup_blocked` label came back
+12/14 (only the already-documented `opus_word1_interaction_test`
+caption-drag limitation and the still-unmerged `opus_word1_print_preview_test`
+failing), a clear improvement over the 8/14 seen during the noisy
+development session. This VPS's toolchain matches the Debian 13
+reference toolchain used by the `debian13` systemd-nspawn container on
+hp-15; it was that specific container instance that originally hit the
+"was not clean" exit-code failure in this mode. Full confirmation that
+this fix resolves that exact failure is still pending a retest on that
+container, but the fix is now confirmed to work correctly end to end
+on this VPS.
 
 **Code change:** `src/port/original/opus_word1_ui_test.cpp`, in the
 two-document File Exit block, replacing the exit-code check with a
