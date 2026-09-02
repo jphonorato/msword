@@ -1,67 +1,67 @@
-# Pendientes que requieren Fedora — diagnóstico de heap corruption en el arranque de WORD1
+# Outstanding items requiring Fedora: heap corruption diagnosis at WORD1 startup
 
-**ACTUALIZADO 2026-08-14 — la premisa del título quedó parcialmente
-superada.** La sesión hp-15 (`01-...md`, sección "Sesión hp-15") reprodujo
-el crash en **EndeavourOS/Arch** (GCC 16.2.1, wine-staging 11.15), no solo
-en Fedora — confirma que la variable relevante es GCC ≥15, no la distro
-específica. Los ítems 1 y 2 de este documento, que estaban listados como
-bloqueados a la espera de Fedora, ya se ejecutaron ahí y quedan marcados
-**hecho** abajo, con el resultado real en vez de la instrucción pendiente.
-Fedora en sí sigue sin probarse — el documento no queda invalidado, solo
-deja de ser la única vía. El resto de los ítems (3-7) sigue abierto tal
-cual, independiente de en qué entorno se ejecuten.
+**UPDATED 2026-08-14, the title's premise is partially superseded.** The
+hp-15 session (`01-...md`, "hp-15 Session" section) reproduced the crash on
+**EndeavourOS/Arch** (GCC 16.2.1, wine-staging 11.15), not only on Fedora,
+confirming that the relevant variable is GCC ≥15, not the specific distro.
+Items 1 and 2 of this document, which were listed as blocked pending
+Fedora, have already been run there and are marked **done** below, with
+the real result instead of the pending instruction. Fedora itself remains
+untested, the document is not invalidated, it just stops being the only
+path. The remaining items (3-7) stay open as-is, regardless of which
+environment they run in.
 
-Checklist de continuación de `01-heap-corruption-startup-diagnosis.md`.
-Todo lo que sigue quedó bloqueado, sin cerrar, o sin poder generalizarse
-desde el sandbox usado en las sesiones más recientes (Debian 13 "trixie",
-GCC 14.2.0, wine-10.0 Debian repack, `gdb` 16.3) — que **no reproduce el
-crash** (§11.2, §13). El crash sí reproduce, de forma consistente, en:
+Continuation checklist for `01-heap-corruption-startup-diagnosis.md`.
+Everything below remained blocked, unresolved, or could not be generalized
+from the sandbox used in the most recent sessions (Debian 13 "trixie",
+GCC 14.2.0, wine-10.0 Debian repack, `gdb` 16.3), which **does not
+reproduce the crash** (§11.2, §13). The crash does reproduce, consistently,
+on:
 
 - **Fedora 44**
 - **GCC 16.1.1**
 - **wine-staging 11.0**
 - `gdb` 17.2
 - `valgrind` 3.27.1
-- **EndeavourOS (Arch), GCC 16.2.1, wine-staging 11.15** (hp-15, ver arriba)
+- **EndeavourOS (Arch), GCC 16.2.1, wine-staging 11.15** (hp-15, see above)
 
-No se sabe todavía cuál de estas variables (versión de Wine, de GCC, o
-config de `wine.conf`/DPI/tema) es la que hace la diferencia frente a
-Debian — no investigado (§11.2). Igualar el entorno completo es la única
-vía confirmada para reproducir, no solo la versión de Wine. Lo que sí se
-puede afirmar ahora (hp-15): **no hace falta Fedora específicamente**,
-GCC ≥15 alcanza.
+It is not yet known which of these variables (Wine version, GCC version, or
+`wine.conf`/DPI/theme config) makes the difference against Debian, not
+investigated (§11.2). Matching the full environment is the only confirmed
+way to reproduce, not just the Wine version. What can be stated now
+(hp-15): **Fedora specifically is not required**, GCC ≥15 is enough.
 
-Referencias entre paréntesis (`§N`) son secciones de
+Parenthetical references (`§N`) are sections of
 `01-heap-corruption-startup-diagnosis.md`.
 
 ---
 
-## 0. Prerrequisitos — ya resueltos en `main`, no repetir el trabajo
+## 0. Prerequisites: already resolved on `main`, do not repeat the work
 
-Los tres bloqueadores de build que aparecieron al reconstruir en un
-entorno distinto a Fedora (§11.1) ya están commiteados en `main`, no hace
-falta re-descubrirlos:
+The three build blockers that appeared when rebuilding in an environment
+other than Fedora (§11.1) are already committed on `main`, no need to
+rediscover them:
 
-- `wrc: codepage 1252 not supported` → fix con `--nls-dir` (`a0191b0`).
-  **Verificar en Fedora**: el path hardcodeado es
-  `/usr/share/wine/nls` — confirmar que existe ahí en el paquete
-  `wine-staging` de Fedora antes de asumir que aplica sin cambios.
-- `GetCurrentThreadStackLimits was not declared` → declaración local
-  guardada (`a0191b0`). En Wine 11.0/Fedora la función **sí** está
-  declarada nativamente (a diferencia de Wine 10.0/Debian, que fue el
-  motivo del fix) — confirmar que la declaración local no choca
-  (redefinición) contra la real de ese `windows.h`.
-- `opus_word1_ui_test.cpp:379` cast `LONG`/`20L`, más `std::min`,
-  `_wcsicmp` sin declarar y `wmain` sin `extern "C"` → reparado y
-  **linkeando** (`6ff2b53`). Esto desbloquea disparar `C_FormatLineDxa`
-  vía `--typing`/`--font-typing` en vez de lanzar `WORD1` en vacío (ver
-  §5, punto abajo).
+- `wrc: codepage 1252 not supported` → fixed with `--nls-dir` (`a0191b0`).
+  **Verify on Fedora**: the hardcoded path is
+  `/usr/share/wine/nls`, confirm it exists there in Fedora's
+  `wine-staging` package before assuming it applies unchanged.
+- `GetCurrentThreadStackLimits was not declared` → local declaration
+  kept (`a0191b0`). In Wine 11.0/Fedora the function **is** declared
+  natively (unlike Wine 10.0/Debian, which was the reason for the fix);
+  confirm the local declaration does not clash (redefinition) with the
+  real one from that `windows.h`.
+- `opus_word1_ui_test.cpp:379` `LONG`/`20L` cast, plus `std::min`,
+  undeclared `_wcsicmp`, and `wmain` without `extern "C"` → fixed and
+  **linking** (`6ff2b53`). This unblocks triggering `C_FormatLineDxa`
+  via `--typing`/`--font-typing` instead of launching `WORD1` empty (see
+  §5, point below).
 
-Además, desde la última sesión en Fedora (§1-§9) se sumaron **7 commits**
-de migración `Global*` → `OpusMem*` (`bf7a5e1`..`aab06e5`, más
-`opus_shell_spine` ya enlazado en `WORD1` desde `7966f3b`) — el binario a
-diagnosticar en Fedora ya no es el mismo que en §1-§9. Reconstruir desde
-`HEAD` de `main`, no reusar un binario viejo.
+In addition, since the last Fedora session (§1-§9) **7 commits** of
+`Global*` → `OpusMem*` migration were added (`bf7a5e1`..`aab06e5`, plus
+`opus_shell_spine` already linked into `WORD1` since `7966f3b`), the
+binary to diagnose on Fedora is no longer the same as in §1-§9. Rebuild
+from `HEAD` of `main`, do not reuse an old binary.
 
 ```bash
 cd src
@@ -72,61 +72,60 @@ cmake --build --preset linux-winelib-debug --target WORD1
 
 ---
 
-## 1. Confirmar que el crash sigue reproduciendo (baseline) — HECHO (hp-15)
+## 1. Confirm the crash still reproduces (baseline): DONE (hp-15)
 
-Ejecutado en EndeavourOS/Arch desde `HEAD` (`5fed452`), 4 corridas con
-`gdb -q --batch -ex run -ex "bt full" --args wine WORD1.exe.so`: reproduce
-4/4, con **dos firmas nuevas** además de las ya conocidas (`free(): invalid
-pointer`, `double free or corruption (!prev)`) — ver `01-...md`, "Sesión
-hp-15" §1. Confirma que la migración `Global*`→`OpusMem*` de las 7
-commits previas no cambió el comportamiento de fondo: sigue siendo
-corrupción de heap real, timing-dependiente. No hace falta repetir esto en
-Fedora salvo para comparar firmas específicas.
-
----
-
-## 2. Hito 2 del plan v2 — `WINEDEBUG=+heap` — HECHO (hp-15), resultado negativo pero informativo
-
-Ejecutado por primera vez en cualquier entorno (hp-15, `01-...md` §2):
-**888.073 líneas**, crash real en la línea 24273. **Hallazgo:** no hay
-ningún `RtlFreeHeap` logueado inmediatamente antes del crash — el `free()`
-que aborta es el destructor de un `std::wstring` de C++ (`operator
-delete`/glibc directo), no pasa por el heap propio de Wine que `+heap`
-instrumenta. **Consecuencia para el resto del plan:** `+heap` queda sin
-valor diagnóstico adicional para esta familia de bug (cualquier corrupción
-originada en un `std::wstring`/`std::vector` de C++ es invisible a esta
-herramienta) — no reintentar sin una hipótesis nueva que involucre memoria
-Win32 (`GlobalAlloc`/`HeapAlloc`) directamente. La vía que sí dio una pista
-concreta fue el escaneo manual de stack (`01-...md` §3), no esto.
+Run on EndeavourOS/Arch from `HEAD` (`5fed452`), 4 runs with
+`gdb -q --batch -ex run -ex "bt full" --args wine WORD1.exe.so`: reproduces
+4/4, with **two new signatures** in addition to the already-known ones
+(`free(): invalid pointer`, `double free or corruption (!prev)`), see
+`01-...md`, "hp-15 Session" §1. Confirms that the `Global*`→`OpusMem*`
+migration from the 7 prior commits did not change the underlying behavior:
+it is still real, timing-dependent heap corruption. No need to repeat this
+on Fedora except to compare specific signatures.
 
 ---
 
-## 3. Symbolizar frame #0 — HECHO (hp-15 cont., `01-...md` §9), no era una DLL de Wine
+## 2. Milestone 2 of plan v2: `WINEDEBUG=+heap`: DONE (hp-15), negative but informative result
 
-La hipótesis de esta sección (DLL de Wine, `user32`/`gdi32`/`ntdll`) era
-sobre una dirección de un build de Fedora que ya no existe — quedó
-refutada. Con `info proc mappings` + la base de `libc.so.6` + `addr2line`
-contra el `debuginfo` real (cacheado por `debuginfod`, no el `.so` del
-sistema sin símbolos), frame #0 resuelve a
-`__pthread_kill_implementation` (`nptl/pthread_kill.c:44`) — la cola
-genérica de `abort()`→`raise()`→`pthread_kill()`, idéntica en 3/3
-corridas con dos firmas de crash distintas. Es información esperada
-(cualquier abort de heap de glibc termina ahí) y no aporta más sobre el
-origen — ver `01-...md` §9 para el detalle y por qué no hace falta
-reintentar esto en Fedora.
+Run for the first time in any environment (hp-15, `01-...md` §2):
+**888,073 lines**, real crash at line 24273. **Finding:** no `RtlFreeHeap`
+is logged immediately before the crash, the `free()` that aborts is the
+destructor of a C++ `std::wstring` (`operator delete`/glibc direct), it
+does not go through Wine's own heap that `+heap` instruments.
+**Consequence for the rest of the plan:** `+heap` has no further
+diagnostic value for this bug family (any corruption originating in a C++
+`std::wstring`/`std::vector` is invisible to this tool), do not retry
+without a new hypothesis directly involving Win32 memory
+(`GlobalAlloc`/`HeapAlloc`). The path that did give a concrete lead was
+the manual stack scan (`01-...md` §3), not this.
 
 ---
 
-## 4. Breakpoints por archivo:línea — usar el atajo de §12.1, no el plan viejo de §11.4
+## 3. Symbolize frame #0: DONE (hp-15 cont., `01-...md` §9), it was not a Wine DLL
 
-**No hace falta** el plan de 3 pasos que §11.4 dejó recomendado
-(breakpoint por dirección absoluta, o instrumentar `LOADFONT.C` con
-`fprintf` bajo autorización) — quedó **refutado como innecesario** en
-§12.1, aunque esa refutación se hizo en Debian (sin el crash real). El
-mecanismo (símlinks de 18 fuentes case-shimmed a
-`generated/lowercase-c/*.c`, DWARF registra el path en minúsculas) es
-una propiedad del build, no del entorno, así que debería aplicar igual en
-Fedora:
+This section's hypothesis (a Wine DLL, `user32`/`gdi32`/`ntdll`) was about
+an address from a Fedora build that no longer exists, it was ruled out.
+With `info proc mappings` + the base of `libc.so.6` + `addr2line` against
+the real `debuginfo` (cached by `debuginfod`, not the system's
+symbol-less `.so`), frame #0 resolves to
+`__pthread_kill_implementation` (`nptl/pthread_kill.c:44`), the generic
+`abort()`→`raise()`→`pthread_kill()` tail, identical in 3/3 runs with two
+different crash signatures. This is expected information (any glibc heap
+abort ends up there) and adds nothing further about the origin, see
+`01-...md` §9 for the detail and why there is no need to retry this on
+Fedora.
+
+---
+
+## 4. File:line breakpoints: use the §12.1 shortcut, not the old §11.4 plan
+
+The 3-step plan §11.4 left recommended (breakpoint by absolute address, or
+instrumenting `LOADFONT.C` with `fprintf` under authorization) **is not
+needed**, it was **ruled out as unnecessary** in §12.1, although that was
+ruled out on Debian (without the real crash). The mechanism (18 source
+symlinks case-shimmed to `generated/lowercase-c/*.c`, DWARF records the
+path in lowercase) is a property of the build, not the environment, so it
+should apply the same way on Fedora:
 
 ```bash
 gdb -q --batch -ex "set breakpoint pending on" \
@@ -134,97 +133,97 @@ gdb -q --batch -ex "set breakpoint pending on" \
     -ex "run" -ex "bt 6" --args wine WORD1.exe.so
 ```
 
-**En minúsculas.** `break LOADFONT.C:349` (mayúsculas, como venía
-haciéndose en Fedora en §11.3 antes de aislar la causa) nunca resuelve —
-queda `<PENDING>` para siempre. Confirmar esto primero en Fedora antes de
-asumir que el problema de §2/§11.3 (`info sharedlibrary` vacío por
-`wine-preloader`) sigue aplicando de la misma forma — puede que Wine
-11.0/Fedora se comporte distinto de Wine 10.0/Debian acá, no verificado.
+**In lowercase.** `break LOADFONT.C:349` (uppercase, as had been done on
+Fedora in §11.3 before isolating the cause) never resolves, it stays
+`<PENDING>` forever. Confirm this first on Fedora before assuming the
+problem from §2/§11.3 (`info sharedlibrary` empty due to
+`wine-preloader`) still applies the same way, Wine 11.0/Fedora may
+behave differently from Wine 10.0/Debian here, not verified.
 
-Con esto, cerrar la hipótesis de `vsci.hdcScratch` (§10) **con el crash
-real reproduciendo**, no como en §13 (que la cerró solo para una corrida
-sin crash en Debian — no generalizable). Repetir ahí mismo lo de §13:
+With this, close the `vsci.hdcScratch` hypothesis (§10) **with the real
+crash reproducing**, not as in §13 (which closed it only for a run
+without a crash on Debian, not generalizable). Repeat §13's approach
+right there:
 
 ```bash
 DISPLAY=:99 WINEDEBUG=+gdi wine WORD1.exe.so >gdi.trace 2>&1
 ```
 
-y `grep` el valor de handle de `vsci.hdcScratch` (obtenido del propio
-`gdb` en el breakpoint) buscando si aparece junto a
-`NtGdiDeleteObjectApp`/`free_gdi_handle` **antes** de que el crash real
-ocurra — en Debian nunca hubo crash con el que cruzar esto, en Fedora sí
-lo hay.
+and `grep` the `vsci.hdcScratch` handle value (obtained from `gdb` itself
+at the breakpoint) looking for whether it appears alongside
+`NtGdiDeleteObjectApp`/`free_gdi_handle` **before** the real crash occurs:
+on Debian there was never a crash to cross-check this against, on
+Fedora there is.
 
 ---
 
-## 5. Disparar `C_FormatLineDxa` con `opus_word1_ui_test` — ahora confirmado necesario, no solo "puede dar mejor repro"
+## 5. Trigger `C_FormatLineDxa` with `opus_word1_ui_test`: now confirmed necessary, not just "may give a better repro"
 
-Ahora que `opus_word1_ui_test` compila y linkea (`6ff2b53`, ver §0), está
-disponible el camino que §11.1 dejó bloqueado: usar `--typing`/
-`--font-typing` para forzar una ruta de formateo de línea real en vez de
-depender de que el arranque en vacío la ejercite por su cuenta.
+Now that `opus_word1_ui_test` compiles and links (`6ff2b53`, see §0), the
+path §11.1 left blocked is available: use `--typing`/`--font-typing` to
+force a real line-formatting path instead of relying on empty startup
+exercising it on its own.
 
-**Confirmado en hp-15 cont. (`01-...md` §10): con el arranque en vacío
-`C_FormatLineDxa` nunca se llama** — instrumentado con log de entrada,
-cero invocaciones en 5/5 corridas del crash de §1. El crash de este
-documento (arranque, documento en blanco) ocurre enteramente en la
-construcción de ventana/toolbar, no en formateo de línea. Esta vía deja
-de ser "puede dar mejor repro" y pasa a ser **la única forma de ejercitar
-`C_FormatLineDxa` en absoluto** — necesaria si se quiere seguir esa
-función como candidata (para un bug distinto al de §1, con texto real
-tipeado), no como atajo para reproducir el crash de arranque.
+**Confirmed on hp-15 cont. (`01-...md` §10): with empty startup
+`C_FormatLineDxa` is never called**, instrumented with an entry log,
+zero invocations in 5/5 runs of the §1 crash. This document's crash
+(startup, blank document) occurs entirely in window/toolbar construction,
+not in line formatting. This path stops being "may give a better repro"
+and becomes **the only way to exercise `C_FormatLineDxa` at all**,
+necessary if this function is to keep being followed as a candidate (for
+a bug distinct from §1's, with real typed text), not as a shortcut to
+reproduce the startup crash.
 
 ---
 
-## 6. Ítem secundario, no confirmado para Fedora: `opus_shell_memory_foreign_test`
+## 6. Secondary item, not confirmed for Fedora: `opus_shell_memory_foreign_test`
 
-Sin relación directa con el heap corruption, pero es otro ítem que quedó
-condicionado a un entorno con soporte multiarch (P6 del checklist-audit
-de memoria, `docs/superpowers/specs/2026-08-11-opus-memory-passthrough-checklist-audit.md`):
-el test compila y linkea, pero no se pudo ejecutar en el sandbox Debian
-de esta sesión porque falta `wine32`/multiarch
+Not directly related to the heap corruption, but another item that was
+made conditional on an environment with multiarch support (P6 of the
+memory checklist-audit,
+`docs/superpowers/specs/2026-08-11-opus-memory-passthrough-checklist-audit.md`):
+the test compiles and links, but could not be run in this session's
+Debian sandbox because `wine32`/multiarch is missing
 (`it looks like wine32 is missing... apt-get install wine32:i386`,
-reproducido de nuevo al reconstruir `WORD1` en esta sesión). Si Fedora
-tiene el soporte de 32 bits ya instalado (no confirmado, no asumido),
-correr:
+reproduced again when rebuilding `WORD1` in this session). If Fedora
+already has 32-bit support installed (not confirmed, not assumed), run:
 
 ```bash
 ctest --test-dir out/linux-winelib-debug -R opus_shell_memory_foreign_test
 ```
 
-y confirmar en verde — sería la primera ejecución real de ese test desde
-que se implementó.
+and confirm it green, this would be the first real run of that test
+since it was implemented.
 
 ---
 
-## 7. Explícitamente descartado — no reintentar sin evidencia nueva
+## 7. Explicitly ruled out: do not retry without new evidence
 
-- **ASan.** Probado en Fedora (binario Winelib trivial, aislado, §8):
-  falla en la inicialización propia de ASan (`AddressSanitizer failed to
-  deallocate`) por choque con la reserva de espacio de direcciones de
-  `wine-preloader` — probadas 5 combinaciones de `ASAN_OPTIONS`, mismo
-  resultado en las 5. No es un problema de este build, es incompatibilidad
-  Winelib x86-64/ASan. No hay reconfiguración de flags pendiente de
-  probar; se necesitaría un enfoque distinto (no identificado) para
-  reabrir esta vía.
-- **`valgrind --trace-children`.** Choca con la misma reserva de
-  `wine-preloader` (§4) — pero esto era específico del empaquetado de
-  Fedora, no universal (ver siguiente punto).
-- **`valgrind` sin `wine-preloader`, sesión hp-15 cont. (`01-...md` §8).**
-  Ni el VPS (Debian 13) ni Arch/hp-15 tienen `wine-preloader` — ahí
-  `valgrind` sí arranca. Probado en ambos: 240s limpio en el VPS (no
-  reproduce), y **directo contra el crash real en Arch** — el crash
-  ocurre igual bajo valgrind (mismo `free(): invalid pointer` de glibc),
-  pero el log de valgrind no registra ningún error, con la intercepción
-  de `malloc`/`free` confirmadamente activa (`-v` mostró los `REDIR`
-  antes de cargar `ntdll.so`). **Descartado por un motivo más amplio que
-  `wine-preloader`**, causa exacta no investigada — no vale reintentar
-  sin entender primero por qué memcheck no ve esta corrupción con la
-  intercepción activa.
-- **`glibc.malloc.check` (`LD_PRELOAD=libc_malloc_debug.so`).** Corre sin
-  chocar con nada (§12.4), pero con valor diagnóstico limitado: casi toda
-  la memoria de Word 1.1a pasa por el heap propio de Wine
-  (`Rtl*Heap`/`ntdll`), no por `malloc` de glibc — un `write` fuera de
-  rango en *ese* heap no lo va a detectar este checker sin importar
-  cuánto tiempo corra limpio. Usar `WINEDEBUG=+heap` (§2 de este
-  documento) en su lugar, no esto.
+- **ASan.** Tested on Fedora (trivial, isolated Winelib binary, §8): fails
+  in ASan's own initialization (`AddressSanitizer failed to deallocate`)
+  due to a clash with `wine-preloader`'s address-space reservation, 5
+  combinations of `ASAN_OPTIONS` tried, same result in all 5. Not an
+  issue with this build, it is a Winelib x86-64/ASan incompatibility.
+  There is no pending flag reconfiguration to try; a different approach
+  (not identified) would be needed to reopen this path.
+- **`valgrind --trace-children`.** Clashes with the same `wine-preloader`
+  reservation (§4), but this was specific to Fedora's packaging, not
+  universal (see next point).
+- **`valgrind` without `wine-preloader`, hp-15 cont. session (`01-...md`
+  §8).** Neither the VPS (Debian 13) nor Arch/hp-15 have
+  `wine-preloader`, there `valgrind` does start. Tested on both: 240s
+  clean on the VPS (does not reproduce), and **directly against the real
+  crash on Arch**, the crash happens the same under valgrind (same
+  glibc `free(): invalid pointer`), but valgrind's log records no error
+  at all, with `malloc`/`free` interception confirmedly active (`-v`
+  showed the `REDIR`s before `ntdll.so` loaded). **Ruled out for a reason
+  broader than `wine-preloader`**, exact cause not investigated, not
+  worth retrying without first understanding why memcheck does not see
+  this corruption with interception active.
+- **`glibc.malloc.check` (`LD_PRELOAD=libc_malloc_debug.so`).** Runs
+  without clashing with anything (§12.4), but with limited diagnostic
+  value: almost all of Word 1.1a's memory goes through Wine's own heap
+  (`Rtl*Heap`/`ntdll`), not glibc's `malloc`, an out-of-range `write` in
+  *that* heap will not be detected by this checker no matter how long it
+  runs clean. Use `WINEDEBUG=+heap` (§2 of this document) instead, not
+  this.

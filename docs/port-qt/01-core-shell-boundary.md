@@ -1,63 +1,64 @@
-# Fase Qt-1 — Diseño de la frontera núcleo/shell
+# Phase Qt-1: Core/shell boundary design
 
-**Estado:** diseño cerrado; implementación Qt-2 en curso desde 2026-08-11/12.
-La línea original de este campo ("diseño, sin implementar") describía la fase
-en que se abrió el documento; se corrige aquí porque el resto del documento
-(§B3.5, §B4.4, §B5.1/§B5.2) ya registra implementación real que esa línea
-contradecía. Ver "Estado real de hoy" abajo antes que nada.
-**Insumo:** `docs/port-qt/00-win32-inventory.md`, en su versión posterior a la
-exclusión de comentarios y literales.
-**Decisiones de alcance cerradas:** fidelidad de paginación idéntica byte a
-byte contra el oráculo Winelib; `Opus/interp/` es núcleo; `OpusEtAl/` por
-veredicto individual (54 excluir, 4 diferir); `Opus/debug/` se porta.
-**API de frontera:** cuatro headers en `src/core/include/`, los cuatro con
-implementación real hoy (ninguno quedó en "solo declaración"):
-`OpusShellConfig.h`/`OpusShellMemory.h` (§B5/§B3, verificadas con enlace
-cross-toolchain real y call sites migrados en `Opus/`), `OpusShellFontMetrics.h`
-(§B2, verificada con 2660 puntos de fidelidad), `OpusShellSpine.h` (§B4.4,
-solo los dos fragmentos con firma concreta — `OpusShellReportError`/
-`OpusShellAlert` —, no la inversión completa del bucle de mensajes, que sigue
-sin empezar).
+**Status:** design closed; Qt-2 implementation in progress since 2026-08-11/12.
+The original text of this field ("design, not implemented") described the
+phase in which this document was opened; it is corrected here because the
+rest of the document (§B3.5, §B4.4, §B5.1/§B5.2) already records real
+implementation that line contradicted. See "Actual status as of today"
+below before anything else.
+**Input:** `docs/port-qt/00-win32-inventory.md`, in its version after the
+exclusion of comments and literals.
+**Closed scope decisions:** byte-identical pagination fidelity against the
+Winelib oracle; `Opus/interp/` is core; `OpusEtAl/` by individual verdict
+(54 exclude, 4 defer); `Opus/debug/` is ported.
+**Boundary API:** four headers in `src/core/include/`, all four with real
+implementation today (none remained at "declaration only"):
+`OpusShellConfig.h`/`OpusShellMemory.h` (§B5/§B3, verified with real
+cross-toolchain linking and call sites migrated in `Opus/`),
+`OpusShellFontMetrics.h` (§B2, verified with 2660 fidelity data points),
+`OpusShellSpine.h` (§B4.4, only the two fragments with a concrete signature,
+`OpusShellReportError`/`OpusShellAlert`, not the full inversion of the
+message loop, which is still not started).
 
 ---
 
-## Estado real de hoy, para quien no va a leer 1900 líneas
+## Actual status as of today, for anyone not going to read 1900 lines
 
-Añadido 2026-08-14 a partir de leer el código, no este documento — la
-pregunta que lo motivó fue "¿esto es un port a Qt de verdad, o son pruebas de
-humo?". Respuesta corta, en dos ejes que no se pueden fundir en un solo
-veredicto: como dependencia de runtime que `WORD1` ejecuta de verdad en
-cada arranque, sí — ya es Word sobre Qt (ver más abajo). Como arquitectura
-—quién es dueño de la ventana y el bucle de eventos—, no todavía: eso
-sigue siendo Win32/Wine de punta a punta. Y las pruebas: las de `src/core`
-no son de humo, las de arranque/interacción de `WORD1` (etiqueta
-`word1_startup_blocked`) sí lo son. Detalle verificable:
+Added 2026-08-14 from reading the code, not this document. The question
+that motivated it was "is this a real port to Qt, or is it smoke tests?".
+Short answer, on two axes that cannot be merged into a single verdict: as a
+runtime dependency that `WORD1` actually executes on every startup, yes,
+it already is Word on top of Qt (see below). As architecture (who owns the
+window and the event loop), not yet: that is still Win32/Wine end to end.
+And the tests: those of `src/core` are not smoke tests, the `WORD1`
+startup/interaction ones (label `word1_startup_blocked`) are. Verifiable
+detail:
 
-### Lo que sí es real y está enlazado en el `WORD1` que se distribuye
+### What is real and is actually linked into the `WORD1` that is shipped
 
-No son solo headers ni una biblioteca sin usar. `src/CMakeLists.txt` enlaza
-las `.a` de `src/core` directamente en el target `WORD1` (líneas ~214-218,
-280+), con call sites reales y comprometidos dentro de `Opus/` (árbol
-restringido) que las llaman:
+These are not just headers or an unused library. `src/CMakeLists.txt`
+links the `.a` files from `src/core` directly into the `WORD1` target
+(lines ~214-218, 280+), with real call sites already committed inside
+`Opus/` (restricted tree) that call them:
 
-| Contrato | Backend Qt real | Call sites en `Opus/` | Commit |
+| Contract | Real Qt backend | Call sites in `Opus/` | Commit |
 |---|---|---|---|
-| `OpusShellConfig` (§B5) | `QSettings` | 41, `OpusShellProfile*` en 12 archivos (p.ej. `quit.c`) | `e298420` |
-| `OpusShellMemory` (§B3) | malloc/realloc/free con contador de fijación | 3 en `catalog.c` (`HGrabFarMem`, `FAllocDMFarMem`, `FreeDMFarMem`); ~198 sitios `Global*` restantes sin migrar | `c4e9ff0`, `2a36b1a` |
-| `OpusShellSpine` (§B4.4) | `QMessageBox` / `QApplication::beep()` | 1, `wordtech/error.c:1630`; `editspec.c`/`undo.c` (`OpusShellAlert`) sin conectar | `ea5f908` |
-| `OpusShellFontMetrics`/`FontSubstitution` (§B2) | `QRawFont` | 1, `Opus/LOADFONT.C:187 C_LoadFcid`; sin verificación en ejecución contra `WORD1` real (§B2.7) | — |
+| `OpusShellConfig` (§B5) | `QSettings` | 41, `OpusShellProfile*` in 12 files (e.g. `quit.c`) | `e298420` |
+| `OpusShellMemory` (§B3) | malloc/realloc/free with a pin counter | 3 in `catalog.c` (`HGrabFarMem`, `FAllocDMFarMem`, `FreeDMFarMem`); ~198 remaining `Global*` sites not migrated | `c4e9ff0`, `2a36b1a` |
+| `OpusShellSpine` (§B4.4) | `QMessageBox` / `QApplication::beep()` | 1, `wordtech/error.c:1630`; `editspec.c`/`undo.c` (`OpusShellAlert`) not connected | `ea5f908` |
+| `OpusShellFontMetrics`/`FontSubstitution` (§B2) | `QRawFont` | 1, `Opus/LOADFONT.C:187 C_LoadFcid`; no runtime verification against real `WORD1` (§B2.7) | (none) |
 
-Las pruebas de `src/core` tampoco son de humo: `OpusShellConfig_test.cpp`
-verifica semántica documentada del Profile Win16 punto por punto (no solo
-"compila y sale 0"), y `OpusShellFontMetrics_fidelity_test.cpp` compara contra
-2660 mediciones capturadas del oráculo Winelib real (§B2.3) — 2660/2660
-coinciden.
+The `src/core` tests are not smoke tests either: `OpusShellConfig_test.cpp`
+verifies the documented Win16 Profile semantics point by point (not just
+"compiles and returns 0"), and `OpusShellFontMetrics_fidelity_test.cpp`
+compares against 2660 measurements captured from the real Winelib oracle
+(§B2.3): 2660/2660 match.
 
-### Corregido el mismo día: "Word sobre Qt" es cierto en el eje de dependencia de runtime
+### Corrected the same day: "Word on top of Qt" is true on the runtime-dependency axis
 
-La primera versión de esta sección verificó código fuente (call sites,
-CMake) pero no el binario resultante, y de ahí sacó una conclusión
-demasiado plana. Verificado con `ldd bin/WORD1.exe.so`:
+The first version of this section verified source code (call sites, CMake)
+but not the resulting binary, and drew too flat a conclusion from that.
+Verified with `ldd bin/WORD1.exe.so`:
 
 ```
 libQt6Widgets.so.6 => /usr/lib/libQt6Widgets.so.6
@@ -66,371 +67,371 @@ libQt6Core.so.6    => /usr/lib/libQt6Core.so.6
 libQt6DBus.so.6    => /usr/lib/libQt6DBus.so.6
 ```
 
-No es un detalle cosmético: `WORD1.exe.so` no arranca sin estas
-bibliotecas presentes y en la versión correcta — el gotcha ya documentado
-en `CLAUDE.md` (Qt 6.11.1 del host vs 6.8.2 del contenedor Debian 13,
-`dlopen` fallando con `version 'Qt_6.11' not found`, enmascarado como un
-`ShellExecuteEx failed: File not found` engañoso) es la prueba de que esta
-dependencia es real y se resuelve en cada arranque, no un artefacto de
-prueba. En ese sentido concreto — Qt6 como dependencia de runtime que el
-binario ejecuta de verdad, tanto en el camino de arranque como en las
-llamadas de la tabla de arriba — **"esto es Word sobre Qt" es correcto, y
-la conclusión original de esta sección ("ninguno de los dos es Word
-corriendo sobre Qt todavía") sobregeneralizaba.**
+Not a cosmetic detail: `WORD1.exe.so` does not start without these
+libraries present and at the correct version, the gotcha already
+documented in `CLAUDE.md` (host's Qt 6.11.1 versus the Debian 13
+container's 6.8.2, `dlopen` failing with `version 'Qt_6.11' not found`,
+masked as a misleading `ShellExecuteEx failed: File not found`) is proof
+that this dependency is real and gets resolved on every startup, not a
+test artifact. In that concrete sense, Qt6 as a runtime dependency that
+the binary actually executes, both on the startup path and in the calls
+in the table above, **"this is Word on top of Qt" is correct, and the
+original conclusion of this section ("neither of the two is Word running
+on Qt yet") was overgeneralizing.**
 
-### El eje que sigue sin cerrarse: quién controla la ventana y el bucle de eventos
+### The axis that remains unresolved: who controls the window and the event loop
 
-Esto es un eje distinto y no debe colapsarse con el anterior. `WORD1.exe.so`
-sigue corriendo el bucle de mensajes Win32 completo (`GetMessage`/
-`DispatchMessage` vía Winelib) de punta a punta; ningún `QWidget` es parte
-de su interfaz visible; los cuatro contratos son puramente de backend
-(persistencia, memoria, medición de texto, un diálogo modal disparado
-desde dentro de ese bucle Win32, no al revés). Es el propio código el que
-lo dice, no una inferencia de este documento (`src/core/src/
-OpusShellSpine.cpp`):
+This is a different axis and must not be collapsed with the previous one.
+`WORD1.exe.so` still runs the full Win32 message loop (`GetMessage`/
+`DispatchMessage` via Winelib) end to end; no `QWidget` is part of its
+visible interface; the four contracts are purely backend (persistence,
+memory, text measurement, a modal dialog triggered from inside that Win32
+loop, not the other way around). It is the code itself that says so, not
+an inference of this document (`src/core/src/OpusShellSpine.cpp`):
 
-> "WORD1 real corre hoy con el loop de mensajes Win32 (GetMessage/
-> DispatchMessage), no con QApplication -- la inversión de control (paso 7
-> de la secuencia Qt-2) sigue sin hacerse."
+> "Real WORD1 today runs with the Win32 message loop (GetMessage/
+> DispatchMessage), not with QApplication -- the control inversion (step 7
+> of the Qt-2 sequence) is still not done."
 
-Sí existe un binario que corre bajo `QApplication::exec()` de verdad —
-`opus_qt_shell` (`src/core/src/opus_qt_shell_main.cpp`) —, pero su propio
-comentario de cabecera es explícito: *"Este NO es Word bajo Qt. No hay motor
-de documento, no hay wordtech/ conectado."* Es un molde que demuestra que el
-patrón de despacho de §B4.2 (`SendMessage` → llamada directa, `PostMessage` →
-`QMetaObject::invokeMethod` con `Qt::QueuedConnection`) funciona contra los
-contratos ya cerrados, para reutilizar el día que `wordtech/` se conecte de
-verdad — no una segunda implementación de Word.
+There does exist a binary that runs under a real `QApplication::exec()`,
+`opus_qt_shell` (`src/core/src/opus_qt_shell_main.cpp`), but its own
+header comment is explicit: *"This is NOT Word under Qt. There is no
+document engine, wordtech/ is not connected."* It is a mold that
+demonstrates that the dispatch pattern of §B4.2 (`SendMessage` to direct
+call, `PostMessage` to `QMetaObject::invokeMethod` with
+`Qt::QueuedConnection`) works against the contracts already closed, to be
+reused the day `wordtech/` is really connected, not a second
+implementation of Word.
 
-Y las pruebas que sí son de humo, con ese nombre en el propio proyecto, son
-otras: la etiqueta `word1_startup_blocked` (`word1_port_smoke_test` + los 8
-`opus_word1_ui_test`) exige que `WORD1` arranque y responda a interacción
-real vía Wine/Winelib — hoy siguen en 0/9 pasando de verdad (llegan a lógica
-de interacción, fallan con mensajes de nivel app; ver `README.md`, sección
-Tests). Esas son las pruebas de humo del proyecto, y no tienen relación con
-el trabajo de `src/core`.
+And the tests that are actual smoke tests, under that same name in the
+project itself, are others: the `word1_startup_blocked` label
+(`word1_port_smoke_test` plus the 8 `opus_word1_ui_test`) requires `WORD1`
+to start and respond to real interaction via Wine/Winelib, today they are
+still at 0/9 truly passing (they reach interaction logic, fail with
+app-level messages; see `README.md`, Tests section). Those are the
+project's smoke tests, and they are unrelated to `src/core` work.
 
-### En una frase
+### In one sentence
 
-Hay dos esfuerzos reales conviviendo en el mismo repo, y son ciertos a la
-vez sin contradecirse: el port Winelib sigue siendo, hoy, el único dueño
-del bucle de eventos y la ventana de `WORD1` — pero ese mismo `WORD1` ya
-**es** Word sobre Qt en el sentido literal de que no arranca ni corre sin
-Qt6, y ejecuta código Qt real (`QSettings`, un allocador, `QRawFont`,
-`QMessageBox`) en cada una de las llamadas de la tabla de arriba. Lo que
-falta para "Word sobre Qt" en el sentido arquitectónico completo —Qt
-dueño de la ventana y el bucle, no solo de un backend enlazado por
-debajo— es la inversión de control del paso 7, todavía sin tocar
-`Opus/wproc.c`. `opus_qt_shell` es un tercer artefacto, un demostrador
-aislado sin motor de documento, no una segunda implementación de Word.
-Ver "Preguntas abiertas" #4 para si esto cambia el argumento de separar
-repositorios.
+There are two real efforts coexisting in the same repo, and both are true
+at once without contradicting each other: the Winelib port remains, today,
+the sole owner of the event loop and the `WORD1` window, but that same
+`WORD1` already **is** Word on top of Qt in the literal sense that it does
+not start or run without Qt6, and it executes real Qt code (`QSettings`,
+an allocator, `QRawFont`, `QMessageBox`) in every one of the calls in the
+table above. What is missing for "Word on top of Qt" in the full
+architectural sense, Qt owning the window and the loop, not just a backend
+linked underneath, is the control inversion of step 7, still untouched in
+`Opus/wproc.c`. `opus_qt_shell` is a third artifact, an isolated
+demonstrator without a document engine, not a second implementation of
+Word. See "Open questions" #4 for whether this changes the argument for
+separating repositories.
 
 ---
 
-## Cambios en el inventario que este diseño obligó
+## Inventory changes this design forced
 
-Al inspeccionar los dos sitios de *GDI texto/fuentes* dentro de
-`Opus/wordtech/`, uno resultó falso positivo: `format.c:2165` tenía `TextOut`
-dentro de un comentario. Una ocurrencia de `GetTextExtent` en
-`dispspec.c:539` estaba dentro de una cadena literal. Dos veces el mismo modo
-de falla por caminos independientes, así que el escaneo se corrigió de raíz:
-`audit_win32_v2.py` ahora elimina comentarios y literales antes de tokenizar.
+While inspecting the two *GDI text/fonts* sites within `Opus/wordtech/`,
+one turned out to be a false positive: `format.c:2165` had `TextOut`
+inside a comment. One occurrence of `GetTextExtent` in `dispspec.c:539`
+was inside a string literal. Twice the same failure mode via independent
+paths, so the scan was fixed at the root: `audit_win32_v2.py` now strips
+comments and literals before tokenizing.
 
-Efecto sobre las cifras que este documento usa:
+Effect on the figures this document uses:
 
-| Magnitud | Antes | Después |
+| Magnitude | Before | After |
 |---|---|---|
-| Sitios *GDI texto/fuentes* | 200 | **170** |
-| TUs con *GDI texto/fuentes* | 27 | **24** |
-| Sitios *espina de mensajes* | 323 | **287** |
-| Sitios *memoria Win16* | 206 | **201** |
-| Sitios *configuración* | 44 | **43** |
-| Sitios ABI resueltos por Winelib | 2407 | **2058** |
-| `Opus/wordtech/` portables | 21/40 | **22/40** |
-| TUs portables / frontera / presentación | 58 / 43 / 86 | **60 / 44 / 83** |
+| *GDI text/fonts* sites | 200 | **170** |
+| TUs with *GDI text/fonts* | 27 | **24** |
+| *Message spine* sites | 323 | **287** |
+| *Win16 memory* sites | 206 | **201** |
+| *Configuration* sites | 44 | **43** |
+| ABI sites resolved by Winelib | 2407 | **2058** |
+| `Opus/wordtech/` portable | 21/40 | **22/40** |
+| Portable / boundary / presentation TUs | 58 / 43 / 86 | **60 / 44 / 83** |
 
-`wordtech/format.c` pasó de *presentación* a *portable*, y con eso
-**`Opus/wordtech/` tiene una sola TU que toca medición de texto:
-`layoutap.c`.** El detalle del barrido está en la sección correspondiente del
-inventario.
+`wordtech/format.c` moved from *presentation* to *portable*, and with that
+**`Opus/wordtech/` has only one TU that touches text measurement:
+`layoutap.c`.** The detail of the sweep is in the corresponding section of
+the inventory.
 
 ---
 
-## B1 — Clasificación núcleo Qt / shell
+## B1: Qt core / shell classification
 
-Las 83 TUs de *presentación* son shell por defecto y no se analizan una por
-una, salvo las que están en región de núcleo (§B1.3). Se clasifican las 60
-*portables* y las 44 de *frontera*.
+The 83 *presentation* TUs are shell by default and are not analyzed one by
+one, except those in the core region (§B1.3). The 60 *portable* and 44
+*boundary* TUs are classified.
 
-### B1.1 Las 60 portables → núcleo, sin excepción
+### B1.1 The 60 portable TUs go to core, no exceptions
 
-Solo tocan tipos primitivos, convenciones ABI ya neutralizadas por Winelib, o
-constantes Win16. Entran al núcleo con la capa de typedefs, sin reescritura.
-Distribución: `Opus/` raíz 27, `Opus/wordtech/` 22, `Opus/interp/` 3,
-`Opus/debug/` 6, `port/original/` 2.
+They only touch primitive types, ABI conventions already neutralized by
+Winelib, or Win16 constants. They enter the core with the typedef layer,
+without rewriting. Distribution: `Opus/` root 27, `Opus/wordtech/` 22,
+`Opus/interp/` 3, `Opus/debug/` 6, `port/original/` 2.
 
-### B1.2 Las 44 de frontera → 32 núcleo, 10 shell, 2 diagnóstico
+### B1.2 The 44 boundary TUs: 32 core, 10 shell, 2 diagnostic
 
-Su acoplamiento es solo de tipos handle, memoria Win16, geometría o
-configuración: nada que exija reescritura. Pero el veredicto técnico no decide
-sola la ubicación — el rol del archivo también cuenta. Un archivo de diálogo
-cuyo único acoplamiento es `HWND` sigue siendo diálogo.
+Their coupling is only to handle types, Win16 memory, geometry, or
+configuration: nothing that demands rewriting. But the technical verdict
+does not decide placement alone, the file's role also matters. A dialog
+file whose only coupling is `HWND` remains a dialog.
 
-**Núcleo (32).** Lógica de documento, detrás de la API de frontera:
+**Core (32).** Document logic, behind the boundary API:
 
-| Región | TUs |
+| Region | TUs |
 |---|---|
 | `Opus/wordtech/` (4) | `clsplc.c`, `curskeys.c`, `ihdd.c`, `outline.c` |
 | `Opus/interp/` (4) | `exp.c`, `main.c`, `sym.c`, `to.c` |
-| `Opus/` raíz (24) | `catalog.c`, `cmd2.c`, `cmdcore.c`, `compare.c`, `customiz.c`, `docman1.c`, `elfile.c`, `elsubs2.c`, `elsubs3.c`, `etcmd.c`, `fieldclc.c`, `fieldpic.c`, `fieldsc2.c`, `fieldspc.c`, `filecvt.c`, `glsy.c`, `hddwin.c`, `index1.c`, `replace.c`, `sort.c`, `spelcore.c`, `style.c`, `stylesub.c`, `toc.c` |
+| `Opus/` root (24) | `catalog.c`, `cmd2.c`, `cmdcore.c`, `compare.c`, `customiz.c`, `docman1.c`, `elfile.c`, `elsubs2.c`, `elsubs3.c`, `etcmd.c`, `fieldclc.c`, `fieldpic.c`, `fieldsc2.c`, `fieldspc.c`, `filecvt.c`, `glsy.c`, `hddwin.c`, `index1.c`, `replace.c`, `sort.c`, `spelcore.c`, `style.c`, `stylesub.c`, `toc.c` |
 
-`curskeys.c` merece nota: traduce teclas de cursor a movimiento de documento.
-Se queda en el núcleo y recibe eventos ya traducidos por el shell; no lee
-estado de teclado.
+`curskeys.c` deserves a note: it translates cursor keys into document
+movement. It stays in the core and receives events already translated by
+the shell; it does not read keyboard state.
 
-**Shell (10).** Diálogos, ventanas y ayuda de menú, cuyo rol es presentación
-aunque su acoplamiento medido sea leve: `curswin.c`, `dialog3.c`,
-`dlglook1.c`, `dlglook2.c`, `dlgmisc.c`, `dlgopen.c`, `dlgrec.c`,
-`dlgtable.c`, `filewin.c`, `menuhelp.c`. Se reescriben en Qt-5, no se portan.
+**Shell (10).** Dialogs, windows, and menu help, whose role is
+presentation even though their measured coupling is light: `curswin.c`,
+`dialog3.c`, `dlglook1.c`, `dlglook2.c`, `dlgmisc.c`, `dlgopen.c`,
+`dlgrec.c`, `dlgtable.c`, `filewin.c`, `menuhelp.c`. They are rewritten in
+Qt-5, not ported.
 
-**Diagnóstico (2).** `Opus/debug/debugcmd.c` y `debugdde.c`: por decisión de
-proyecto `Opus/debug/` se porta, pero es instrumentación, no documento. Van a
-un componente de diagnóstico del shell, sin entrar al núcleo ni bloquear
-ninguna fase.
+**Diagnostic (2).** `Opus/debug/debugcmd.c` and `debugdde.c`: by project
+decision `Opus/debug/` is ported, but it is instrumentation, not document.
+They go into a diagnostic component of the shell, without entering the
+core or blocking any phase.
 
-### B1.3 Las 14 TUs que exigen extracción antes de decidir
+### B1.3 The 14 TUs that require extraction before deciding
 
-Están en región de núcleo (`wordtech/`) pero clasificadas *presentación*:
-contienen lógica de documento mezclada con presentación. No son «shell por
-defecto»; hay que separarlas. Es el trabajo más delicado de Qt-2 y la razón de
-que Qt-1 no pueda cerrar la clasificación al 100 %.
+They are in the core region (`wordtech/`) but classified *presentation*:
+they contain document logic mixed with presentation. They are not "shell
+by default"; they must be separated. It is the most delicate work of Qt-2
+and the reason Qt-1 cannot close the classification at 100%.
 
-| TU | Acoplamiento que la ancla | Naturaleza de la mezcla |
+| TU | Coupling that anchors it | Nature of the mix |
 |---|---|---|
-| `layoutap.c` | GDI texto + dibujo | Layout de *autotext* que además pinta. Contiene el único `TextOut` del núcleo |
-| `pagevw.c` | mensajes + GDI dibujo + entrada | Vista de página: paginación (núcleo) y presentación de esa vista |
-| `disp3.c` | mensajes + GDI dibujo | Cálculo de display y pintado en el mismo archivo |
-| `scroll.c` | mensajes + GDI dibujo | Desplazamiento: qué es visible (núcleo) contra cómo se repinta |
-| `disp2.c`, `disptbl.c`, `printsub.c` | GDI dibujo | Recorrido de estructura de documento con emisión de dibujo intercalada |
-| `block.c` | GDI dibujo + entrada | Operaciones de bloque con realimentación visual |
-| `insert.c`, `select.c`, `selecttb.c` | entrada/cursor | Edición y selección que consultan estado de cursor |
-| `editspec.c`, `undo.c` | mensajes | Notificación de cambio vía mensajes; se sustituye por callbacks |
-| `error.c` | mensajes | `MessageBox` real en la línea 1618, más `Yield` ×2 |
+| `layoutap.c` | GDI text + drawing | *Autotext* layout that also paints. Contains the only `TextOut` in the core |
+| `pagevw.c` | messages + GDI drawing + input | Page view: pagination (core) and presentation of that view |
+| `disp3.c` | messages + GDI drawing | Display computation and painting in the same file |
+| `scroll.c` | messages + GDI drawing | Scrolling: what is visible (core) versus how it is repainted |
+| `disp2.c`, `disptbl.c`, `printsub.c` | GDI drawing | Document structure traversal with drawing emission interleaved |
+| `block.c` | GDI drawing + input | Block operations with visual feedback |
+| `insert.c`, `select.c`, `selecttb.c` | input/cursor | Editing and selection that query cursor state |
+| `editspec.c`, `undo.c` | messages | Change notification via messages; replaced by callbacks |
+| `error.c` | messages | Real `MessageBox` on line 1618, plus `Yield` x2 |
 
-Estrategia recomendada: separar por función, no por archivo. Cada una se
-parte en un `*_core.c` (sin Win32) y un `*_shell.cpp` (Qt), conservando el
-nombre original como prefijo para que el historial siga siendo legible. No se
-tocan hasta Qt-2, con la restricción de `CONTRIBUTING.md` sobre `src/Opus/`
-vigente.
+Recommended strategy: split by function, not by file. Each one is split
+into a `*_core.c` (no Win32) and a `*_shell.cpp` (Qt), keeping the
+original name as a prefix so history stays legible. They are not touched
+until Qt-2, with the `CONTRIBUTING.md` restriction on `src/Opus/` in
+force.
 
 ---
 
-## B2 — Contrato de medición de texto (prioridad máxima)
+## B2: Text measurement contract (top priority)
 
-### B2.1 Por qué la restricción se concentra en un punto
+### B2.1 Why the restriction concentrates at a single point
 
-El riesgo declarado del proyecto suponía que la medición de texto estaba
-entrelazada con la lógica de documento y no era abstraíble trivialmente. La
-evidencia dice otra cosa: **el motor de layout ya trabaja contra una caché de
-métricas, no contra GDI.**
+The project's stated risk assumed that text measurement was entangled
+with document logic and was not trivially abstractable. The evidence says
+otherwise: **the layout engine already works against a metrics cache, not
+against GDI.**
 
-`struct FTI` (`Opus/wordtech/format.h:379-410`) es esa caché:
+`struct FTI` (`Opus/wordtech/format.h:379-410`) is that cache:
 
 ```c
 struct FTI {
-    int  dxu;              /* ancho fijo si !fPS && fHeap */
+    int  dxu;              /* fixed width if !fPS && fHeap */
     int  chFirst;
     int  cch;              /* chLast + 1 - chFirst */
     struct FONTREC far * far *qqftr;
-    long bmpchdxu;         /* desplazamiento de la tabla de anchos en fontrec */
-    uns  dxuFrac;          /* fracción de 16 bits mantenida entre caracteres */
-    uns  wNumer, wDenom;   /* escalado */
+    long bmpchdxu;         /* offset of the width table in fontrec */
+    uns  dxuFrac;          /* 16-bit fraction kept between characters */
+    uns  wNumer, wDenom;   /* scaling */
     int  dypAscent, dypDescent, ftc, catr, ps;
 };
 ```
 
-El núcleo hace aritmética entera sobre esos campos, con acumulador de fracción
-explícito (`dxuFrac`) y su propia función de multiplicación y división:
-`NMultDiv`, usada en `Opus/wordtech/layout.h:467-469` y
-`Opus/wordwin.h:252-255`. `NMultDiv` es del proyecto, no la `MulDiv` de GDI —
-esa solo aparece en `port/original/opus_sdm_runtime.cpp` y
-`opus_win95_chrome.cpp`, que son capa del port.
+The core does integer arithmetic over those fields, with an explicit
+fraction accumulator (`dxuFrac`) and its own multiply-and-divide function:
+`NMultDiv`, used in `Opus/wordtech/layout.h:467-469` and
+`Opus/wordwin.h:252-255`. `NMultDiv` is the project's own, not GDI's
+`MulDiv`, that only appears in `port/original/opus_sdm_runtime.cpp` and
+`opus_win95_chrome.cpp`, which are port layer.
 
-Quien llama a GDI para **llenar** la caché es el nivel de display:
-`Opus/dispspec.c:787` y `:796`, con la forma
-`GetTextExtent(hdc, &ch, 1) - tm.tmOverhang` carácter por carácter, más
+The one that calls GDI to **fill** the cache is the display level:
+`Opus/dispspec.c:787` and `:796`, in the form
+`GetTextExtent(hdc, &ch, 1) - tm.tmOverhang` character by character, plus
 `GetTextMetrics`.
 
-Si el shell rellena la tabla de anchos con los mismos enteros que producía
-GDI, toda la aritmética posterior del núcleo es entera y reproduce la
-paginación byte a byte por construcción. La restricción no se distribuye por
-170 sitios: se concentra en un único punto de llenado.
+If the shell fills the width table with the same integers GDI produced,
+all of the core's subsequent arithmetic is integer and reproduces the
+byte-identical pagination by construction. The restriction is not
+distributed across 170 sites: it concentrates at a single fill point.
 
-### B2.2 Contrato
+### B2.2 Contract
 
-Declarado en `src/core/include/OpusShellFontMetrics.h`. Interfaz en C,
-implementada por el shell, consumida por el núcleo:
+Declared in `src/core/include/OpusShellFontMetrics.h`. Interface in C,
+implemented by the shell, consumed by the core:
 
 ```c
-/* Identidad de fuente tal como el núcleo la conoce: los mismos campos que
-   FTI ya guarda. No se expone ningún tipo de Qt ni de Win32. */
+/* Font identity as the core knows it: the same fields FTI already keeps.
+   No Qt or Win32 type is exposed. */
 typedef struct OpusFontKey {
-    int ftc;    /* código de tipografía */
-    int ps;     /* tamaño en medios puntos, como en FTI */
-    int catr;   /* atributos: negrita, cursiva, … */
+    int ftc;    /* typeface code */
+    int ps;     /* size in half-points, as in FTI */
+    int catr;   /* attributes: bold, italic, ... */
 } OpusFontKey;
 
 typedef struct OpusFontMetrics {
     int dypAscent, dypDescent;
-    int dxpOverhang;      /* equivalente de TEXTMETRIC.tmOverhang */
-    int dxpInch, dypInch; /* resolución del dispositivo destino */
-    int dxuFixed;         /* != 0 si la fuente es de paso fijo */
+    int dxpOverhang;      /* equivalent of TEXTMETRIC.tmOverhang */
+    int dxpInch, dypInch; /* target device resolution */
+    int dxuFixed;         /* != 0 if the font is fixed-pitch */
 } OpusFontMetrics;
 
-/* Devuelve 0 en éxito. El shell no conoce FTI; el núcleo traduce. */
+/* Returns 0 on success. The shell does not know FTI; the core translates. */
 int OpusShellFontMetrics(const OpusFontKey *key, OpusFontMetrics *out);
 
-/* Rellena rgdxu[0..cch-1] con el avance entero de cada carácter del rango,
-   en las mismas unidades que la tabla apuntada por FTI.bmpchdxu. */
+/* Fills rgdxu[0..cch-1] with the integer advance of each character in the
+   range, in the same units as the table pointed to by FTI.bmpchdxu. */
 int OpusShellCharWidths(const OpusFontKey *key, int chFirst, int cch,
                         unsigned short *rgdxu);
 ```
 
-Dos funciones. El núcleo no adquiere un `HDC`, no selecciona fuentes, no
-pregunta por extensión de cadenas: pide la tabla una vez por fuente y hace su
-propia aritmética, exactamente como hoy. **Este contrato queda validado por el
-experimento de §B2.3 y no cambia.** Lo que cambió es la estrategia de
-implementación detrás de él.
+Two functions. The core does not acquire an `HDC`, does not select fonts,
+does not ask for string extents: it requests the table once per font and
+does its own arithmetic, exactly as it does today. **This contract is
+validated by the §B2.3 experiment and does not change.** What changed is
+the implementation strategy behind it.
 
-### B2.3 Cómo se reproduce el redondeo: resuelto empíricamente
+### B2.3 How the rounding is reproduced: resolved empirically
 
-Una versión anterior de este documento proponía un envoltorio aritmético que
-partiera de unidades de diseño y aplicara la fórmula de conversión de
-Microsoft
+An earlier version of this document proposed an arithmetic wrapper
+starting from design units and applying Microsoft's conversion formula
 (`DeviceUnits = DesignUnits/unitsPerEm * PointSize/72 * DeviceResolution`),
-y a la vez dejaba abierto si la fidelidad estricta era alcanzable con otro
-rasterizador. Eran dos respuestas contradictorias a la misma pregunta. Se
-resolvió midiendo.
+while also leaving open whether strict fidelity was reachable with a
+different rasterizer. Those were two contradictory answers to the same
+question. It was resolved by measuring.
 
-**Montaje.** Lado oráculo: programa Winelib que reproduce la forma exacta de
-`dispspec.c` — `CreateDCA("DISPLAY")`, `CreateFontIndirectA` con
-`lfHeight = -MulDiv(pt, dpiY, 72)`, `GetTextMetricsA`, y
-`GetTextExtentPoint32A` con `cch = 1` menos `tmOverhang`, para los 95
-caracteres imprimibles ASCII. Lado Qt: `QRawFont` sobre el mismo archivo de
-fuente físico, para aislar el redondeo de la sustitución de fuentes. Fuentes:
-Liberation Serif, Sans y Mono, a 8, 10, 12, 14, 18, 24 y 36 puntos, 96 ppp.
+**Setup.** Oracle side: a Winelib program that reproduces the exact shape
+of `dispspec.c`: `CreateDCA("DISPLAY")`, `CreateFontIndirectA` with
+`lfHeight = -MulDiv(pt, dpiY, 72)`, `GetTextMetricsA`, and
+`GetTextExtentPoint32A` with `cch = 1` minus `tmOverhang`, for the 95
+printable ASCII characters. Qt side: `QRawFont` over the same physical
+font file, to isolate rounding from font substitution. Fonts: Liberation
+Serif, Sans, and Mono, at 8, 10, 12, 14, 18, 24, and 36 points, 96 dpi.
 
-**Resultado.** La aritmética sobre unidades de diseño **no reproduce GDI**:
+**Result.** Arithmetic over design units **does not reproduce GDI**:
 
-| Estrategia | Coincidencia |
+| Strategy | Match rate |
 |---|---|
-| Unidades de diseño × `dpi·pt/72` sin redondear (la fórmula propuesta) | de 0/95 a 95/95 según fuente y tamaño; inconsistente |
-| Unidades de diseño × tamaño em redondeado a entero | 95/95 en 14 de 15 casos; falla en Liberation Serif 14 pt |
-| **Avances enteros pedidos al rasterizador al mismo ppem entero, con `QFont::PreferFullHinting`** | **95/95 en 21 de 21 casos (1995 comparaciones, todas exactas)** |
+| Design units x `dpi*pt/72` without rounding (the proposed formula) | from 0/95 to 95/95 depending on font and size; inconsistent |
+| Design units x em size rounded to an integer | 95/95 in 14 of 15 cases; fails on Liberation Serif 14 pt |
+| **Integer advances requested from the rasterizer at the same integer ppem, with `QFont::PreferFullHinting`** | **95/95 in 21 of 21 cases (1995 comparisons, all exact)** |
 
-El fallo aislado de la segunda estrategia explica por qué la primera no podía
-funcionar. En Liberation Serif a 14 pt (19 px), el carácter `@` tiene 1886
-unidades de diseño sobre 2048 por em: 1886/2048 × 19 = 17,497, que redondea a
-17. GDI devuelve 18. Midiendo el mismo glifo por modo de hinting:
+The isolated failure of the second strategy explains why the first could
+not work. In Liberation Serif at 14 pt (19 px), the character `@` has
+1886 design units out of 2048 per em: 1886/2048 x 19 = 17.497, which rounds
+to 17. GDI returns 18. Measuring the same glyph by hinting mode:
 
 ```
 NoHinting         @=17.484 -> 17
 VerticalHinting   @=17.484 -> 17
-FullHinting       @=18.000 -> 18      <- coincide con GDI
+FullHinting       @=18.000 -> 18      <- matches GDI
 Default           @=17.484 -> 17
 ```
 
-La diferencia es *grid-fitting*, no redondeo: el programa de hints de la
-fuente ajusta el avance a la rejilla de píxeles. Ninguna aritmética de
-envoltorio puede cerrar un desplazamiento de medio píxel que proviene de las
-instrucciones de hinting de la propia fuente.
+The difference is grid-fitting, not rounding: the font's hint program
+snaps the advance to the pixel grid. No wrapper arithmetic can close a
+half-pixel offset that comes from the font's own hinting instructions.
 
-**Por qué la coincidencia exacta sí es alcanzable, y por qué eso confirma el
-alcance en lugar de limitarlo.** Porque el oráculo del proyecto es la GDI de
-**Wine**, y Wine rasteriza con FreeType, igual que Qt. Pedir el mismo modo de
-hinting al mismo ppem entero produce los mismos enteros porque debajo corre el
-mismo motor.
+**Why exact match is in fact achievable, and why that confirms the scope
+rather than limiting it.** Because the project's oracle is **Wine's** GDI,
+and Wine rasterizes with FreeType, just like Qt. Requesting the same
+hinting mode at the same integer ppem produces the same integers because
+the same engine runs underneath, on both sides.
 
-Conviene ser explícito en cómo se lee esto. La restricción fijada al abrir la
-rama fue «paginación idéntica byte a byte **respecto del oráculo Winelib**», no
-respecto de Windows real. Que la equivalencia se apoye en que ambos lados
-rasterizan con FreeType no es una salvedad sobre el resultado: es la definición
-del objetivo, tal como quedó decidida antes de este experimento. El
-experimento confirma que ese objetivo es alcanzable y con qué estrategia
-concreta.
+It is worth being explicit about how to read this. The restriction fixed
+when the branch was opened was "byte-identical pagination **relative to
+the Winelib oracle**", not relative to real Windows. That the equivalence
+rests on both sides rasterizing with FreeType is not a caveat on the
+result: it is the definition of the goal, as decided before this
+experiment. The experiment confirms that goal is achievable and with what
+concrete strategy.
 
-De ahí se sigue, y queda asentado como alcance y no como pendiente: la
-equivalencia vale contra el binario Winelib. No se afirma nada sobre la GDI de
-Microsoft sobre Windows, cuyo rasterizador es otro, porque reproducir esa no
-es —ni fue— un objetivo de esta rama. Si alguna vez se quisiera, sería un
-cambio de alcance con su propia decisión, no un defecto de este diseño.
+From this follows, and stands as scope rather than as a pending item: the
+equivalence holds against the Winelib binary. Nothing is claimed about
+Microsoft's GDI on real Windows, whose rasterizer is different, because
+reproducing that is not, and was not, a goal of this branch. If that were
+ever wanted, it would be a scope change with its own decision, not a
+defect of this design.
 
-**Estrategia que rige.** El shell obtiene los avances así:
+**Strategy in force.** The shell obtains the advances like this:
 
 ```
-px = MulDiv(ps/2, dypInch, 72)                    /* mismo redondeo entero que GDI */
+px = MulDiv(ps/2, dypInch, 72)                    /* same integer rounding as GDI */
 QRawFont rf(fontData, (qreal)px, QFont::PreferFullHinting);
-rf.advancesForGlyphIndexes(...)                   /* ya vienen ajustados a la rejilla */
+rf.advancesForGlyphIndexes(...)                   /* already grid-fitted */
 ```
 
-Dos requisitos, ambos necesarios: redondear el tamaño en píxeles a entero
-**antes** de construir la fuente, y pedir `PreferFullHinting`. Omitir
-cualquiera reintroduce la discrepancia.
+Two requirements, both necessary: round the pixel size to an integer
+**before** constructing the font, and request `PreferFullHinting`.
+Omitting either reintroduces the discrepancy.
 
-La tabla capturada del oráculo deja de ser mecanismo y queda solo como prueba
-de regresión: se captura una vez para el conjunto de fuentes soportadas y se
-compara en cada cambio del shell.
+The table captured from the oracle stops being the mechanism and remains
+only as a regression test: it is captured once for the supported font set
+and compared on every shell change.
 
-### B2.4 Qué API de Qt queda detrás
+### B2.4 Which Qt API sits behind it
 
-**`QRawFont`**, construido con tamaño en píxeles entero y
-`QFont::PreferFullHinting`. Da acceso a una instancia física de fuente y
-devuelve avances ya ajustados a la rejilla, que es exactamente lo que GDI
-entrega.
+**`QRawFont`**, built with an integer pixel size and
+`QFont::PreferFullHinting`. It gives access to a physical font instance
+and returns advances already grid-fitted, which is exactly what GDI
+delivers.
 
-**Descartada: `QFontMetricsF`.** Devuelve `qreal` con la conversión y el
-redondeo de Qt aplicados; no permite fijar ppem entero ni modo de hinting con
-la precisión que la equivalencia exige.
+**Ruled out: `QFontMetricsF`.** Returns `qreal` with Qt's own conversion
+and rounding applied; it does not allow fixing integer ppem nor hinting
+mode with the precision the equivalence requires.
 
-**Descartada para el camino de documento: `QTextLayout`.** Hace su propio
-shaping, salto de línea y posicionamiento de cursor conforme a Unicode. Word
-1.1a tiene su propio algoritmo de salto de línea dentro de `wordtech/`, y esa
-es precisamente la lógica que la rama Qt quiere preservar. Usarlo pondría dos
-motores de layout a competir y rompería la fidelidad por diseño. Qt queda
-reducido a rasterizador de glifos y proveedor de avances.
+**Ruled out for the document path: `QTextLayout`.** It does its own
+shaping, line breaking, and cursor positioning per Unicode. Word 1.1a has
+its own line-breaking algorithm inside `wordtech/`, and that is precisely
+the logic the Qt branch wants to preserve. Using it would put two layout
+engines in competition and break fidelity by design. Qt is reduced to a
+glyph rasterizer and advance provider.
 
-### B2.5 Riesgo residual, medido
+### B2.5 Residual risk, measured
 
-- **`tmOverhang`: descartado como riesgo.** Se midió a 14 pt para Liberation
-  Serif en normal, negrita, cursiva y negrita cursiva, y para los nombres de
-  época `Helv`, `Tms Rmn`, `Script` y `Modern`, incluyendo negrita y cursiva
-  sintetizadas. `tmOverhang = 0` en los ocho casos: con fuentes TrueType bajo
-  Wine el concepto no interviene. Era el candidato más probable a discrepancia
-  y no lo es.
-- **Sustitución de fuentes: el riesgo real, y es concreto.** El oráculo
-  sustituye los nombres de época, y no de forma intuitiva. Medido:
-  `Helv`, `Tms Rmn`, `Script` y `Modern` resuelven **todos a Liberation Sans**
-  —incluido `Tms Rmn`, que es un nombre serif—. Como los avances dependen del
-  archivo físico, el shell debe reproducir **la misma tabla de sustitución que
-  aplica Wine**, no simplemente tener fuentes disponibles. Si el shell resuelve
-  `Tms Rmn` a un serif y el oráculo a Liberation Sans, todos los avances
-  difieren y la fidelidad se pierde por completo, sin que la aritmética tenga
-  nada que ver.
-- **Fidelidad de píxeles frente a fidelidad de paginación.** Los avances
-  enteros coinciden, lo que basta para saltos de línea y de página idénticos.
-  Igualdad píxel a píxel de la forma pintada no está verificada y no es lo que
-  la restricción exige.
-- **Compilación condicional.** El inventario no evalúa `#if`, así que algún
-  sitio contado puede estar desactivado en la configuración de build real.
-  Afecta el dimensionamiento, no el contrato.
+- **`tmOverhang`: ruled out as a risk.** Measured at 14 pt for Liberation
+  Serif in normal, bold, italic, and bold italic, and for the era names
+  `Helv`, `Tms Rmn`, `Script`, and `Modern`, including synthesized bold
+  and italic. `tmOverhang = 0` in all eight cases: with TrueType fonts
+  under Wine the concept does not come into play. It was the most likely
+  candidate for discrepancy and it is not one.
+- **Font substitution: the real risk, and it is concrete.** The oracle
+  substitutes the era names, and not intuitively. Measured: `Helv`,
+  `Tms Rmn`, `Script`, and `Modern` all resolve to Liberation Sans,
+  including `Tms Rmn`, which is a serif name. Since the advances depend on
+  the physical file, the shell must reproduce **the same substitution
+  table Wine applies**, not simply have fonts available. If the shell
+  resolves `Tms Rmn` to a serif and the oracle to Liberation Sans, all the
+  advances differ and fidelity is lost entirely, with the arithmetic
+  having nothing to do with it.
+- **Pixel fidelity versus pagination fidelity.** The integer advances
+  match, which is enough for identical line and page breaks. Pixel-for-
+  pixel equality of the painted shape is not verified and is not what the
+  restriction requires.
+- **Conditional compilation.** The inventory does not evaluate `#if`, so
+  some counted site may be disabled in the real build configuration. It
+  affects sizing, not the contract.
 
-### B2.6 Tabla de sustitución de fuentes
+### B2.6 Font substitution table
 
-Medido con la sonda `docs/port-qt/scripts/fidelity/font_substitution.c`
-(mismo entorno que §B2.3: Wine 10.0, Debian trixie) para los 4 nombres de
-época que `Opus/initwin.c` carga en la tabla maestra de arranque
-(`vhsttbFont`, `ftc` 0-3):
+Measured with the probe `docs/port-qt/scripts/fidelity/font_substitution.c`
+(same environment as §B2.3: Wine 10.0, Debian trixie) for the 4 era names
+that `Opus/initwin.c` loads into the startup master table (`vhsttbFont`,
+`ftc` 0-3):
 
 ```
 Tms Rmn    -> Liberation Serif         charset=0 overhang=0
@@ -439,49 +440,49 @@ Helv       -> Liberation Sans          charset=0 overhang=0
 Courier    -> Liberation Mono          charset=0 overhang=0
 ```
 
-**Corrección respecto a una medición anterior de esta sección:** la primera
-versión de la sonda construía el `LOGFONTA` con `ZeroMemory` y nunca fijaba
-`lfPitchAndFamily`, quedando en 0 (`DEFAULT_PITCH | FF_DONTCARE`) para los
-cuatro nombres — eso hacía que Wine ignorase la familia tipográfica al
-resolver y los cuatro colapsaran a `Liberation Sans`. El motor real siempre
-fija ese campo: `Opus/LOADFONT.C:864`,
-`plf->lfPitchAndFamily = (pffn->ffid & maskFfFfid) | fcid.prq;`, con
-`ffid`/`prq` tomados de la tabla maestra de arranque
+**Correction to an earlier measurement in this section:** the first
+version of the probe built the `LOGFONTA` with `ZeroMemory` and never set
+`lfPitchAndFamily`, leaving it at 0 (`DEFAULT_PITCH | FF_DONTCARE`) for
+all four names, which made Wine ignore the typeface family when resolving
+and made all four collapse to `Liberation Sans`. The real engine always
+sets that field: `Opus/LOADFONT.C:864`,
+`plf->lfPitchAndFamily = (pffn->ffid & maskFfFfid) | fcid.prq;`, with
+`ffid`/`prq` taken from the startup master table
 (`Opus/initwin.c:1543-1583`):
 
-| Nombre de época | `ffid` | `prq` |
+| Era name | `ffid` | `prq` |
 |---|---|---|
 | `Tms Rmn` | `FF_ROMAN` | `VARIABLE_PITCH` |
 | `Symbol` | `FF_DECORATIVE` | `DEFAULT_PITCH` (0) |
 | `Helv` | `FF_SWISS` | `VARIABLE_PITCH` |
 | `Courier` | `FF_MODERN` | `FIXED_PITCH` |
 
-Con la sonda corregida para fijar `lfPitchAndFamily` a `ffid | prq` por
-nombre (igual que hace el motor), **no los cuatro resuelven a la misma
-familia**: `Tms Rmn` resuelve a Liberation Serif y `Courier` a Liberation
-Mono; solo `Symbol` y `Helv` coinciden en Liberation Sans, porque ambos
-piden una familia `sans-serif` (`FF_DECORATIVE` y `FF_SWISS`
-respectivamente) bajo Wine/fontconfig en este entorno.
+With the probe fixed to set `lfPitchAndFamily` to `ffid | prq` per name
+(same as the engine does), **not all four resolve to the same family**:
+`Tms Rmn` resolves to Liberation Serif and `Courier` to Liberation Mono;
+only `Symbol` and `Helv` agree on Liberation Sans, because both request a
+`sans-serif` family (`FF_DECORATIVE` and `FF_SWISS` respectively) under
+Wine/fontconfig in this environment.
 
-Sobre `Symbol` en particular: lo llamativo no es el charset devuelto —pedir
-`ANSI_CHARSET` y recibir `tmCharSet=0` (ANSI) es exactamente lo esperado,
-no una contradicción— sino que el *nombre* `Symbol` sugeriría una fuente de
-símbolos y en cambio el motor pide, a propósito, `ANSI_CHARSET` para esa
-entrada: `Opus/initwin.c:1559` fija
-`ChsPffn(pffn) = ANSI_CHARSET;` con el comentario original de Microsoft
+On `Symbol` in particular: the notable point is not the returned charset,
+asking for `ANSI_CHARSET` and getting back `tmCharSet=0` (ANSI) is
+exactly what is expected, not a contradiction, but that the *name*
+`Symbol` would suggest a symbol font while the engine instead deliberately
+requests `ANSI_CHARSET` for that entry: `Opus/initwin.c:1559` sets
+`ChsPffn(pffn) = ANSI_CHARSET;` with the original Microsoft comment
 ("weirdly, this is correct for Postscript; other printers will have to
-tell us what they do — enumeration will override these settings if
-necessary"), y `Opus/LOADFONT.C:880` (`plf->lfCharSet = ChsPffn(pffn);`)
-traslada ese charset sin modificarlo al `LOGFONTA`. La sonda, al pedir
-`ANSI_CHARSET` para `Symbol`, reproduce fielmente el comportamiento del
-motor — no es un artefacto de la sonda. No hay tratamiento especial que
-preservar del lado shell más allá de eso: `Symbol` se sustituye por una
-fuente sans-serif normal, no hace falta una fuente de símbolos ni una
-tabla de glifos aparte.
+tell us what they do; enumeration will override these settings if
+necessary"), and `Opus/LOADFONT.C:880` (`plf->lfCharSet = ChsPffn(pffn);`)
+carries that charset unmodified into the `LOGFONTA`. The probe, by
+requesting `ANSI_CHARSET` for `Symbol`, faithfully reproduces the engine's
+behavior; it is not an artifact of the probe. There is no special
+handling to preserve on the shell side beyond that: `Symbol` is
+substituted by an ordinary sans-serif font, no symbol font or separate
+glyph table is needed.
 
-Resolución de familia a archivo físico, verificada cruzada (no se acepta la
-respuesta de `fc-match` sin confirmar contra la tabla `name` del propio
-archivo), para las 3 familias distintas involucradas:
+Family-to-physical-file resolution, cross-verified (the `fc-match` answer
+is not accepted without confirming it against the file's own `name`
+table), for the 3 distinct families involved:
 
 ```
 $ fc-match -f '%{file}\n' "Liberation Serif"
@@ -500,441 +501,438 @@ $ fc-scan --format '%{family}\n' /usr/share/fonts/truetype/liberation/Liberation
 Liberation Mono
 ```
 
-Coincide en los tres casos: la familia que reporta la propia tabla `name`
-de cada archivo es la misma que `fc-match` resolvió. Tabla final:
+Matches in all three cases: the family reported by each file's own `name`
+table is the same one `fc-match` resolved. Final table:
 
-| Nombre de época | Familia resuelta | Archivo físico |
+| Era name | Resolved family | Physical file |
 |---|---|---|
 | `Tms Rmn` | Liberation Serif | `/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf` |
 | `Symbol` | Liberation Sans | `/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf` |
 | `Helv` | Liberation Sans | `/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf` |
 | `Courier` | Liberation Mono | `/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf` |
 
-**Nota de cara al futuro (B2, selección de ppem):** `Opus/LOADFONT.C:829-837`
-tiene un "HACK" documentado que, específicamente para `Courier`, mantiene
-`lfHeight` positivo en vez de negativo como en el resto de los nombres —
-selecciona la fuente por altura de celda, no por altura de carácter, porque
-la fuente Courier de Windows tenía píxeles internos molestos en su área de
-"leading". Verificado que esto no cambia a qué familia resuelve Courier
-aquí (sigue siendo Liberation Mono), pero cualquier trabajo posterior de
-selección de ppem (B2) tendrá que reproducir ese signo distinto para
-Courier, no solo el mapeo de familia.
+**Note looking forward (B2, ppem selection):** `Opus/LOADFONT.C:829-837`
+has a documented "HACK" that, specifically for `Courier`, keeps
+`lfHeight` positive instead of negative as with the rest of the names: it
+selects the font by cell height, not by character height, because
+Windows' Courier font had annoying internal pixels in its "leading" area.
+Verified that this does not change which family `Courier` resolves to
+here (it is still Liberation Mono), but any later ppem-selection work
+(B2) will have to reproduce that different sign for Courier, not just the
+family mapping.
 
-Implementado como tabla estática en
+Implemented as a static table in
 `src/core/include/OpusShellFontSubstitution.h` /
-`src/core/src/OpusShellFontSubstitution.cpp` — ver ese header para el
-contrato. Solo cubre estos 4 nombres; `Script` y `Modern` quedan fuera de
-alcance de esta medición (no están en la tabla maestra de arranque, ver
-`01-core-shell-boundary.md`, "Secuencia recomendada para Qt-2", paso 2).
+`src/core/src/OpusShellFontSubstitution.cpp`, see that header for the
+contract. It only covers these 4 names; `Script` and `Modern` are out of
+scope for this measurement (they are not in the startup master table, see
+`01-core-shell-boundary.md`, "Recommended sequence for Qt-2", step 2).
 
-### B2.7 Conexión real al primer llamador: `C_LoadFcid`
+### B2.7 Real connection to the first caller: `C_LoadFcid`
 
-`Opus/LOADFONT.C:187 C_LoadFcid`, camino de pantalla (`!pfti->fPrinter`),
-sin vista previa (`!vfPrvwDisp`), paso variable
-(`tm.tmPitchAndFamily & maskFVarPitchTM`), llama a `OpusShellCharWidths`
-en vez de `GetCharWidth`/`OurGetCharWidth` para llenar
-`FCE.hqrgdxp`/`FTI.rgdxp`, guardado bajo
-`#if defined(__GNUC__) && !defined(_MSC_VER)` — MSVC sigue con GDI sin
-cambios. Mapeo de campos, verificado contra el sitio real:
+`Opus/LOADFONT.C:187 C_LoadFcid`, screen path (`!pfti->fPrinter`), no
+preview (`!vfPrvwDisp`), variable pitch
+(`tm.tmPitchAndFamily & maskFVarPitchTM`), calls `OpusShellCharWidths`
+instead of `GetCharWidth`/`OurGetCharWidth` to fill
+`FCE.hqrgdxp`/`FTI.rgdxp`, guarded under
+`#if defined(__GNUC__) && !defined(_MSC_VER)`, MSVC keeps using GDI
+unchanged. Field mapping, verified against the real site:
 
-- `OpusFontKey.ftc` ← `fcid.ibstFont`. La tabla maestra de arranque
-  (`Opus/initwin.c:1541-1583`, ya citada en §B2.6) registra Tms Rmn,
-  Symbol, Helv, Courier en ese orden como `ibstFont` 0-3 — el mismo orden
-  que `EraNameFromFtc` en `OpusShellFontMetrics.cpp` ya asumía. No hacía
-  falta ninguna tabla de traducción nueva: `ibstFont` **es** el `ftc` que
-  el contrato espera, para estas 4 entradas.
-- `OpusFontKey.ps` ← `fcid.hps` (medios puntos — el mismo campo que
-  `C_FGraphicsFcidToPlf`, `Opus/LOADFONT.C:832`, ya usa para construir
+- `OpusFontKey.ftc` from `fcid.ibstFont`. The startup master table
+  (`Opus/initwin.c:1541-1583`, already cited in §B2.6) registers Tms Rmn,
+  Symbol, Helv, Courier in that order as `ibstFont` 0-3, the same order
+  `EraNameFromFtc` in `OpusShellFontMetrics.cpp` already assumed. No new
+  translation table was needed: `ibstFont` **is** the `ftc` the contract
+  expects, for these 4 entries.
+- `OpusFontKey.ps` from `fcid.hps` (half-points, the same field
+  `C_FGraphicsFcidToPlf`, `Opus/LOADFONT.C:832`, already uses to build
   `lfHeight`).
-- `OpusFontKey.catr` ← `(fcid.fBold ? 1 : 0) | (fcid.fItalic ? 2 : 0)`.
-  Solo importa que sea `0` o no: el contrato no sabe medir negrita ni
-  cursiva (limitación 2 de `OpusShellFontMetrics.cpp`), así que cualquier
-  atributo activo debe fallar controlado, no aproximarse.
+- `OpusFontKey.catr` from `(fcid.fBold ? 1 : 0) | (fcid.fItalic ? 2 : 0)`.
+  It only matters whether it is `0` or not: the contract does not know
+  how to measure bold or italic (limitation 2 of
+  `OpusShellFontMetrics.cpp`), so any active attribute must fail cleanly,
+  not approximate.
 
-Fallo controlado: si `OpusShellCharWidths` devuelve error (fuente no
-soportada, `catr != 0`, o cualquier otro caso fuera del contrato), el
-camino nuevo salta a `LSystemFontErr` — el mismo destino que ya usa un
-fallo de `CreateFontIndirect` más arriba en la misma función. `fFallback`
-queda en `fTrue`, la fuente cae al stock/sistema y, al volver a entrar en
-el bloque de ancho variable, la guarda `!fFallback` ya existente lo salta
-por completo: se degrada a ancho fijo (`tm.tmAveCharWidth`) igual que
-cualquier otro fallo de fuente en este código, sin aproximar con GDI en
-silencio. No se implementó ningún camino nuevo de recuperación — se
-reutilizó el que ya existía.
+Clean failure: if `OpusShellCharWidths` returns an error (unsupported
+font, `catr != 0`, or any other case outside the contract), the new path
+jumps to `LSystemFontErr`, the same destination already used by a
+`CreateFontIndirect` failure earlier in the same function. `fFallback`
+stays `fTrue`, the font falls back to stock/system, and when re-entering
+the variable-width block, the already existing `!fFallback` guard skips
+it entirely: it degrades to fixed width (`tm.tmAveCharWidth`) just like
+any other font failure in this code, with no silent GDI approximation. No
+new recovery path was implemented; the one that already existed was
+reused.
 
-Overhang: no se fuerza `dxpOverhang = 0` en el sitio de integración —
-`pfce->dxpOverhang` sigue viniendo de `tm.tmOverhang` (GDI real, la misma
-llamada a `GetTextMetrics` que ya corría antes de este cambio, sin
-tocar). La sustracción de overhang del camino GDI (`LOADFONT.C:482-490`
-en el numerado actual) queda intacta pero fuera del camino nuevo, que no
-la necesita: §B2.5 midió `tmOverhang = 0` en los 8 casos de estilo bajo
-TrueType/Wine, así que en la práctica ambos caminos coinciden en el valor
-(0), no por una corrección aplicada dos veces.
+Overhang: `dxpOverhang = 0` is not forced at the integration site;
+`pfce->dxpOverhang` still comes from `tm.tmOverhang` (real GDI, the same
+`GetTextMetrics` call that already ran before this change, untouched).
+The overhang subtraction of the GDI path (`LOADFONT.C:482-490` in the
+current numbering) stays intact but outside the new path, which does not
+need it: §B2.5 measured `tmOverhang = 0` in the 8 style cases under
+TrueType/Wine, so in practice both paths agree on the value (0), not
+through a correction applied twice.
 
-**Qué queda verificado end-to-end y qué no.** Los 5 tests de `src/core`
-(incluida `opus_shell_font_metrics_fidelity_test`, 2660/2660) siguen en
-verde tras este cambio — pero no ejercitan `Opus/LOADFONT.C`, solo la
-biblioteca nativa que ese archivo ahora llama. La conexión del lado
-Winelib (`Opus/` compilado con `wineg++`/`winegcc` contra el contrato) no
-se pudo compilar en esta sesión: `Opus/wordtech/disp.h:248` (`struct DR
-rgdr[]` dentro de una `union`) es rechazado por GCC 14 con "flexible
-array member in union" — error preexistente, confirmado con `git stash`
-contra el mismo commit antes de este cambio, en un archivo que este
-trabajo no toca. Bloquea la compilación de `loadfont.c.o` (y de
-`opus_x64_layout.c`, y por tanto de `WORD1` entero) en este entorno,
-independientemente de §B2.7. Es un bloqueador de entorno/toolchain, no
-del contrato ni de esta integración — pero significa que el enlace real
-`WORD1` → `opus_shell_font_metrics` (cableado en `src/CMakeLists.txt` en
-esta misma sesión, ver el commit de wiring) no se probó compilando de
-punta a punta, solo se verificó que el `find_package(Qt6 ... Gui)` y las
-declaraciones `IMPORTED` resuelven (`cmake --preset
-linux-winelib-debug` configura limpio). Aparte de eso, `WORD1` ya
-arranca con heap corruption conocido antes de llegar a un estado usable
-(`word1_startup_blocked`, ver `CLAUDE.md`) — así que aunque el bloqueador
-de `disp.h` no existiera, este cambio por sí solo no habría podido
-verificarse "contra layout real" corriendo el binario.
+**What is verified end to end and what is not.** The 5 `src/core` tests
+(including `opus_shell_font_metrics_fidelity_test`, 2660/2660) remain
+green after this change, but they do not exercise `Opus/LOADFONT.C`, only
+the native library that file now calls. The Winelib-side connection
+(`Opus/` compiled with `wineg++`/`winegcc` against the contract) could not
+be compiled in this session: `Opus/wordtech/disp.h:248` (`struct DR
+rgdr[]` inside a `union`) is rejected by GCC 14 with "flexible array
+member in union", a preexisting error, confirmed with `git stash` against
+the same commit before this change, in a file this work does not touch.
+It blocks compilation of `loadfont.c.o` (and of `opus_x64_layout.c`, and
+therefore of `WORD1` entirely) in this environment, independent of §B2.7.
+It is an environment/toolchain blocker, not a contract or integration one,
+but it means the real link `WORD1` -> `opus_shell_font_metrics` (wired in
+`src/CMakeLists.txt` in this same session, see the wiring commit) was not
+tested by compiling end to end, only that `find_package(Qt6 ... Gui)` and
+the `IMPORTED` declarations resolve (`cmake --preset linux-winelib-debug`
+configures clean) was verified. Aside from that, `WORD1` already starts
+with a known heap corruption before reaching a usable state
+(`word1_startup_blocked`, see `CLAUDE.md`), so even if the `disp.h`
+blocker did not exist, this change alone could not have been verified
+"against real layout" by running the binary.
 
-**Conclusión sobre el criterio de desbloqueo de `scroll.c`/`disp3.c`/
-`pagevw.c`:** el código está conectado (§B2.7 cierra la ruta de llamada
-que faltaba), pero el criterio del documento — "B2 implementado y
-verificado contra layout real" — pide verificación en ejecución, no solo
-en compilación de tipos. Esa verificación no ocurrió esta sesión por dos
-bloqueadores independientes de este trabajo (compilación `disp.h`/GCC 14,
-arranque de `WORD1`). `scroll.c`/`disp3.c`/`pagevw.c` **siguen fuera de
-alcance** hasta que alguno de esos dos bloqueadores se resuelva y B2 se
-pueda observar produciendo paginación real.
+**Conclusion on the unblocking criterion for `scroll.c`/`disp3.c`/
+`pagevw.c`:** the code is connected (§B2.7 closes the missing call path),
+but the document's criterion, "B2 implemented and verified against real
+layout", calls for runtime verification, not just type-level compilation.
+That verification did not happen this session due to two blockers
+unrelated to this work (`disp.h`/GCC 14 compilation, `WORD1` startup).
+`scroll.c`/`disp3.c`/`pagevw.c` **remain out of scope** until one of
+those two blockers is resolved and B2 can be observed producing real
+pagination.
 
 ---
 
-## B3 — Contrato de memoria Win16
+## B3: Win16 memory contract
 
-201 sitios, 21 TUs. De esas, 6 son de frontera en el núcleo (`catalog.c`,
-`elfile.c`, `elsubs2.c`, `etcmd.c`, `filecvt.c`, `spelcore.c`), 1 de
-diagnóstico y 14 de presentación.
+201 sites, 21 TUs. Of those, 6 are boundary sites in the core (`catalog.c`,
+`elfile.c`, `elsubs2.c`, `etcmd.c`, `filecvt.c`, `spelcore.c`), 1 is
+diagnostic, and 14 are presentation.
 
-### B3.1 Lo que ya está resuelto, y no se repite
+### B3.1 What is already resolved, and is not repeated here
 
-`src/port/original/opus_x64_compat.h` ya resolvió el empaquetado de punteros
-para el port Winelib, y este diseño se apoya en eso sin reimplementarlo:
+`src/port/original/opus_x64_compat.h` already resolved pointer packing for
+the Winelib port, and this design rests on that without reimplementing it:
 
-- `LOWORDX` / `HIWORDX` / `MAKELONGX` (líneas 305-312) operan sobre
-  `uintptr_t`, no sobre `WORD`, de modo que un puntero de 64 bits no se
-  trunca al empaquetarse.
-- Las macros de desempaquetado de punto (líneas 319-333) extraen coordenadas
-  con extensión de signo desde un valor empaquetado del ancho del puntero.
-- El manejo de `dkt`/`dktString` para parámetros tipados está anotado en la
-  línea 34.
+- `LOWORDX` / `HIWORDX` / `MAKELONGX` (lines 305-312) operate on
+  `uintptr_t`, not on `WORD`, so a 64-bit pointer is not truncated when
+  packed.
+- The point-unpacking macros (lines 319-333) extract coordinates with sign
+  extension from a value packed at pointer width.
+- The `dkt`/`dktString` handling for typed parameters is annotated at line
+  34.
 
-Qt-2 usa esas macros tal como están. Lo que sigue es lo que **no** está
-resuelto.
+Qt-2 uses those macros as they stand. What follows is what is **not**
+resolved.
 
-### B3.2 Corrección de fondo: `HANDLE` no mide 16 bits en este build
+### B3.2 Background correction: `HANDLE` is not 16 bits wide in this build
 
-Una versión anterior de esta sección afirmaba, citando
-`Opus/lib/qwindows.h:630` (`typedef WORD HANDLE`), que "un handle Win16 es
-un entero de 16 bits" y que de ahí salía el problema del contrato. Medido
-antes de diseñar nada más: **falso para este build.**
+An earlier version of this section claimed, citing
+`Opus/lib/qwindows.h:630` (`typedef WORD HANDLE`), that "a Win16 handle is
+a 16-bit integer" and that this is where the contract's problem came from.
+Measured before designing anything further: **false for this build.**
 
 ```c
 #include "word.h"
-printf("sizeof(HANDLE)=%zu\n", sizeof(HANDLE));   /* → 8 */
+printf("sizeof(HANDLE)=%zu\n", sizeof(HANDLE));   /* -> 8 */
 ```
 
-`qwindows.h` es el SDK Win16 vendorizado, pero esa rama de `word.h` está
-detrás de `#ifdef OPUS_X64 ... #else ... #include "qwindows.h" ... #endif`
-—y `OPUS_X64` está definido en este build—. La rama que sí se compila
-incluye `opus_x64_compat.h`, que arrastra el `windows.h` real de Wine
-(`winnt.h: typedef void *HANDLE`). `qwindows.h:630` es código muerto para
-este target; la cita original nunca se verificó contra lo que realmente
-compila.
+`qwindows.h` is the vendored Win16 SDK, but that branch of `word.h` sits
+behind `#ifdef OPUS_X64 ... #else ... #include "qwindows.h" ... #endif`,
+and `OPUS_X64` is defined in this build. The branch that actually
+compiles includes `opus_x64_compat.h`, which pulls in Wine's real
+`windows.h` (`winnt.h: typedef void *HANDLE`). `qwindows.h:630` is dead
+code for this target; the original citation was never checked against
+what actually compiles.
 
-Esto no vuelve trivial el contrato, cambia por qué existe. No hace falta
-un allocator opaco porque un handle no entre en un campo de 16 bits —ya
-entra, mide lo mismo que un puntero—. Hace falta porque un handle sigue
-siendo indirección de tiempo de ejecución que el núcleo no debe fijar por
-diseño (independencia del shell) ni serializar nunca (§B3.3).
+This does not make the contract trivial, it changes why it exists. An
+opaque allocator is not needed because a handle does not fit in a 16-bit
+field, it already fits, it is the same size as a pointer. It is needed
+because a handle is still runtime indirection that the core should not
+fix by design (shell independence) nor ever serialize (§B3.3).
 
-### B3.3 Fase 1 — Estructuras persistidas con campo handle: ninguna encontrada
+### B3.3 Phase 1: persisted structures with a handle field: none found
 
-Se recorrieron, antes de escribir una sola línea del header, todos los
-campos de tipo `HANDLE`/`GLOBALHANDLE`/`HGLOBAL`/`LOCALHANDLE` en `Opus/`.
-De los que son campos de struct (no variables locales ni parámetros —la
-mayoría de las ~90 coincidencias de `HANDLE` en el árbol son eso), estos
-son los que aparecieron y por qué ninguno se persiste:
+Every field of type `HANDLE`/`GLOBALHANDLE`/`HGLOBAL`/`LOCALHANDLE` in
+`Opus/` was swept, before a single line of the header was written. Of
+those that are struct fields (not local variables or parameters, most of
+the ~90 `HANDLE` matches in the tree are those), these are the ones that
+turned up and why none is serialized:
 
-| Struct | Campo(s) | Qué es | Por qué no se serializa |
+| Struct | Field(s) | What it is | Why it is not serialized |
 |---|---|---|---|
-| `Opus/core.h` | `rghcdModules[]` | caché de handles de módulo de código (`GetCodeHandle`, `wproc.c`) | vive y muere con la sesión; ninguna escritura a archivo la toca |
-| `Opus/dde.h` (`DDLI`) | `hData` | último mensaje DDE | IPC en vivo entre procesos, no hay "DDE guardado" |
-| `Opus/dde.h` (`DRVDATA`) | `hrgbKeyState` | registro de teclas para reproducción de macros | estado de sesión de `eldde.c`/`quit.c`, `GlobalAlloc`/`Free` en memoria |
-| `Opus/filecvt.h` (`EXCR`) | `hLib`, `ghszFn`, `ghszSubset`, `ghBuff`, `ghszVersion` | carga de DLL conversora externa | scratch de `filecvt.c` mientras dura la conversión, `GlobalAlloc`/`Free` puros |
-| `Opus/el.h` (`CABX`) | `rgh[]` | contenedor genérico "SDM privado" | comentario propio del código: "necessary for CAB access... internal"; sin escritura a archivo |
-| `Opus/el.h` (`DKD`) | `hLib` | biblioteca de add-in cargada | no referenciado por nombre en ningún `.c`; huérfano |
-| `Opus/grstruct.h` (`PICT`) | `hbm` | bitmap de GDI para repintar | único uso real es `SelectObject` (`rsb.c:601`); el formato de imagen en disco (`PIC.H`) no tiene campos handle |
-| `Opus/wordtech/file.h` (`ELOF`) | `hFile` | handle de SO de un archivo abierto por el lenguaje de macros | por definición no sobrevive a un reinicio; nunca se escribe a sí mismo |
+| `Opus/core.h` | `rghcdModules[]` | code-module handle cache (`GetCodeHandle`, `wproc.c`) | lives and dies with the session; no file write touches it |
+| `Opus/dde.h` (`DDLI`) | `hData` | last DDE message | live inter-process IPC, there is no "saved DDE" |
+| `Opus/dde.h` (`DRVDATA`) | `hrgbKeyState` | key-state log for macro playback | session state of `eldde.c`/`quit.c`, plain `GlobalAlloc`/`Free` memory |
+| `Opus/filecvt.h` (`EXCR`) | `hLib`, `ghszFn`, `ghszSubset`, `ghBuff`, `ghszVersion` | loading an external converter DLL | scratch of `filecvt.c` for the duration of the conversion, plain `GlobalAlloc`/`Free` |
+| `Opus/el.h` (`CABX`) | `rgh[]` | generic "private SDM" container | the code's own comment: "necessary for CAB access... internal"; no file write |
+| `Opus/el.h` (`DKD`) | `hLib` | loaded add-in library | not referenced by name in any `.c`; orphaned |
+| `Opus/grstruct.h` (`PICT`) | `hbm` | GDI bitmap for repainting | its only real use is `SelectObject` (`rsb.c:601`); the on-disk image format (`PIC.H`) has no handle fields |
+| `Opus/wordtech/file.h` (`ELOF`) | `hFile` | OS handle of a file opened by the macro language | by definition does not survive a restart; never writes itself out |
 
-Cruzado contra las estructuras que sí son el formato de archivo real —FIB,
-FIB30, DOP, STSH, PAP, CHP, SEP, BKF, FFN, STTB— **ninguna tiene un campo
-handle.** Coincide con la práctica ya esperada de la época: el formato de
-Word 1.1a guarda índices (FTC, STC, desplazamientos de FKP) precisamente
-porque un handle no sobrevive a un guardado, no es un cuidado que este
-port haya introducido.
+Cross-checked against the structures that actually are the real file
+format, FIB, FIB30, DOP, STSH, PAP, CHP, SEP, BKF, FFN, STTB, **none has a
+handle field.** This matches the practice already expected of the era:
+the Word 1.1a format saves indices (FTC, STC, FKP offsets) precisely
+because a handle does not survive a save, it is not a precaution this
+port introduced.
 
-**Veredicto de Fase 1: ninguna estructura persistida con campo handle.**
-No cambia la forma del contrato —sigue siendo el handle opaco de
-§B3.2— y no bloquea la Fase 2.
+**Phase 1 verdict: no persisted structure has a handle field.** It does
+not change the shape of the contract, it remains the opaque handle of
+§B3.2, and it does not block Phase 2.
 
-**Hallazgo colateral, fuera de alcance de este documento pero que no se
-puede callar:** al verificar `struct FTI` para esta fase se encontró que
-la cita central de §B2.1 (`Opus/wordtech/format.h:379-410`, con
-`dxuFrac`/`bmpchdxu`/`struct FONTREC far * far *qqftr`) describe una
-estructura que está **dentro de `#ifdef MAC`** —muerta en este build,
-igual que le pasaba a `qwindows.h`—. El `struct FTI` que sí se compila
-bajo `WIN`/`OPUS_X64` vive en `Opus/fontwin.h:126-152`: sin acumulador de
-fracción, con `int rgdxp[256]` (tabla de anchos inline, no un puntero a
-tabla externa) y `HFONT hfont`. No se toca el contrato de medición de
-texto (B2) en este documento —fuera de alcance de este prompt—, pero
-queda anotado: **B2.1 describe la estructura equivocada** y necesita
-revisión propia antes de implementarse.
+**Side finding, out of scope for this document but not something that can
+go unmentioned:** while verifying `struct FTI` for this phase it was
+found that the central citation of §B2.1 (`Opus/wordtech/format.h:379-410`,
+with `dxuFrac`/`bmpchdxu`/`struct FONTREC far * far *qqftr`) describes a
+structure that is **inside `#ifdef MAC`**, dead in this build, just like
+`qwindows.h` was. The `struct FTI` that actually compiles under
+`WIN`/`OPUS_X64` lives in `Opus/fontwin.h:126-152`: no fraction
+accumulator, with `int rgdxp[256]` (an inline width table, not a pointer
+to an external table) and `HFONT hfont`. The text measurement contract
+(B2) is not touched in this document (out of scope for this prompt), but
+it is noted here: **B2.1 describes the wrong structure** and needs its
+own review before implementation.
 
-### B3.4 Contrato
+### B3.4 Contract
 
-Declarado en `src/core/include/OpusShellMemory.h`, con `OpusMemHandle`
-(equivalente de `GlobalHandle`) agregado en la Fase 2 de este contrato:
+Declared in `src/core/include/OpusShellMemory.h`, with `OpusMemHandle`
+(the equivalent of `GlobalHandle`) added in Phase 2 of this contract:
 
 ```c
-/* Handle opaco de ancho completo. Nunca se empaqueta en 16 bits, nunca se
-   escribe a disco, nunca se compara contra un literal. */
+/* Fully opaque handle. Never packed into 16 bits, never written to disk,
+   never compared against a literal. */
 typedef struct OpusHandleImpl *OpusHandle;
 
 #define OPUS_MEM_ZEROINIT 0x0001u
 
 OpusHandle    OpusMemAlloc(unsigned long cb, unsigned flags);
-void         *OpusMemLock(OpusHandle h);     /* fija y devuelve puntero */
-void          OpusMemUnlock(OpusHandle h);   /* libera la fijación */
+void         *OpusMemLock(OpusHandle h);     /* pins and returns pointer */
+void          OpusMemUnlock(OpusHandle h);   /* releases the pin */
 OpusHandle    OpusMemRealloc(OpusHandle h, unsigned long cb, unsigned flags);
 unsigned long OpusMemSize(OpusHandle h);
-OpusHandle    OpusMemHandle(void *ptr);      /* puntero → handle dueño */
+OpusHandle    OpusMemHandle(void *ptr);      /* pointer -> owning handle */
 void          OpusMemFree(OpusHandle h);
 ```
 
-Un solo contrato cubre `Global*` y `Local*`: bajo este port ambos heaps
-Win16 ya son el mismo heap nativo, así que la distinción no tiene nada que
-preservar. `LocalHandle` no aparece (0 coincidencias por grep independiente
-en todo `Opus/`+`OpusEtAl/`); el resto de la familia sí (`GlobalHandle`: 11,
-`LocalAlloc`: 5, `LocalReAlloc`: 3, `LocalLock`/`LocalUnlock`/`LocalSize`:
-1 cada uno) pese a no estar en la tabla de símbolos del inventario Qt-0
-—`debugwin.h` no intercepta esos nombres puntuales, así que el mecanismo
-de derivación del diccionario no los capturó; confirmado con grep directo,
-no asumido ausente—.
+A single contract covers `Global*` and `Local*`: under this port both
+Win16 heaps are already the same native heap, so the distinction has
+nothing to preserve. `LocalHandle` does not appear (0 matches by an
+independent grep across all of `Opus/`+`OpusEtAl/`); the rest of the
+family does (`GlobalHandle`: 11, `LocalAlloc`: 5, `LocalReAlloc`: 3,
+`LocalLock`/`LocalUnlock`/`LocalSize`: 1 each) despite not being in the
+Qt-0 inventory's symbol table, `debugwin.h` does not intercept those
+specific names, so the dictionary-derivation mechanism did not capture
+them; confirmed by direct grep, not assumed absent.
 
-Notas de diseño, en orden de riesgo:
+Design notes, in order of risk:
 
-1. **Memoria movible y disciplina de fijación.** El modelo Win16 permitía que
-   el gestor moviera un bloque desbloqueado; `GlobalLock`/`GlobalUnlock` forman
-   pares que el código respeta hoy. Qt no tiene equivalente. El allocator del
-   núcleo puede fijar todo permanentemente —la memoria de un proceso de 64 bits
-   lo permite— pero **los pares deben conservarse en el código**: eliminarlos
-   como no-operaciones haría imposible detectar un uso de puntero tras mover,
-   si más adelante se introdujera compactación. Verificado en la
-   implementación (§B3.5): `OpusMemLock` tras `OpusMemFree` devuelve `NULL`
-   en vez de un puntero colgante.
-2. **`GlobalLockClip`.** Variante de bloqueo específica de portapapeles. Va al
-   contrato de portapapeles de Qt-6, no a este. Se anota aquí para que no se
-   resuelva dos veces.
-3. **Todo campo de estructura serializada con tipo handle necesita
-   indirección.** Resuelto por la Fase 1 (§B3.3): no hay ninguno hoy. Si
-   algún día se agrega uno, ese es el momento de diseñar la indirección, no
-   antes.
+1. **Movable memory and the pinning discipline.** The Win16 model allowed
+   the manager to move an unlocked block; `GlobalLock`/`GlobalUnlock`
+   form pairs the code respects today. Qt has no equivalent. The core
+   allocator can pin everything permanently, a 64-bit process's memory
+   allows that, but **the pairs must be kept in the code**: eliminating
+   them as no-ops would make it impossible to detect a use-after-move
+   pointer, should compaction ever be introduced later. Verified in the
+   implementation (§B3.5): `OpusMemLock` after `OpusMemFree` returns
+   `NULL` instead of a dangling pointer.
+2. **`GlobalLockClip`.** A locking variant specific to the clipboard. It
+   goes to the Qt-6 clipboard contract, not this one. Noted here so it is
+   not resolved twice.
+3. **Every serialized struct field with handle type needs indirection.**
+   Resolved by Phase 1 (§B3.3): there is none today. If one is ever
+   added, that is the moment to design the indirection, not before.
 
-### B3.5 Implementación y verificación — cerrado
+### B3.5 Implementation and verification: closed
 
-Lado núcleo implementado en `src/core/src/OpusShellMemory.cpp`: handle
-opaco sobre `malloc`/`realloc`/`free` con contador de fijación y una
-marca de "liberado" que se conserva después de `OpusMemFree` —a propósito,
-para poder detectar mal uso en vez de leer memoria ya reciclada—.
-`OpusMemHandle` usa un registro `puntero → handle` (`std::unordered_map`),
-no aritmética de punteros, porque la dirección que devuelve `malloc` no
-tiene relación fija con la del `OpusHandleImpl` que la posee. No depende
-de Qt: es la primera implementación de los tres contratos restantes, y no
-necesitaba Qt para nada.
+Core side implemented in `src/core/src/OpusShellMemory.cpp`: an opaque
+handle over `malloc`/`realloc`/`free` with a pin counter and a "freed"
+marker kept after `OpusMemFree`, deliberately, to be able to detect
+misuse instead of reading already-recycled memory. `OpusMemHandle` uses a
+`pointer -> handle` registry (`std::unordered_map`), not pointer
+arithmetic, because the address `malloc` returns has no fixed relation to
+the `OpusHandleImpl` that owns it. It does not depend on Qt: it is the
+first implementation of the three remaining contracts, and it did not
+need Qt for anything.
 
-**No alcanza con que compile ni enlace** —eso ya lo probó
-`link-check/` para paso de valores por copia (commit `7760a28`)—.
-Lo que este contrato cruza es un handle/puntero real, así que la prueba
-tiene que demostrar que sobrevive la frontera, no solo que se puede pasar.
+**Compiling and linking is not enough**, `link-check/` already proved
+that for passing values by copy (commit `7760a28`). What this contract
+crosses is a real handle/pointer, so the test has to demonstrate that it
+survives the boundary, not just that it can be passed.
 
-Sonda en `docs/port-qt/scripts/handle-check/` (`handle_check.c`),
-compilada y enlazada con **wineg++** —el driver real de `WORD1`, no
-`winegcc`— contra `libopus_shell_memory.a`:
+Probe in `docs/port-qt/scripts/handle-check/` (`handle_check.c`), compiled
+and linked with **wineg++**, the real driver of `WORD1`, not `winegcc`,
+against `libopus_shell_memory.a`:
 
-1. `OpusMemAlloc` → handle real.
-2. `OpusMemLock` → puntero válido.
-3. Escribe el patrón `"OpusMemHandleRoundTrip-2026"` a través del puntero.
-4. `OpusMemUnlock`, `OpusMemLock` de nuevo: **el patrón sigue ahí**, no
-   solo "el puntero es no nulo".
-5. `OpusMemHandle(puntero)` devuelve el mismo handle original.
-6. `OpusMemFree`, luego `OpusMemLock` sobre el handle liberado: `NULL`,
-   fallo controlado, no puntero colgante.
-7. Modo aparte `--double-free`: `OpusMemAlloc` → `OpusMemFree` →
-   `OpusMemFree` otra vez. La segunda llamada hace `abort()`. Bajo Wine
-   esto se ve como el volcado de WineDbg capturando el `SIGABRT` —ruidoso,
-   pero es exactamente Wine reaccionando a una terminación anormal real,
-   no un error de la sonda—; el proceso termina con exit 134
-   (128+SIGABRT), nunca con exit 0.
+1. `OpusMemAlloc` -> real handle.
+2. `OpusMemLock` -> valid pointer.
+3. Writes the pattern `"OpusMemHandleRoundTrip-2026"` through the pointer.
+4. `OpusMemUnlock`, `OpusMemLock` again: **the pattern is still there**,
+   not just "the pointer is non-null".
+5. `OpusMemHandle(pointer)` returns the same original handle.
+6. `OpusMemFree`, then `OpusMemLock` on the freed handle: `NULL`, clean
+   failure, not a dangling pointer.
+7. A separate `--double-free` mode: `OpusMemAlloc` -> `OpusMemFree` ->
+   `OpusMemFree` again. The second call does `abort()`. Under Wine this
+   shows up as WineDbg's dump catching the `SIGABRT`, noisy, but it is
+   exactly Wine reacting to a real abnormal termination, not a probe
+   error; the process exits with 134 (128+SIGABRT), never with 0.
 
-Las siete verificaciones pasaron en la corrida real (`run.sh`, sobre la
-biblioteca que construye `opus_core_build`, no una copia de scratch); el
-proceso de doble liberación terminó con exit 134, no 0. Sin regresión:
-`ctest -R opus_shell_config_test` sigue en verde después de agregar
-`opus_shell_memory` al mismo `CMakeLists.txt`.
+The seven checks passed in the real run (`run.sh`, over the library that
+`opus_core_build` actually builds, not a scratch copy); the double-free
+process exited with 134, not 0. No regression: `ctest -R
+opus_shell_config_test` stays green after adding `opus_shell_memory` to
+the same `CMakeLists.txt`.
 
-**Consecuencia:** la frontera física ya probó pasar valores por copia
-(configuración) y ahora pasar ownership de un bloque de memoria real
-(handles). Los dos modos de cruce que necesitan los contratos restantes
-—espina de mensajes (callbacks, sin estado que cruce la frontera más que
-el valor de retorno) y medición de texto (arrays de anchos por valor,
-igual que configuración)— no introducen una tercera categoría nueva.
+**Consequence:** the physical boundary has now proven passing values by
+copy (configuration) and passing ownership of a real memory block
+(handles). The two crossing modes the remaining contracts need, message
+spine (callbacks, no state crossing the boundary beyond the return value)
+and text measurement (width arrays passed by value, same as
+configuration), do not introduce a third new category.
 
 ---
 
-## B4 — Contrato de espina de mensajes y ventanas
+## B4: Message spine and windows contract
 
-287 sitios, 47 TUs: `Opus/` raíz 38, `Opus/wordtech/` 6, `Opus/debug/` 3.
-Los dos fragmentos con firma concreta hoy (§B4.3) están declarados en
-`src/core/include/OpusShellSpine.h`; el resto de esta sección sigue siendo
-tabla conceptual, no API.
+287 sites, 47 TUs: `Opus/` root 38, `Opus/wordtech/` 6, `Opus/debug/` 3.
+The two fragments with a concrete signature today (§B4.3) are declared in
+`src/core/include/OpusShellSpine.h`; the rest of this section remains a
+conceptual table, not API.
 
-### B4.1 La inversión de control es el cambio estructural mayor
+### B4.1 Control inversion is the major structural change
 
-Hoy el código de Word **posee** el bucle de mensajes: llama a `GetMessage` y
-`DispatchMessage` desde `Opus/` raíz. En Qt el bucle pertenece a
-`QCoreApplication` y llama hacia dentro.
+Today Word's code **owns** the message loop: it calls `GetMessage` and
+`DispatchMessage` from `Opus/` root. In Qt, the loop belongs to
+`QCoreApplication` and calls inward.
 
-Esa inversión, no el mapeo de símbolos, es el trabajo real de esta frontera.
-El núcleo pasa de conductor a biblioteca: expone entradas que el shell invoca,
-y notifica hacia fuera por callbacks en lugar de publicar mensajes.
+That inversion, not symbol mapping, is the real work of this boundary.
+The core goes from driver to library: it exposes entry points the shell
+invokes, and notifies outward via callbacks instead of posting messages.
 
-### B4.2 Mapeo conceptual
+### B4.2 Conceptual mapping
 
-| Win16 | Qt | Nota |
+| Win16 | Qt | Note |
 |---|---|---|
-| `GetMessage`, `PeekMessage`, `DispatchMessage`, `TranslateMessage` | bucle de `QCoreApplication` | Desaparecen del núcleo; el shell posee el bucle |
-| `RegisterClass` | subclase de `QWidget` | Sin equivalente directo, se disuelve |
-| `CreateWindow`, `DestroyWindow` | construcción y destrucción de `QWidget` | |
-| `SendMessage` | llamada directa por la API de frontera | Semántica sincrónica, se preserva |
-| `PostMessage` | `QMetaObject::invokeMethod` con `Qt::QueuedConnection` | Semántica diferida, se preserva |
-| `DefWindowProc`, `CallWindowProc` | manejo por defecto de `QWidget` | |
-| `ShowWindow`, `UpdateWindow`, `MoveWindow`, `SetWindowPos`, `EnableWindow` | métodos de `QWidget` | Mapeo directo |
-| `MessageBox` | `QMessageBox` | Solo desde el shell; el núcleo nunca abre UI |
+| `GetMessage`, `PeekMessage`, `DispatchMessage`, `TranslateMessage` | `QCoreApplication` loop | Disappear from the core; the shell owns the loop |
+| `RegisterClass` | `QWidget` subclass | No direct equivalent, it dissolves |
+| `CreateWindow`, `DestroyWindow` | `QWidget` construction and destruction | |
+| `SendMessage` | direct call through the boundary API | Synchronous semantics, preserved |
+| `PostMessage` | `QMetaObject::invokeMethod` with `Qt::QueuedConnection` | Deferred semantics, preserved |
+| `DefWindowProc`, `CallWindowProc` | `QWidget` default handling | |
+| `ShowWindow`, `UpdateWindow`, `MoveWindow`, `SetWindowPos`, `EnableWindow` | `QWidget` methods | Direct mapping |
+| `MessageBox` | `QMessageBox` | Only from the shell; the core never opens UI |
 | `SetTimer` | `QTimer` | |
-| `MakeProcInstance`, `FARPROC` | punteros a función | Ya neutralizado por Winelib |
-| `Yield` | se elimina | Artefacto de multitarea cooperativa de Win16 |
+| `MakeProcInstance`, `FARPROC` | function pointers | Already neutralized by Winelib |
+| `Yield` | removed | Win16 cooperative multitasking artifact |
 
-### B4.3 Las 6 TUs de `wordtech/` con espina de mensajes
+### B4.3 The 6 `wordtech/` TUs with message spine
 
-Exigen extracción, no mapeo. Por orden de dificultad creciente:
+They require extraction, not mapping. In increasing order of difficulty:
 
-- **`error.c`** — la más simple y la primera a hacer. `MessageBox` real en la
-  línea 1618, más dos `Yield`. Se sustituye por un callback de error en la API
-  de frontera: el núcleo entrega código y contexto, el shell decide la
-  presentación.
-- **`editspec.c`, `undo.c`** — **corrección sobre una lectura anterior de este
-  documento.** No notifican cambios de documento por mensajes: el símbolo que
-  los clasifica en esta categoría es `MessageBeep(MB_OK)`
-  (`editspec.c:1855,2075`, `undo.c:97`), verificado independientemente por
-  grep, no un mecanismo de notificación. En los tres sitios es el mismo
-  patrón — pila de deshacer vacía (`undo.c:97`, `vuab.uac == uacNil`) o rango
-  de bloque inválido (`editspec.c`, `LRetFalse`) — señal audible de "operación
-  rechazada", con `Beep()` bajo la rama `!OPUS_X64` ya presente en el propio
-  archivo. Se sustituye por un callback de alerta trivial, sin texto, del
-  mismo tipo que el de `error.c` pero sin mensaje que resolver. La
-  notificación real de cambio de documento —si existe como mecanismo
-  distinto— no está localizada todavía; no se afirma que exista solo porque
-  Qt-1 la previó en abstracto.
-- **`scroll.c`, `disp3.c`, `pagevw.c`** — mezclan cálculo de qué es visible
-  (núcleo) con repintado (shell). Requieren la separación por función descrita
-  en §B1.3 y no deberían intentarse antes de que el contrato de medición de
-  texto esté implementado y verificado.
+- **`error.c`**: the simplest, and the first to do. Real `MessageBox` on
+  line 1618, plus two `Yield`. Replaced by an error callback in the
+  boundary API: the core hands over a code and context, the shell decides
+  presentation.
+- **`editspec.c`, `undo.c`**: **correction to an earlier reading of this
+  document.** They do not notify document changes via messages: the
+  symbol that puts them in this category is `MessageBeep(MB_OK)`
+  (`editspec.c:1855,2075`, `undo.c:97`), verified independently by grep,
+  not a notification mechanism. In all three sites it is the same
+  pattern, empty undo stack (`undo.c:97`, `vuab.uac == uacNil`) or an
+  invalid block range (`editspec.c`, `LRetFalse`), an audible "operation
+  rejected" signal, with `Beep()` under the `!OPUS_X64` branch already
+  present in the file itself. Replaced by a trivial alert callback, no
+  text, of the same kind as `error.c`'s but with no message to resolve.
+  The real document-change-notification mechanism, if it exists as a
+  distinct one, is not located yet; it is not claimed to exist just
+  because Qt-1 anticipated it in the abstract.
+- **`scroll.c`, `disp3.c`, `pagevw.c`**: they mix computing what is
+  visible (core) with repainting (shell). They require the split-by-
+  function described in §B1.3 and should not be attempted before the text
+  measurement contract is implemented and verified.
 
-### B4.4 Conexión real del primer sitio: `error.c:1618`
+### B4.4 Real connection of the first site: `error.c:1618`
 
-`Opus/wordtech/error.c`, función `ErrorEidStartup`, sustituye el `MessageBox`
-real por `OpusShellReportError(eid, szMsg)`, guardado bajo
-`#if defined(__GNUC__) && !defined(_MSC_VER)` — mismo patrón que §B2.7. MSVC
-sigue con `MessageBox` real, sin cambios.
+`Opus/wordtech/error.c`, function `ErrorEidStartup`, replaces the real
+`MessageBox` with `OpusShellReportError(eid, szMsg)`, guarded under
+`#if defined(__GNUC__) && !defined(_MSC_VER)`, same pattern as §B2.7.
+MSVC keeps the real `MessageBox`, unchanged.
 
-Verificado antes del cambio, `git grep -n 'MessageBox' src/Opus/wordtech/
-error.c`: la línea 1618 es la única llamada directa a `MessageBox` en el
-archivo — las otras tres coincidencias (1214, 1549, 1674) son
-`IdMessageBoxMstRgwMb`, el wrapper propio de Word, no la API Win32, y la de
-1582 es un comentario.
+Verified before the change, `git grep -n 'MessageBox' src/Opus/wordtech/
+error.c`: line 1618 is the only direct `MessageBox` call in the file, the
+other three matches (1214, 1549, 1674) are `IdMessageBoxMstRgwMb`, Word's
+own wrapper, not the Win32 API, and the one at 1582 is a comment.
 
-Mapeo de parámetros contra la firma (`src/core/include/OpusShellSpine.h:46`,
+Parameter mapping against the signature
+(`src/core/include/OpusShellSpine.h:46`,
 `void OpusShellReportError(int eid, const char *message);`):
 
-- `eid` — el mismo parámetro que ya recibe `ErrorEidStartup(eid)`, sin
-  transformación.
-- `message` ← `szMsg`, el texto que la propia función ya resuelve vía
-  `IemdFromEid`/`CopyEmdSt` antes de la llamada — el contenido del error no
-  pierde nada.
-- `szApp` (el título de la ventana) **no** tiene lugar en el contrato a
-  propósito: `OpusShellSpine.cpp:20` fija el título a `"Word"` traducido por
-  Qt, no al valor de `szApp`. `szApp` es una constante global de la app
-  (`extern CHAR szApp[]`, el mismo valor en cualquier sitio de llamada, no un
-  dato específico de este error), así que no hay pérdida de información *del
-  error*: es una decisión de presentación ya explícita en el header
-  (`OpusShellSpine.h:17`, "el shell decide la presentación"), no un recorte
-  improvisado en este cambio.
-- `MB_OK|MB_SYSTEMMODAL` ← ya fijos dentro de `OpusShellReportError`
-  (`QMessageBox::Ok`, `Qt::ApplicationModal`) — la llamada real en `error.c`
-  nunca varía esos flags entre invocaciones (es la única llamada), así que no
-  hay combinación de flags que el contrato deba parametrizar.
+- `eid`: the same parameter `ErrorEidStartup(eid)` already receives, no
+  transformation.
+- `message` from `szMsg`, the text the function itself already resolves
+  via `IemdFromEid`/`CopyEmdSt` before the call, the error content loses
+  nothing.
+- `szApp` (the window title) **has no place in the contract on purpose**:
+  `OpusShellSpine.cpp:20` sets the title to `"Word"` translated by Qt, not
+  to the value of `szApp`. `szApp` is a global app constant (`extern CHAR
+  szApp[]`, the same value at any call site, not data specific to this
+  error), so there is no loss of information *about the error*: it is a
+  presentation decision already explicit in the header
+  (`OpusShellSpine.h:17`, "the shell decides presentation"), not an
+  improvised trim in this change.
+- `MB_OK|MB_SYSTEMMODAL`: already fixed inside `OpusShellReportError`
+  (`QMessageBox::Ok`, `Qt::ApplicationModal`), the real call in `error.c`
+  never varies those flags between invocations (it is the only call), so
+  there is no flag combination the contract needs to parameterize.
 
-Fallo controlado: sin cambios de comportamiento en caso de error — la ruta
-sigue siendo la misma función, mismos dos `Yield()` alrededor de la llamada
-(bug de Windows documentado en el comentario original), sin `try`/`catch` ni
-fallback silencioso añadido.
+Clean failure: no behavior changes in the error case, the path is still
+the same function, the same two `Yield()` calls around it (a documented
+Windows bug in the original comment), with no `try`/`catch` or silent
+fallback added.
 
-**Diferencia real frente a §B2.7: esta vez sí se pudo compilar contra
-Winelib de punta a punta.** `error.c` no incluye `disp.h` ni `rsb.h` ni
-directa ni transitivamente (verificado por `git grep`, dos niveles, ver la
-sesión de reconocimiento previa) — no choca con el bloqueador de GCC 14 en
-`Opus/wordtech/disp.h:248`. `ninja
-CMakeFiles/opus_original_engine.dir/Opus/wordtech/error.c.o` bajo
-`wineg++`/`winegcc` real compiló sin errores (solo warnings preexistentes,
-ninguno en las líneas tocadas) y produjo el objeto
-(`error.c.o`, 41784 bytes). Esto es compilación real contra el árbol
-Winelib, no solo los 5 tests nativos de `src/core` — pero **no es
-ejecución**: `WORD1` completo sigue sin poder enlazarse/arrancar en este
-entorno (el resto del árbol sí choca con `disp.h`/GCC 14, y por separado
-`WORD1` tiene el bloqueador de arranque conocido,
-`word1_startup_blocked`), así que el diálogo modal real de
-`OpusShellReportError` en este sitio de llamada específico no se disparó ni
-se observó en ejecución esta sesión. Lo que sí está verificado en
-ejecución es el contrato en sí (`opus_shell_spine_test`, diálogo modal real
-vía `QMessageBox`/`QTimer`, commit 79b181f) — no la ruta completa desde
-`ErrorEidStartup` real.
+**Real difference from §B2.7: this time it did compile against Winelib
+end to end.** `error.c` does not include `disp.h` or `rsb.h`, either
+directly or transitively (verified by `git grep`, two levels, see the
+previous reconnaissance session), it does not run into the GCC 14 blocker
+in `Opus/wordtech/disp.h:248`. `ninja
+CMakeFiles/opus_original_engine.dir/Opus/wordtech/error.c.o` under real
+`wineg++`/`winegcc` compiled without errors (only preexisting warnings,
+none on the touched lines) and produced the object (`error.c.o`, 41784
+bytes). This is real compilation against the Winelib tree, not just the
+5 native `src/core` tests, but **it is not execution**: `WORD1` as a
+whole still cannot link/start in this environment (the rest of the tree
+does hit `disp.h`/GCC 14, and separately `WORD1` has the known startup
+blocker, `word1_startup_blocked`), so the real modal dialog from
+`OpusShellReportError` at this specific call site was not triggered or
+observed running this session. What is verified at runtime is the
+contract itself (`opus_shell_spine_test`, a real modal dialog via
+`QMessageBox`/`QTimer`, commit 79b181f), not the full path starting from
+the real `ErrorEidStartup`.
 
-**Esto NO desbloquea `disp.h`/GCC 14.** Sigue siendo un bloqueador de
-entorno/toolchain aparte, sin tocar en esta sesión, que sigue afectando a
-`editspec.c`/`undo.c` (los otros dos sitios de §B4.3, ambos incluyen
-`disp.h`) y a la mayoría del árbol. Que `error.c` haya compilado limpio es
-una propiedad de ese archivo puntual (no incluye `disp.h`/`rsb.h`), no una
-resolución del problema de fondo.
+**This does NOT unblock `disp.h`/GCC 14.** It remains a separate
+environment/toolchain blocker, untouched this session, that still affects
+`editspec.c`/`undo.c` (the other two sites of §B4.3, both include
+`disp.h`) and most of the tree. That `error.c` compiled clean is a
+property of that particular file (it does not include `disp.h`/`rsb.h`),
+not a resolution of the underlying problem.
 
 ---
 
-## B5 — Contrato de persistencia de configuración
+## B5: Configuration persistence contract
 
-42 sitios, 12 TUs (cifra corregida en §B5.2 al migrar; la categoría
-*Persistencia de configuración* del inventario suma 43 porque también
-incluye `GetEnvironmentVariableA`, fuera de este contrato). Símbolos:
-`GetProfileString`, `GetProfileInt`, `WriteProfileString`.
+42 sites, 12 TUs (figure corrected in §B5.2 while migrating; the
+inventory's *Configuration persistence* category sums to 43 because it
+also includes `GetEnvironmentVariableA`, out of scope for this contract).
+Symbols: `GetProfileString`, `GetProfileInt`, `WriteProfileString`.
 
-El más simple de los cuatro, y se deja simple. Declarado en
-`src/core/include/OpusShellConfig.h`. La semántica de `WIN.INI`
-—sección, clave, valor por omisión— corresponde uno a uno con `QSettings`:
+The simplest of the four, and it is kept simple. Declared in
+`src/core/include/OpusShellConfig.h`. The `WIN.INI` semantics, section,
+key, default value, map one to one to `QSettings`:
 
 ```c
 int OpusShellProfileString(const char *section, const char *key,
@@ -944,134 +942,138 @@ int OpusShellProfileWrite(const char *section, const char *key,
                           const char *value);
 ```
 
-Tres funciones, traducción directa a `QSettings::value` y `setValue` con
-`beginGroup(section)`. Sin caché propia, sin capa de esquema, sin migración:
-`QSettings` ya resuelve formato y ubicación por plataforma. Confirmado como el
-contrato completo; no hay nada más que diseñar aquí.
+Three functions, translated directly to `QSettings::value` and `setValue`
+with `beginGroup(section)`. No own cache, no schema layer, no migration:
+`QSettings` already resolves format and location per platform. Confirmed
+as the complete contract; there is nothing else to design here.
 
-### B5.1 Implementación (Qt-2, paso 1) — cerrado
+### B5.1 Implementation (Qt-2, step 1): closed
 
-Lado shell implementado en `src/core/src/OpusShellConfig.cpp`, sub-proyecto
-nativo `src/core/` (siempre gcc/g++ y Qt6 reales, nunca winegcc/wineg++;
-construido bajo `OPUS_WINELIB_BUILD` vía `ExternalProject_Add`, mismo esquema
-que los host tools de `src/port/tools/host/`). Al cerrar este paso, nada de
-`Opus/` se tocaba todavía: los sitios de llamada seguían sobre
-`GetProfileString`/`GetProfileInt`/`WriteProfileString`. La migración de
-esos sitios es el trabajo de §B5.2, cerrado por separado.
+Shell side implemented in `src/core/src/OpusShellConfig.cpp`, native
+sub-project `src/core/` (always real gcc/g++ and Qt6, never
+winegcc/wineg++; built under `OPUS_WINELIB_BUILD` via
+`ExternalProject_Add`, same scheme as the host tools in
+`src/port/tools/host/`). When this step closed, nothing in `Opus/` was
+touched yet: the call sites still used
+`GetProfileString`/`GetProfileInt`/`WriteProfileString`. Migrating those
+sites is the work of §B5.2, closed separately.
 
-**Prueba:** `src/core/src/OpusShellConfig_test.cpp`, registrada como
-`opus_shell_config_test` en ctest. Verificado con `ctest -R
-opus_shell_config_test` sobre el preset `linux-winelib-debug` real (no solo
-en un build aislado): 9 verificaciones, todas en verde. `QSettings::setPath`
-redirige a un directorio temporal antes de la primera llamada, así que la
-prueba no toca la configuración real de quien la corre — confirmado
-revisando `~/.config` después de correrla.
+**Test:** `src/core/src/OpusShellConfig_test.cpp`, registered as
+`opus_shell_config_test` in ctest. Verified with `ctest -R
+opus_shell_config_test` on the real `linux-winelib-debug` preset (not
+only in an isolated build): 9 checks, all green. `QSettings::setPath`
+redirects to a temporary directory before the first call, so the test
+does not touch the real configuration of whoever runs it, confirmed by
+inspecting `~/.config` after running it.
 
-**Lo que la prueba cubre, y por qué así:** antes de escribirla se buscó en
-el árbol de pruebas existente (`src/port/original/opus_*_test.c*`) algún
-sitio que ya ejerciera estas tres funciones, tal como pedía el encargo. No
-hay ninguno — cero coincidencias de `GetProfileString`/`GetProfileInt`/
-`WriteProfileString` en los archivos de prueba actuales. No hay, entonces,
-un comportamiento previo puntual que igualar; la prueba verifica la
-implementación contra la semántica documentada del `Profile` Win16 que
-`Opus/*.c` sigue llamando hoy:
+**What the test covers, and why that way:** before writing it, a search
+was made in the existing test tree (`src/port/original/opus_*_test.c*`)
+for any site already exercising these three functions, as the task asked.
+There is none, zero matches for
+`GetProfileString`/`GetProfileInt`/`WriteProfileString` in the current
+test files. There is, then, no prior specific behavior to match; the test
+verifies the implementation against the documented Win16 `Profile`
+semantics that `Opus/*.c` still calls today:
 
-- Ida y vuelta de cadena, con verdad sobre el valor por omisión cuando la
-  clave no existe, y truncamiento correcto cuando el buffer de salida es
-  más chico que el valor (mismo contrato que `cbMax` en `GetProfileString`).
-- Ida y vuelta de entero, incluyendo negativos.
-- La distinción que de verdad importaba verificar: `GetProfileInt` usa el
-  valor por omisión **solo cuando la clave no existe**; si existe pero no es
-  numérica, el valor real es `0`, no el valor por omisión. `QString::toInt()`
-  exige la cadena completa como número válido y no reproduce eso, así que la
-  implementación usa una conversión propia estilo `atoi` (`AtoiLike`,
-  `OpusShellConfig.cpp`). La prueba fija este caso explícitamente para que
-  una futura simplificación no lo pierda en silencio.
+- String round trip, with the truth about the default value when the key
+  does not exist, and correct truncation when the output buffer is
+  smaller than the value (same contract as `cbMax` in
+  `GetProfileString`).
+- Integer round trip, including negatives.
+- The distinction that really mattered to verify: `GetProfileInt` uses
+  the default value **only when the key does not exist**; if it exists
+  but is not numeric, the real value is `0`, not the default. `QString::
+  toInt()` requires the whole string to be a valid number and does not
+  reproduce that, so the implementation uses its own `atoi`-style
+  conversion (`AtoiLike`, `OpusShellConfig.cpp`). The test pins this case
+  explicitly so a future simplification does not silently lose it.
 
-**Encontrado al revisar los call sites reales, no inventado:**
-`Opus/print2.c:833` llama `GetProfileString(..., key = NULL, ...)` para
-enumerar todas las claves de la sección `"devices"` de una sola vez —una
-forma de uso que el contrato de tres funciones de §B5 no cubre. No se tocó
-en el paso de migración porque exige ampliar el contrato, no solo traducir
-la llamada.
+**Found while reviewing the real call sites, not invented:**
+`Opus/print2.c:833` calls `GetProfileString(..., key = NULL, ...)` to
+enumerate all keys of the `"devices"` section at once, a usage form the
+three-function contract of §B5 does not cover. It was not touched in the
+migration step because it requires extending the contract, not just
+translating the call.
 
-### B5.2 Migración de call sites — cerrado (issue #2)
+### B5.2 Call site migration: closed (issue #2)
 
-**Corrección sobre la cifra de B5.1**, hecha al migrar contra la tabla de
-símbolos del reporte en vez de grep manual: `GetProfileString`(17) +
-`GetProfileInt`(14) + `WriteProfileString`(11) = **42** sitios reales, no
-43. El símbolo restante que el reporte agrupa bajo *Persistencia de
-configuración* es `GetEnvironmentVariableA` (`dlgmisc.c:2145`), una API sin
-relación con `WIN.INI`/`QSettings`, fuera de alcance de este contrato.
-`profwin.c` no aparece en el inventario porque no está en
-`OPUS_ORIGINAL_ENGINE_SOURCES` — no compila en este build, y sus 3 sitios
-(`GetProfileIntPR`/`GetProfileStringPR`/`WriteProfileStringPR`, destino de
-la redirección de `debugwin.h` bajo `DEBUG`, ninguno definido aquí) nunca
-fueron parte del recuento. `print2.c:848` no es enumeración —tiene key real
-(`pchPrinters`)—, a diferencia de `print2.c:833`: solo ese queda excluido.
+**Correction to the figure in B5.1**, made while migrating against the
+report's symbol table instead of manual grep: `GetProfileString`(17) +
+`GetProfileInt`(14) + `WriteProfileString`(11) = **42** real sites, not
+43. The remaining symbol the report groups under *Configuration
+persistence* is `GetEnvironmentVariableA` (`dlgmisc.c:2145`), an API
+unrelated to `WIN.INI`/`QSettings`, out of scope for this contract.
+`profwin.c` does not appear in the inventory because it is not in
+`OPUS_ORIGINAL_ENGINE_SOURCES`, it does not compile in this build, and
+its 3 sites (`GetProfileIntPR`/`GetProfileStringPR`/`WriteProfileStringPR`,
+the target of `debugwin.h`'s redirection under `DEBUG`, none defined
+here) were never part of the count. `print2.c:848` is not enumeration,
+it has a real key (`pchPrinters`), unlike `print2.c:833`: only that one
+stays excluded.
 
-**41 de 42 sitios migrados**, en 12 archivos: `ddesub.c`(1), `dlgmisc.c`(1),
-`elmisc.c`(2), `fieldpic.c`(4), `filecvt.c`(6), `filewin.c`(3), `init2.c`(1),
-`initwin.c`(7), `print2.c`(4 de 5), `quit.c`(8), `wproc.c`(2),
-`debug/debugcmd.c`(2). Cada sitio queda envuelto en
-`#if defined(__GNUC__) && !defined(_MSC_VER) / #else / #endif` por
-`CONTRIBUTING.md`: la rama GNUC llama `OpusShellProfile*`, la rama MSVC
-conserva la llamada original sin cambios — verificado por diff contra el
-árbol previo, cero deltas más allá del whitespace incidental de retipeo.
-`src/core/include` se agregó a `OPUS_ORIGINAL_INCLUDE_DIRS` para que el
-`#include "OpusShellConfig.h"` resuelva.
+**41 of 42 sites migrated**, across 12 files: `ddesub.c`(1), `dlgmisc.c`
+(1), `elmisc.c`(2), `fieldpic.c`(4), `filecvt.c`(6), `filewin.c`(3),
+`init2.c`(1), `initwin.c`(7), `print2.c`(4 of 5), `quit.c`(8), `wproc.c`
+(2), `debug/debugcmd.c`(2). Each site is wrapped in
+`#if defined(__GNUC__) && !defined(_MSC_VER) / #else / #endif` per
+`CONTRIBUTING.md`: the GNUC branch calls `OpusShellProfile*`, the MSVC
+branch keeps the original call unchanged, verified by diff against the
+prior tree, zero deltas beyond incidental retyping whitespace.
+`src/core/include` was added to `OPUS_ORIGINAL_INCLUDE_DIRS` so that
+`#include "OpusShellConfig.h"` resolves.
 
-**Verificación real, no solo la del target completo.** `ninja -k 0 -C
-build/linux-winelib-debug opus_original_engine` no llega a 0 FAILED —pero
-por el bloqueador ya documentado y preexistente a este trabajo:
-`Opus/wordtech/disp.h:248` y `Opus/rsb.h:38,73`, miembro flexible de arreglo
-bajo GCC 14.2, ajeno a esta migración. Para no dejar la verificación
-colgada de ese bloqueador, cada uno de los 12 archivos se compiló también de
-forma aislada con el comando real de `ninja -t commands`: los 12 llegan al
-mismo punto (`ddesub.c`, `filewin.c` y `debug/debugcmd.c` compilan limpio de
-punta a punta; los otros 9 fallan exactamente en `disp.h`/`rsb.h`, nunca en
-código de este cambio). Cero errores y cero warnings mencionan
-`OpusShellConfig`/`OpusShellProfile*` en ningún log.
+**Real verification, not just of the complete target.** `ninja -k 0 -C
+build/linux-winelib-debug opus_original_engine` does not reach 0 FAILED,
+but because of the already documented blocker that predates this work:
+`Opus/wordtech/disp.h:248` and `Opus/rsb.h:38,73`, flexible array member
+under GCC 14.2, unrelated to this migration. To avoid leaving the
+verification hanging on that blocker, each of the 12 files was also
+compiled in isolation with the real command from `ninja -t commands`: all
+12 reach the same point (`ddesub.c`, `filewin.c`, and
+`debug/debugcmd.c` compile clean end to end; the other 9 fail exactly at
+`disp.h`/`rsb.h`, never on code from this change). Zero errors and zero
+warnings mention `OpusShellConfig`/`OpusShellProfile*` in any log.
 
-**Estados de compilación condicional relevados, no asumidos:** de los 41
-sitios, 6 están dentro de ramas hoy inactivas en este build —
-`initwin.c:530` y `wproc.c:473,497` bajo `#ifdef DEBUG`/`HYBRID` (ninguno
-definido), `initwin.c:578-579` bajo `#ifdef HYBRID`, `initwin.c:1136` bajo
-el `#else` de `#ifdef OPUS_X64` (que sí está definido, así que ese `#else`
-nunca compila), `init2.c:570` bajo `#ifdef MKTGPRVW`, y el bloque completo
-de `debug/debugcmd.c` bajo `#ifdef DEBUG` además de no estar en ningún
-target. Se migraron igual, por consistencia y para no dejar una mezcla de
-API vieja y nueva si algún día se activan.
+**Conditional compilation states surveyed, not assumed:** of the 41
+sites, 6 sit inside branches inactive in this build today,
+`initwin.c:530` and `wproc.c:473,497` under `#ifdef DEBUG`/`HYBRID`
+(neither defined), `initwin.c:578-579` under `#ifdef HYBRID`,
+`initwin.c:1136` under the `#else` of `#ifdef OPUS_X64` (which is
+defined, so that `#else` never compiles), `init2.c:570` under `#ifdef
+MKTGPRVW`, and the whole `debug/debugcmd.c` block under `#ifdef DEBUG`
+besides not being in any target. They were migrated anyway, for
+consistency and so as not to leave a mix of old and new API if they are
+ever activated.
 
-**Qué queda:** el cuarto issue para `print2.c:833` (ampliar el contrato con
-una función de enumeración, o tratarlo aparte). La pregunta de si
-`opus_shell_config` realmente enlaza contra un binario Winelib quedó
-abierta al cerrar este paso — se resolvió por separado, ver más abajo.
+**What remains:** the fourth issue for `print2.c:833` (extend the
+contract with an enumeration function, or handle it separately). Whether
+`opus_shell_config` actually links against a Winelib binary remained open
+at the close of this step, it was resolved separately, see below.
 
 ---
 
-## Reconocimiento Qt-3: candidatos limpios de `disp.h`/`rsb.h` sin sitio real
+## Qt-3 reconnaissance: clean `disp.h`/`rsb.h` candidates with no real site
 
-Tres TUs de `wordtech/` identificadas en el reconocimiento previo como
-limpias de `disp.h`/`rsb.h` (directa y transitivamente, mismo método de
-§B2.7/B4.4) pero sin asignar todavía a ninguna sección B:
+Three `wordtech/` TUs identified in an earlier reconnaissance as clean of
+`disp.h`/`rsb.h` (directly and transitively, same method as §B2.7/B4.4)
+but not yet assigned to any B section:
 `src/Opus/wordtech/sttb.c`, `src/Opus/wordtech/inssubs.c`,
-`src/Opus/wordtech/prl.c`. El propósito de este reconocimiento era
-encontrar el siguiente sitio real conectable mientras `disp.h`/GCC 14
-sigue bloqueado. **Resultado: negativo en los tres — no hay ningún sitio
-que requiera (ni tenga ya) un contrato del núcleo Qt.** Se documenta igual
-que un resultado positivo, para no repetir la búsqueda.
+`src/Opus/wordtech/prl.c`. The purpose of this reconnaissance was to find
+the next real connectable site while `disp.h`/GCC 14 remains blocked.
+**Result: negative in all three, there is no site that requires (or
+already has) a Qt core contract.** It is documented as such, the same as
+a positive result would be, so as not to repeat the search.
 
-Verificado por `git log --oneline --all -- <archivo>` que ninguno de los
-tres fue tocado por trabajo de ninguna sección B previa (solo aparecen en
-`a1c4a1f Initial commit`, y `inssubs.c` además en dos commits de la fase
-de port original — `c40d4e0 Fase 3: compilar el motor a 0 errores` y
-`27a2f60 Full operating system font support` — ninguno de los dos toca
+Verified with `git log --oneline --all -- <file>` that none of the three
+was touched by work from any earlier B section (they only appear in
+`a1c4a1f Initial commit`, and `inssubs.c` also in two commits from the
+original port phase, `c40d4e0 Fase 3: compilar el motor a 0 errores` and
+`27a2f60 Full operating system font support`, neither of which touches
 `MessageBox`/`Global*`/GDI).
 
 ### `src/Opus/wordtech/sttb.c`
 
-Cuatro familias de grep, cada una vacía:
+Four grep families, each empty:
 
 ```
 $ git grep -n 'MessageBox' -- src/Opus/wordtech/sttb.c
@@ -1081,22 +1083,22 @@ $ git grep -nE 'GetDC|ReleaseDC' -- src/Opus/wordtech/sttb.c
 $ git grep -nE 'HFONT|SelectObject|CreateFont|GetTextMetrics|GetTextExtent|GetCharWidth' -- src/Opus/wordtech/sttb.c
 ```
 
-(sin salida en las cinco)
+(no output on any of the five)
 
-Sí tiene una familia de API real, encontrada al inspeccionar el archivo:
-`HqAllocLcb`/`FreeHq`/`UnlockHq`/`HpOfHq` sobre el tipo `HQ`, 8 sitios
-(líneas 70, 111, 131, 177, 286, 494, 546, 736).
+It does have one real API family, found by inspecting the file:
+`HqAllocLcb`/`FreeHq`/`UnlockHq`/`HpOfHq` on the `HQ` type, 8 sites
+(lines 70, 111, 131, 177, 286, 494, 546, 736).
 
-| Sitio (línea) | API | Contrato existente/faltante | Complejidad |
+| Site (line) | API | Existing/missing contract | Complexity |
 |---|---|---|---|
-| 70, 111, 131, 177, 286, 494, 546, 736 | `HQ`/`HqAllocLcb`/`FreeHq`/`UnlockHq`/`HpOfHq` | **No hace falta ninguno.** `HqAllocLcb` no es Win16 `GlobalAlloc` — es un macro ya resuelto por el port x64 (`src/port/original/opus_x64_heap.h:41`, `#define HqAllocLcb(cb) ((HQ)OpusHAllocateCb((size_t)(cb)))`), respaldado por un allocator nativo propio (`OpusHAllocateCb`/`OpusDerefH`, handles pointer-a-puntero estables, sin relación con memoria segmentada Win16). Fuera del alcance de B3: B3 son los ~201 sitios de `Global*`/`GMEM_*` reales (`GlobalAlloc`/`GlobalLock`/`GlobalFree` de la API Win32), no el `HQ` interno de Opus, que ya es portable tal cual. | **N/A — no es trabajo pendiente.** Ya ported, nada que sustituir. |
+| 70, 111, 131, 177, 286, 494, 546, 736 | `HQ`/`HqAllocLcb`/`FreeHq`/`UnlockHq`/`HpOfHq` | **None is needed.** `HqAllocLcb` is not Win16 `GlobalAlloc`, it is a macro already resolved by the x64 port (`src/port/original/opus_x64_heap.h:41`, `#define HqAllocLcb(cb) ((HQ)OpusHAllocateCb((size_t)(cb)))`), backed by a proprietary native allocator (`OpusHAllocateCb`/`OpusDerefH`, stable pointer-to-pointer handles, unrelated to Win16 segmented memory). Out of scope for B3: B3 is the ~201 real `Global*`/`GMEM_*` sites (the `GlobalAlloc`/`GlobalLock`/`GlobalFree` Win32 API), not Opus's internal `HQ`, which is already portable as is. | **N/A, not pending work.** Already ported, nothing to replace. |
 
-`sttb.c` es un candidato disp.h-limpio, pero no un candidato de *trabajo*:
-no queda ningún sitio Win16/GDI real dentro del archivo.
+`sttb.c` is a disp.h-clean candidate, but not a *work* candidate: no real
+Win16/GDI site remains inside the file.
 
 ### `src/Opus/wordtech/inssubs.c`
 
-Mismas cinco familias, todas vacías:
+Same six families, all empty:
 
 ```
 $ git grep -n 'MessageBox' -- src/Opus/wordtech/inssubs.c
@@ -1107,22 +1109,21 @@ $ git grep -nE 'HFONT|SelectObject|CreateFont|GetTextMetrics|GetTextExtent|GetCh
 $ git grep -nE 'HqAllocLcb|LpLockHq|UnlockHq|FreeHq|HAllocateCw|HAllocateCb' -- src/Opus/wordtech/inssubs.c
 ```
 
-(sin salida en las seis)
+(no output on any of the six)
 
-Inspección adicional (barrido heurístico de toda llamada con mayúscula
-inicial, descartando las funciones internas de Opus obviamente propias)
-no encontró ninguna otra API Win16/GDI — el archivo es lógica de inserción
-de campos/números de página y conversión de bytes de archivo
-(`ReadRgchFromFn`, `WriteRgchToFn`, `PnAlloc`, `MapStc`, etc.), toda
-interna a Opus, ninguna cruza a Win32.
+Additional inspection (heuristic sweep of every call starting with a
+capital letter, discarding Opus's own obviously internal functions) found
+no other Win16/GDI API, the file is field/page-number insertion logic and
+file-byte conversion (`ReadRgchFromFn`, `WriteRgchToFn`, `PnAlloc`,
+`MapStc`, etc.), all internal to Opus, none crosses into Win32.
 
-| Sitio (línea) | API | Contrato existente/faltante | Complejidad |
+| Site (line) | API | Existing/missing contract | Complexity |
 |---|---|---|---|
-| — | — | — | **No hay sitios.** Nada que conectar. |
+| (none) | (none) | (none) | **No sites.** Nothing to connect. |
 
 ### `src/Opus/wordtech/prl.c`
 
-Mismas seis familias, todas vacías:
+Same six families, all empty:
 
 ```
 $ git grep -n 'MessageBox' -- src/Opus/wordtech/prl.c
@@ -1133,387 +1134,385 @@ $ git grep -nE 'HFONT|SelectObject|CreateFont|GetTextMetrics|GetTextExtent|GetCh
 $ git grep -nE 'HqAllocLcb|LpLockHq|UnlockHq|FreeHq|HAllocateCw|HAllocateCb' -- src/Opus/wordtech/prl.c
 ```
 
-(sin salida en las seis)
+(no output on any of the six)
 
-Mismo barrido heurístico: solo funciones internas de Opus sobre `PRL`/tabs
-(`AddPrlSorted`, `ApplyPrlSgc`, `ApplySprm`, `DeleteTabs`, etc.) más el
-macro ya portado `LpFromHp` (mismo `opus_x64_heap.h` que en `sttb.c`, no
-un sitio nuevo). Ninguna API Win16/GDI.
+Same heuristic sweep: only Opus-internal functions on `PRL`/tabs
+(`AddPrlSorted`, `ApplyPrlSgc`, `ApplySprm`, `DeleteTabs`, etc.) plus the
+already-ported macro `LpFromHp` (same `opus_x64_heap.h` as in `sttb.c`,
+not a new site). No Win16/GDI API.
 
-| Sitio (línea) | API | Contrato existente/faltante | Complejidad |
+| Site (line) | API | Existing/missing contract | Complexity |
 |---|---|---|---|
-| — | — | — | **No hay sitios.** Nada que conectar. |
+| (none) | (none) | (none) | **No sites.** Nothing to connect. |
 
-### Conclusión de este reconocimiento
+### Conclusion of this reconnaissance
 
-Ninguno de los tres es un candidato de trabajo Qt-3 viable, a pesar de
-estar limpios de `disp.h`/`rsb.h`: `sttb.c` solo toca memoria ya portable
-(`HQ`, fuera del alcance de B3), y `inssubs.c`/`prl.c` no tienen ninguna
-superficie Win16/GDI en absoluto. El siguiente sitio real conectable
-mientras `disp.h`/GCC 14 siga bloqueado no está entre estos tres — hace
-falta repetir la búsqueda sobre otro subconjunto de la lista de candidatos
-limpios ya inventariada (`src/Opus/debug/debugdde.c`, `debugdlg.c`,
-`debuggdi.c`, `debugrep.c`, `debugwin.c`, o el resto de TUs limpias de
-`Opus/` raíz listadas en el reconocimiento anterior), no asumir que
-"limpio de `disp.h`" implica "tiene trabajo pendiente".
-
----
-
-## Verificación de la frontera física: ¿enlaza de verdad?
-
-Hasta B5.2 solo se había confirmado que `opus_shell_config` compila de
-forma aislada (§B5.1) y que los 41 call sites compilan bajo GNUC dentro de
-`opus_original_engine`, una biblioteca **estática** que no fuerza la
-resolución de símbolos externos. Nunca se había probado el enlace real:
-un binario Winelib (winegcc/wineg++) enlazando contra una biblioteca nativa
-gcc/g++ que depende de Qt6. Esa prueba es la que sostiene la arquitectura
-de frontera completa, no solo el contrato de configuración — si no
-enlazara, los otros tres contratos (B2, B3, B4) heredarían el mismo
-problema el día que se implementen.
-
-**Veredicto: enlaza, con dos ajustes menores, ninguno estructural.**
-Sonda en `docs/port-qt/scripts/link-check/` (`link_check.c`, compilado con
-winegcc, llamando a `OpusShellProfileWrite`/`OpusShellProfileString` reales
-contra la `libopus_shell_config.a` que produce `opus_core_build`).
-
-1. **`-fPIC` en la biblioteca nativa.** El primer intento de enlace directo
-   dio `relocation R_X86_64_PC32 ... can not be used when making a shared
-   object; recompile with -fPIC`. Causa, verificada con `winegcc -v`: el
-   paso final de enlace de winegcc es literalmente
-   `gcc -m64 -shared -Wl,-Bsymbolic -o foo.exe.so ...` — así arma Winelib
-   sus "ejecutables" (el `.exe` es un stub que Wine carga, el código real
-   vive en `.exe.so`). Un binario `-shared` no admite objetos sin código
-   independiente de posición. No es un detalle de header: es cómo Winelib
-   construye binarios, con o sin Qt de por medio. Ajuste: `opus_shell_config`
-   pasa a compilarse con `POSITION_INDEPENDENT_CODE ON`
-   (`src/core/CMakeLists.txt`), con nota para que los tres contratos
-   restantes hereden la misma propiedad cuando se implementen.
-2. **`-lstdc++` explícito, solo con `winegcc` puro.** Con `-fPIC` aplicado,
-   el segundo intento dio `undefined reference to __gxx_personality_v0`
-   (la rutina de manejo de excepciones de C++). `winegcc` es un driver de
-   C: no enlaza `libstdc++` por defecto, y `opus_shell_config.cpp` es C++
-   (usa `QString`, que internamente puede lanzar). Con `-lstdc++` agregado
-   al comando de enlace, resuelve. **Dato adicional que reduce el impacto
-   real de este punto:** `WORD1` no enlaza con `winegcc` sino con
-   `wineg++` — lo obliga `target_compile_features(WORD1 PRIVATE
-   cxx_std_20)`, porque el target ya mezcla fuentes `.cpp`
-   (`port/original/opus_asm_*.cpp`, etc.). Probado explícitamente: con
-   `wineg++` como enlazador, el enlace funciona **sin** agregar
-   `-lstdc++` a mano, porque el driver de C++ ya lo enlaza por diseño. El
-   ajuste con `-lstdc++` sigue documentado por si algún target futuro usa
-   `winegcc` puro para enlazar contra estas bibliotecas.
-
-**Prueba de ejecución, no solo de enlace.** El binario resultante corre
-bajo Wine y ejecuta la llamada real: `OpusShellProfileWrite("LinkCheck",
-"Saludo", "hola desde winegcc")` seguido de `OpusShellProfileString` sobre
-la misma clave devuelve `cch=18`, valor `"hola desde winegcc"` — la cadena
-completa, intacta, de vuelta a través de la frontera. Confirmado con los
-dos enlazadores (`wineg++` y `winegcc + -lstdc++`) y con la biblioteca real
-que construye `opus_core_build`, no una copia de scratch.
-
-**Descartados por no ser la causa:** mangling de C++ (los cuatro headers
-`OpusShell*` ya declaraban `extern "C"` desde que se escribieron, verificado
-antes de tocar nada) y convención de llamada/ABI Win32 (el objeto que
-produce `winegcc -c` es ELF x86-64 SysV estándar, igual que el de `gcc`;
-Winelib no cambia la ABI de llamada en modo x64, solo provee los headers y
-tipos de Win32 — la única fricción real fue de generación de código
-(`-fPIC`) y de runtime enlazado (`libstdc++`), no de ABI de llamada).
-
-**Consecuencia para B3/B4/B2:** la arquitectura de frontera —núcleo nativo
-Qt6/gcc + shell winegcc/wineg++ enlazados en el mismo binario— queda
-confirmada, no solo asumida. Los tres contratos que faltan implementar
-pueden proceder sobre este mismo esquema sin rediseño; cuando cada uno
-tenga su primera implementación, aplicar `POSITION_INDEPENDENT_CODE ON` a
-su biblioteca en `src/core/CMakeLists.txt` desde el primer commit, y si el
-target consumidor llega a enlazar con `winegcc` puro en vez de `wineg++`,
-agregar `-lstdc++` a su línea de enlace.
+None of the three is a viable Qt-3 work candidate, despite being clean of
+`disp.h`/`rsb.h`: `sttb.c` only touches already-portable memory (`HQ`,
+out of scope for B3), and `inssubs.c`/`prl.c` have no Win16/GDI surface
+at all. The next real connectable site while `disp.h`/GCC 14 stays
+blocked is not among these three, the search needs to be repeated over
+another subset of the already-inventoried list of clean candidates
+(`src/Opus/debug/debugdde.c`, `debugdlg.c`, `debuggdi.c`, `debugrep.c`,
+`debugwin.c`, or the rest of the clean TUs in `Opus/` root listed in the
+earlier reconnaissance), not assumed that "clean of `disp.h`" implies
+"has pending work".
 
 ---
 
-## Secuencia recomendada para Qt-2
+## Verifying the physical boundary: does it actually link?
 
-El orden no es arbitrario: cada paso deja verificable el siguiente.
+Up through B5.2, only `opus_shell_config` compiling in isolation (§B5.1)
+and the 41 call sites compiling under GNUC inside `opus_original_engine`,
+a **static** library that does not force external symbol resolution, had
+been confirmed. Real linking had never been tested: a Winelib binary
+(winegcc/wineg++) linking against a native gcc/g++ library that depends
+on Qt6. That test is what underpins the entire boundary architecture, not
+just the configuration contract, if it did not link, the other three
+contracts (B2, B3, B4) would inherit the same problem the day they get
+implemented.
 
-1. **Configuración (B5) — cerrado.** 42 sitios reales (no 43, ver §B5.2),
-   contrato trivial. Sirvió para establecer el mecanismo de frontera —cómo
-   el núcleo llama al shell— sobre algo cuyo fallo es visible al instante y
-   cuyo riesgo es nulo. 41 migrados; 1 (`print2.c:833`, enumeración) espera
-   una extensión del contrato en issue aparte.
-2. **Tabla de sustitución de fuentes (§B2.5).** Extraer del oráculo el mapeo
-   real de los nombres de época a archivos físicos. Es barato, es un
-   prerrequisito de cualquier prueba de fidelidad, y hoy no está escrito en
-   ninguna parte.
-3. **Memoria (B3) — implementación y verificación cerradas, migración de
-   call sites pendiente.** El allocator opaco existe
-   (`src/core/src/OpusShellMemory.cpp`) y probó, con un handle real, que
-   sobrevive Alloc/Lock/escritura/Unlock/Lock/Free a través de
-   winegcc/wineg++ (§B3.5). Falta sustituir los 201 sitios de `Global*` en
-   `Opus/` por `OpusMem*` — issue previo por `CONTRIBUTING.md`, igual que
-   configuración.
-4. **Enumeración de handles serializados (§B3.3) — cerrada.** Ninguna
-   estructura persistida tiene campo handle. No quedó como inventario
-   pendiente: se hizo antes de diseñar el header, no después.
-5. **Medición de texto (B2) — implementación inicial cerrada, verificada
-   con 2660 puntos de dato, no solo uno.** `src/core/src/
-   OpusShellFontMetrics.cpp` implementa el contrato con la estrategia de
-   §B2.3. `opus_shell_font_metrics_fidelity_test` compara contra una
-   tabla capturada del oráculo Winelib real
-   (`docs/port-qt/scripts/fidelity/capture.py` →
-   `opus_shell_font_metrics_oracle_table.h`): 4 nombres de época × 7
-   tamaños (8-36pt) × 95 caracteres ASCII imprimibles = 2660 anchos.
-   **2660/2660 coinciden exactamente** con el oráculo -- no aproximado,
-   no "cerca". Ascenso/descenso, que §B2.3 no cubría, se comparan también
-   (±1px, redondeo distinto de `ascent()`/`descent()` de Qt contra
-   `tmAscent`/`tmDescent` enteros de GDI). Cubre los 4 `ftc` conocidos,
-   peso regular únicamente (`catr != 0` falla controlado -- GDI sintetiza
-   negrita/cursiva, `QRawFont` no), pantalla a 96 ppp fija (sin
-   impresora). Sigue siendo la pieza de la que depende la restricción de
-   fidelidad, y la que hace que `wordtech/` pueda compilar sin GDI.
-5b. **Primer llamador real conectado (§B2.7).** `Opus/LOADFONT.C:187
-   C_LoadFcid`, camino de pantalla/paso variable, llama a
-   `OpusShellCharWidths` en vez de GDI. Tests de `src/core` en verde
-   (incluida la fidelidad de 2660 puntos), pero sin verificación en
-   ejecución contra `WORD1` real -- dos bloqueadores independientes de
-   este trabajo lo impiden (compilación de `Opus/wordtech/disp.h` bajo
-   GCC 14, arranque de `WORD1` ya roto de antes). `scroll.c`/`disp3.c`/
-   `pagevw.c` siguen sin desbloquear: el criterio del documento pide
-   verificación contra layout real, no solo conexión de tipos.
-6. **`error.c`, luego `editspec.c` y `undo.c` (§B4.3) — contrato
-   implementado.** `src/core/src/OpusShellSpine.cpp`:
-   `OpusShellReportError` (`QMessageBox::Critical`,
-   `Qt::ApplicationModal` -- equivalente real de `MB_SYSTEMMODAL`) y
-   `OpusShellAlert` (`QApplication::beep()`). Probado con un diálogo modal
-   real, auto-cerrado desde `QTimer::singleShot` una vez que
-   `QApplication::activeModalWidget()` lo confirma activo -- no un stub.
-   No conectado todavía a ningún call site de `Opus/` (esos tres archivos
-   siguen sin migrar, siguen usando `MessageBox`/`MessageBeep` reales) ni
-   a `opus_qt_shell` (deliberado: un diálogo modal disparado
-   automáticamente en cada arranque del andamiaje sería ruido, no una
-   comprobación útil).
-7. **Inversión del bucle de mensajes (§B4.1) — patrón demostrado,
-   adelantado fuera de orden por decisión explícita del mantenedor
-   2026-08-11 (B2 verificado de forma aislada, no contra `wordtech/`
-   real; riesgo aceptado a sabiendas, no un descuido).** `opus_qt_shell`
-   corre bajo el bucle de `QApplication` -- sin `GetMessage`/
-   `DispatchMessage` en ningún punto del binario -- y ya llama hacia
-   dentro con los dos patrones de despacho de §B4.2: menú "Despacho
-   (B4.2)", acción directa (`SendMessage` → llamada síncrona en el mismo
-   ciclo) y acción diferida (`PostMessage` →
-   `QMetaObject::invokeMethod(..., Qt::QueuedConnection)`, corre en un
-   ciclo posterior). Una bitácora en pantalla hace la diferencia
-   observable, no solo afirmada. **Lo que esto NO es:** la inversión de
-   `Opus/wproc.c` -- sigue siendo el conductor real del motor de
-   documento, y `Opus/` es árbol restringido, no tocado. Este es el
-   molde de despacho a reutilizar el día que `wordtech/` se conecte, no
-   la migración en sí. El oráculo Winelib sigue siendo necesario para
-   verificar fidelidad; adelantar este paso no lo reemplaza ni lo
-   invalida, solo dejó de bloquear en seco a la espera de B2 contra
-   documento real.
+**Verdict: it links, with two minor adjustments, neither structural.**
+Probe in `docs/port-qt/scripts/link-check/` (`link_check.c`, compiled
+with winegcc, calling the real
+`OpusShellProfileWrite`/`OpusShellProfileString` against the
+`libopus_shell_config.a` that `opus_core_build` produces).
+
+1. **`-fPIC` on the native library.** The first direct-link attempt gave
+   `relocation R_X86_64_PC32 ... can not be used when making a shared
+   object; recompile with -fPIC`. Cause, verified with `winegcc -v`:
+   winegcc's final link step is literally
+   `gcc -m64 -shared -Wl,-Bsymbolic -o foo.exe.so ...`, that is how
+   Winelib builds its "executables" (the `.exe` is a stub Wine loads, the
+   real code lives in `.exe.so`). A `-shared` binary does not accept
+   objects without position-independent code. This is not a header
+   detail: it is how Winelib builds binaries, with or without Qt in the
+   picture. Adjustment: `opus_shell_config` now compiles with
+   `POSITION_INDEPENDENT_CODE ON` (`src/core/CMakeLists.txt`), with a
+   note for the three remaining contracts to inherit the same property
+   when implemented.
+2. **Explicit `-lstdc++`, only with plain `winegcc`.** With `-fPIC`
+   applied, the second attempt gave `undefined reference to
+   __gxx_personality_v0` (the C++ exception-handling routine). `winegcc`
+   is a C driver: it does not link `libstdc++` by default, and
+   `opus_shell_config.cpp` is C++ (it uses `QString`, which can throw
+   internally). With `-lstdc++` added to the link command, it resolves.
+   **Additional fact that reduces the real impact of this point:**
+   `WORD1` does not link with `winegcc` but with `wineg++`, forced by
+   `target_compile_features(WORD1 PRIVATE cxx_std_20)`, because the
+   target already mixes `.cpp` sources (`port/original/opus_asm_*.cpp`,
+   etc.). Explicitly tested: with `wineg++` as the linker, linking works
+   **without** adding `-lstdc++` by hand, because the C++ driver already
+   links it by design. The `-lstdc++` adjustment stays documented in case
+   some future target links against these libraries with plain
+   `winegcc`.
+
+**Runtime proof, not just a link proof.** The resulting binary runs under
+Wine and executes the real call:
+`OpusShellProfileWrite("LinkCheck", "Saludo", "hola desde winegcc")`
+followed by `OpusShellProfileString` on the same key returns `cch=18`,
+value `"hola desde winegcc"`, the full string, intact, back across the
+boundary. Confirmed with both linkers (`wineg++` and `winegcc +
+-lstdc++`) and with the real library `opus_core_build` builds, not a
+scratch copy.
+
+**Ruled out as the cause:** C++ name mangling (the four `OpusShell*`
+headers already declared `extern "C"` since they were written, verified
+before touching anything) and the Win32 calling convention/ABI (the
+object `winegcc -c` produces is standard ELF x86-64 SysV, same as
+`gcc`'s; Winelib does not change the calling ABI in x64 mode, it only
+provides Win32 headers and types, the only real friction was code
+generation (`-fPIC`) and linked runtime (`libstdc++`), not calling ABI).
+
+**Consequence for B3/B4/B2:** the boundary architecture, native Qt6/gcc
+core plus winegcc/wineg++ shell linked into the same binary, is now
+confirmed, not just assumed. The three remaining contracts can proceed on
+this same scheme without redesign; when each gets its first
+implementation, apply `POSITION_INDEPENDENT_CODE ON` to its library in
+`src/core/CMakeLists.txt` from the first commit, and if the consuming
+target ends up linking with plain `winegcc` instead of `wineg++`, add
+`-lstdc++` to its link line.
 
 ---
 
-## Preguntas abiertas
+## Recommended sequence for Qt-2
 
-Las dos que este documento tenía sobre fidelidad quedaron cerradas en §B2.3 y
-§B2.5. Las dos que quedaban tras esa ronda —ubicación de la API de frontera y
-el veredicto de `opustlbx/`— quedan cerradas aquí:
+The order is not arbitrary: each step leaves the next one verifiable.
 
-1. **Ubicación de la API de frontera: `src/core/include/`.** No `port/`: ese
-   directorio es andamiaje de compatibilidad temporal (LP64 sobre Winelib,
-   build de host), semánticamente distinto de la API estable del núcleo
-   nuevo. Los cuatro headers de contrato (`OpusShellFontMetrics.h`,
-   `OpusShellMemory.h`, `OpusShellSpine.h`, `OpusShellConfig.h`) viven ahí; ver
-   inventario de headers en la sección siguiente.
-2. **`opustlbx/` resuelto: excluir, no incluir.** Sí hay relación real con
-   `port/original/toolbox.h` — el propio comentario de cabecera de
-   `toolbox.h` lo dice: es el sucesor escrito a mano del `toolbox.h`
-   *generado*, y `opustlbx.c` es precisamente ese generador (lee
-   `Opus/resource/toolbox.txt` y emite el `.h` con el mecanismo `tlbx` de
-   llamada lejana entre segmentos más el `.asm` con la tabla `mptlbxpfn` /
-   `tlbxMac` que consumen `Opus/asm/int3f.asm` y `CkTlbx` en
-   `Opus/debug/debugstr.c`). Pero la relación es de linaje textual, no de
-   acoplamiento activo: `opustlbx` no tiene target en CMake, no genera nada
-   que el build actual use, y lo que genera pertenece al mecanismo de
-   llamada de `Opus/asm/`, ya fuera de alcance de esta rama. `toolbox.h` sí
-   es capa activa del port —lo incluyen `Opus/windows.h` y trece TUs de
-   `wordtech/`/`interp/` directamente— pero eso no arrastra a `opustlbx`
-   consigo: el sucesor no depende del generador de su predecesor.
-   Consecuencia: `opustlbx.c`/`.h` pasan de «diferir» a «excluir» en el
-   triage; `cashmere/fldexp/` (4 archivos) se mantiene «diferir» sin cambios,
-   no apareció nada en esta investigación que lo justifique. Triage cerrado:
-   4 diferir, 54 excluir.
+1. **Configuration (B5): closed.** 42 real sites (not 43, see §B5.2), a
+   trivial contract. It served to establish the boundary mechanism, how
+   the core calls the shell, on something whose failure is instantly
+   visible and whose risk is nil. 41 migrated; 1 (`print2.c:833`,
+   enumeration) awaits a contract extension in a separate issue.
+2. **Font substitution table (§B2.5).** Extract from the oracle the real
+   mapping of era names to physical files. It is cheap, it is a
+   prerequisite for any fidelity test, and today it is not written down
+   anywhere.
+3. **Memory (B3): implementation and verification closed, call site
+   migration pending.** The opaque allocator exists
+   (`src/core/src/OpusShellMemory.cpp`) and proved, with a real handle,
+   that it survives Alloc/Lock/write/Unlock/Lock/Free across
+   winegcc/wineg++ (§B3.5). Still to do: replace the 201 `Global*` sites
+   in `Opus/` with `OpusMem*`, a prior issue per `CONTRIBUTING.md`, same
+   as configuration.
+4. **Enumeration of serialized handles (§B3.3): closed.** No persisted
+   structure has a handle field. It did not stay as a pending inventory
+   item: it was done before designing the header, not after.
+5. **Text measurement (B2): initial implementation closed, verified with
+   2660 data points, not just one.** `src/core/src/
+   OpusShellFontMetrics.cpp` implements the contract with the §B2.3
+   strategy. `opus_shell_font_metrics_fidelity_test` compares against a
+   table captured from the real Winelib oracle
+   (`docs/port-qt/scripts/fidelity/capture.py` ->
+   `opus_shell_font_metrics_oracle_table.h`): 4 era names x 7 sizes
+   (8-36pt) x 95 printable ASCII characters = 2660 widths. **2660/2660
+   match exactly** the oracle, not approximate, not "close". Ascent/
+   descent, which §B2.3 did not cover, are also compared (+/-1px,
+   different rounding between Qt's `ascent()`/`descent()` and GDI's
+   integer `tmAscent`/`tmDescent`). Covers the 4 known `ftc` values,
+   regular weight only (`catr != 0` fails cleanly, GDI synthesizes bold/
+   italic, `QRawFont` does not), screen at fixed 96 dpi (no printer).
+   Still the piece the fidelity restriction depends on, and the one that
+   lets `wordtech/` compile without GDI.
+5b. **First real caller connected (§B2.7).** `Opus/LOADFONT.C:187
+   C_LoadFcid`, screen/variable-pitch path, calls `OpusShellCharWidths`
+   instead of GDI. `src/core` tests green (including the 2660-point
+   fidelity test), but with no runtime verification against real
+   `WORD1`, two blockers unrelated to this work prevent it (compiling
+   `Opus/wordtech/disp.h` under GCC 14, `WORD1` startup already broken
+   before this). `scroll.c`/`disp3.c`/`pagevw.c` remain unblocked: the
+   document's criterion calls for verification against real layout, not
+   just type-level connection.
+6. **`error.c`, then `editspec.c` and `undo.c` (§B4.3): contract
+   implemented.** `src/core/src/OpusShellSpine.cpp`: `OpusShellReportError`
+   (`QMessageBox::Critical`, `Qt::ApplicationModal`, the real equivalent
+   of `MB_SYSTEMMODAL`) and `OpusShellAlert` (`QApplication::beep()`).
+   Tested with a real modal dialog, auto-closed from
+   `QTimer::singleShot` once `QApplication::activeModalWidget()` confirms
+   it active, not a stub. Not connected yet to any call site in `Opus/`
+   (those three files still remain unmigrated, still use real
+   `MessageBox`/`MessageBeep`) nor to `opus_qt_shell` (deliberate: a
+   modal dialog triggered automatically on every scaffold startup would
+   be noise, not a useful check).
+7. **Message loop inversion (§B4.1): pattern demonstrated, moved ahead of
+   sequence by explicit maintainer decision 2026-08-11 (B2 verified in
+   isolation, not against real `wordtech/`; risk accepted knowingly, not
+   an oversight).** `opus_qt_shell` runs under the `QApplication` loop,
+   with no `GetMessage`/`DispatchMessage` anywhere in the binary, and
+   already calls inward with the two dispatch patterns of §B4.2: "Dispatch
+   (B4.2)" menu, direct action (`SendMessage` -> synchronous call in the
+   same cycle) and deferred action (`PostMessage` ->
+   `QMetaObject::invokeMethod(..., Qt::QueuedConnection)`, runs on a
+   later cycle). An on-screen log makes the difference observable, not
+   just claimed. **What this is NOT:** the inversion of `Opus/wproc.c`,
+   which remains the real driver of the document engine, and `Opus/` is
+   a restricted tree, untouched. This is the dispatch mold to reuse the
+   day `wordtech/` gets connected, not the migration itself. The Winelib
+   oracle remains necessary to verify fidelity; moving this step ahead
+   does not replace or invalidate it, it only stopped being a hard block
+   while waiting for B2 against a real document.
 
-   Nota lateral, no una tarea nueva: `CkTlbx` (`Opus/debug/debugstr.c:2039`)
-   referencia `tlbxMac`/`mptlbxpfn`, símbolos definidos solo en
-   `Opus/asm/int3f.asm`. `Opus/debug/` está en alcance por decisión de
-   proyecto y `Opus/asm/` no; esa TU ya tenía un hueco de enlace conocido
-   antes de esta investigación, independiente del veredicto de `opustlbx`.
+---
 
-**Nueva, abierta, no resuelta en este documento — encontrada al hacer
-Fase 1 de B3 (§B3.3), no buscada a propósito:**
+## Open questions
 
-3. **§B2.1 describe la estructura equivocada. RESUELTO 2026-08-11 — no invalida
-   §B2.2/§B2.3, corrige la narrativa.** La cita central del contrato de
-   medición de texto (`Opus/wordtech/format.h:379-410`,
-   `dxuFrac`/`bmpchdxu`/`struct FONTREC far * far *qqftr`) es código
-   `#ifdef MAC`, muerto en este build. El `struct FTI` real que se compila
-   bajo `WIN`/`OPUS_X64` está en `Opus/fontwin.h:126-152`, y su gemelo de
-   caché es `struct FCE` (`Opus/fontwin.h:96-124`, primeros
-   `cbFtiFceSame` bytes idénticos a `FTI` por diseño). Ninguno de los dos
-   tiene acumulador de fracción — **la tabla de anchos real no vive
-   inline en `FTI`, vive en `FCE.hqrgdxp`**: un handle Win16 (`HQ`, la
-   misma familia de handle que el contrato B3 ya cubre) a un array de
-   **256 `int`** (uno por valor de byte 0-255, ancho ya en píxeles
-   enteros, sin fracción), asignado con `HqAllocLcb(256*sizeof(int))`
-   (`Opus/initwin.c:2946`). El consumidor de layout no lee `FTI`/`FCE`
-   directamente carácter a carácter: copia anchos a `vfli.rgdxp[]`
-   (`struct` de resultado de línea formateada, `Opus/disp1.c:761` y
-   alrededores) durante `FormatLine`, y esa copia sí es aritmética entera
-   plana, sin fracción — confirma, no contradice, la ausencia de
-   acumulador.
+The two this document had about fidelity were closed in §B2.3 and §B2.5.
+The two that remained after that round, boundary API location and the
+`opustlbx/` verdict, are closed here:
 
-   **Consecuencia sobre la estrategia de §B2.3: ninguna.** La estrategia
-   (ppem entero + `QFont::PreferFullHinting`, medida contra el
-   comportamiento observable de `GetTextExtent`/`GetTextMetrics`) nunca
-   dependió del layout interno de `FONTREC`/`FTI` — se validó contra el
-   *comportamiento* de GDI, no contra una estructura de datos. Un array
-   de 256 enteros en píxeles es, si acaso, más simple de rellenar que el
-   modelo con acumulador de fracción que §B2.1 describía: no cambia qué
-   pide `OpusShellCharWidths` (avances enteros), solo el nombre de la
-   estructura interna de destino, que el contrato ya no expone.
+1. **Boundary API location: `src/core/include/`.** Not `port/`: that
+   directory is temporary compatibility scaffolding (LP64 over Winelib,
+   host build), semantically distinct from the new core's stable API.
+   The four contract headers (`OpusShellFontMetrics.h`, `OpusShellMemory.h`,
+   `OpusShellSpine.h`, `OpusShellConfig.h`) live there; see the header
+   inventory in the following section.
+2. **`opustlbx/` resolved: exclude, not include.** There is a real
+   relationship with `port/original/toolbox.h`, `toolbox.h`'s own header
+   comment says so: it is the hand-written successor of the *generated*
+   `toolbox.h`, and `opustlbx.c` is precisely that generator (it reads
+   `Opus/resource/toolbox.txt` and emits the `.h` with the `tlbx`
+   far-inter-segment call mechanism plus the `.asm` with the
+   `mptlbxpfn`/`tlbxMac` table that `Opus/asm/int3f.asm` and `CkTlbx` in
+   `Opus/debug/debugstr.c` consume). But the relationship is one of
+   textual lineage, not active coupling: `opustlbx` has no CMake target,
+   generates nothing the current build uses, and what it generates
+   belongs to the `Opus/asm/` call mechanism, already out of scope for
+   this branch. `toolbox.h` is indeed an active port layer, `Opus/
+   windows.h` and thirteen `wordtech/`/`interp/` TUs include it directly,
+   but that does not drag `opustlbx` along with it: the successor does
+   not depend on its predecessor's generator. Consequence: `opustlbx.c`/
+   `.h` move from "defer" to "exclude" in the triage; `cashmere/fldexp/`
+   (4 files) stays "defer" unchanged, nothing turned up in this
+   investigation to justify otherwise. Triage closed: 4 defer, 54
+   exclude.
 
-   **Consecuencia sobre el contrato (`OpusShellFontMetrics.h`):
-   `OpusFontMetrics`/`OpusShellFontMetrics()` siguen intactos** (ascenso,
-   descenso, overhang — los mismos campos existen en `FCE`/`FTI` con los
-   mismos nombres `dypAscent`/`dypDescent`/`dxpOverhang`).
-   `OpusShellCharWidths(key, chFirst, cch, rgdxu)` **sigue siendo la
-   firma correcta**, pero en este build el llamador real siempre pedirá
-   `chFirst=0, cch=256` (el rango completo de `FCE.hqrgdxp`) — no hace
-   falta soporte de rango parcial en la primera implementación, aunque el
-   contrato ya lo permite si algún consumidor futuro lo necesitara.
-   **Nuevo, no cubierto por el contrato de hoy:** `FCE`/`FTI` tienen campos
-   que `OpusFontMetrics` no expone (`dypXtraAscent`, `fVisiBad`, `fPrvw`,
-   `dxpBorder`/`dypBorder`, `dxpExpanded`) — no se sabe todavía cuáles lee
-   el motor de layout fuera de ascenso/descenso/overhang/anchos; auditar
-   antes de dar la primera implementación de `OpusShellFontMetrics()` por
-   completa.
+   Side note, not a new task: `CkTlbx` (`Opus/debug/debugstr.c:2039`)
+   references `tlbxMac`/`mptlbxpfn`, symbols defined only in
+   `Opus/asm/int3f.asm`. `Opus/debug/` is in scope by project decision
+   and `Opus/asm/` is not; that TU already had a known link gap before
+   this investigation, independent of the `opustlbx` verdict.
 
-   **Localizado 2026-08-11: `C_LoadFcid()` en `Opus/LOADFONT.C:187` (bajo
-   `#if defined(DEBUG) || defined(OPUS_X64)` — vivo en este build).** Es
-   la función de carga/caché de fuente completa (comentario de cabecera:
-   "last `ifceMax` fonts requested through LoadFcid are kept in a LRU
-   cache"), no algo escondido en `dispspec.c`. Camino de relleno real
-   para fuente de paso variable, `LOADFONT.C:391-434`:
+**New, open, not resolved in this document, found while doing B3 Phase 1
+(§B3.3), not sought on purpose:**
 
-   1. `CreateFontIndirect(&lf)` (`:315`) selecciona la fuente física.
+3. **§B2.1 describes the wrong structure. RESOLVED 2026-08-11, does not
+   invalidate §B2.2/§B2.3, corrects the narrative.** The central citation
+   of the text measurement contract (`Opus/wordtech/format.h:379-410`,
+   `dxuFrac`/`bmpchdxu`/`struct FONTREC far * far *qqftr`) is `#ifdef MAC`
+   code, dead in this build. The real `struct FTI` that compiles under
+   `WIN`/`OPUS_X64` is in `Opus/fontwin.h:126-152`, and its cache twin is
+   `struct FCE` (`Opus/fontwin.h:96-124`, first `cbFtiFceSame` bytes
+   identical to `FTI` by design). Neither has a fraction accumulator,
+   **the real width table does not live inline in `FTI`, it lives in
+   `FCE.hqrgdxp`**: a Win16 handle (`HQ`, the same handle family the B3
+   contract already covers) to an array of **256 `int`** (one per byte
+   value 0-255, width already in integer pixels, no fraction), allocated
+   with `HqAllocLcb(256*sizeof(int))` (`Opus/initwin.c:2946`). The layout
+   consumer does not read `FTI`/`FCE` character by character directly: it
+   copies widths into `vfli.rgdxp[]` (formatted-line result struct,
+   `Opus/disp1.c:761` and surrounding code) during `FormatLine`, and that
+   copy is indeed plain integer arithmetic, no fraction, confirming, not
+   contradicting, the absence of an accumulator.
+
+   **Consequence for the §B2.3 strategy: none.** The strategy (integer
+   ppem plus `QFont::PreferFullHinting`, measured against the observable
+   behavior of `GetTextExtent`/`GetTextMetrics`) never depended on the
+   internal layout of `FONTREC`/`FTI`, it was validated against GDI's
+   *behavior*, not against a data structure. A 256-integer pixel array
+   is, if anything, simpler to fill than the fraction-accumulator model
+   §B2.1 described: it does not change what `OpusShellCharWidths` asks
+   for (integer advances), only the name of the internal target
+   structure, which the contract no longer exposes.
+
+   **Consequence for the contract (`OpusShellFontMetrics.h`):
+   `OpusFontMetrics`/`OpusShellFontMetrics()` remain intact** (ascent,
+   descent, overhang, the same fields exist in `FCE`/`FTI` with the same
+   names `dypAscent`/`dypDescent`/`dxpOverhang`). `OpusShellCharWidths(key,
+   chFirst, cch, rgdxu)` **remains the correct signature**, but in this
+   build the real caller will always request `chFirst=0, cch=256` (the
+   full range of `FCE.hqrgdxp`), no partial-range support is needed in
+   the first implementation, though the contract already allows it if
+   some future consumer needs it. **New, not covered by today's
+   contract:** `FCE`/`FTI` have fields `OpusFontMetrics` does not expose
+   (`dypXtraAscent`, `fVisiBad`, `fPrvw`, `dxpBorder`/`dypBorder`,
+   `dxpExpanded`), it is not yet known which of these the layout engine
+   reads besides ascent/descent/overhang/widths; audit before declaring
+   the first implementation of `OpusShellFontMetrics()` complete.
+
+   **Located 2026-08-11: `C_LoadFcid()` in `Opus/LOADFONT.C:187` (under
+   `#if defined(DEBUG) || defined(OPUS_X64)`, live in this build).** It
+   is the full font load/cache function (header comment: "last `ifceMax`
+   fonts requested through LoadFcid are kept in a LRU cache"), not
+   something hidden in `dispspec.c`. Real fill path for variable-pitch
+   fonts, `LOADFONT.C:391-434`:
+
+   1. `CreateFontIndirect(&lf)` (`:315`) selects the physical font.
    2. `GetTextMetrics(hdc, &tm)` (`:340`).
-   3. `pfce->hqrgdxp = HqAllocLcb(256 * sizeof(int))` (`:398`, rama
-      `OPUS_X64`) — el mismo array de 256 `int` ya identificado.
-   4. Relleno bulk: `GetCharWidth(hdc, chDxpMin, chDxpMax-2, lpdxp)`
-      (`:421`, API Win32 real, no una función del proyecto) para los
-      caracteres 0-253; el 254 se rellena aparte
-      (`OurGetCharWidth(hdc, chDxpMax-1, chDxpMax-1, ...)`, `:426`).
-      Dos casos caen al *fallback* carácter-por-carácter en vez del bulk:
-      modo vista previa (`vfPrvwDisp`, `:415-416`) siempre, y cualquier
-      driver que falle `GetCharWidth` (`:421-425`, con
-      `ReportSz("Driver does not support GetCharWidth!")`).
-   5. **`OurGetCharWidth()` (`LOADFONT.C:976-991`) es literalmente el
-      bucle `GetTextExtentPoint32A(hdc, &ch, 1, &size)` carácter por
-      carácter que la sonda de §B2.3 ya reproduce** — mismo mecanismo, no
-      uno análogo. Para pantalla (no impresora, no preview) todo pasa por
-      `GetCharWidth`, no por este fallback, pero ambos son wrappers finos
-      sobre la misma medición de GDI subyacente.
-   6. Corrección de overhang: si `pfce->dxpOverhang != 0`, se resta de
-      **toda** la tabla ya rellenada (`:428-434`), una sola vez sobre el
-      array — no por-carácter durante el relleno. Neto idéntico al
-      `GetTextExtent(hdc,&ch,1) - tm.tmOverhang` por-carácter que usa la
-      sonda de §B2.3 (resta distribuye sobre suma), así que **la
-      estrategia medida en §B2.3 ya reproduce este paso sin cambio
-      adicional** — no hay una corrección de overhang nueva que
-      incorporar.
-   7. `LLoadFce:` (`:523`) es el punto de convergencia con el camino de
-      restauración desde stream (`initwin.c:2909-2965`): copia
-      `pfce->hqrgdxp` a `pfti->rgdxp[256]` vía `bltbh` (`:544-547`) sea
-      cual sea el origen del array. Fuente de paso fijo: sin tabla,
-      `pfce->dxpWidth = tm.tmAveCharWidth` (`:386`) replicado a las 256
-      posiciones con `SetWords` (`:539`).
+   3. `pfce->hqrgdxp = HqAllocLcb(256 * sizeof(int))` (`:398`, `OPUS_X64`
+      branch), the same 256-`int` array already identified.
+   4. Bulk fill: `GetCharWidth(hdc, chDxpMin, chDxpMax-2, lpdxp)`
+      (`:421`, real Win32 API, not a project function) for characters
+      0-253; 254 is filled separately (`OurGetCharWidth(hdc, chDxpMax-1,
+      chDxpMax-1, ...)`, `:426`). Two cases fall back to the per-
+      character path instead of the bulk one: preview mode (`vfPrvwDisp`,
+      `:415-416`) always, and any driver that fails `GetCharWidth`
+      (`:421-425`, with `ReportSz("Driver does not support
+      GetCharWidth!")`).
+   5. **`OurGetCharWidth()` (`LOADFONT.C:976-991`) is literally the
+      character-by-character `GetTextExtentPoint32A(hdc, &ch, 1, &size)`
+      loop the §B2.3 probe already reproduces**, the same mechanism, not
+      an analogous one. For the screen (not printer, not preview),
+      everything goes through `GetCharWidth`, not this fallback, but both
+      are thin wrappers over the same underlying GDI measurement.
+   6. Overhang correction: if `pfce->dxpOverhang != 0`, it is subtracted
+      from **the whole** already-filled table (`:428-434`), once over the
+      array, not per character during fill. Net identical to the
+      `GetTextExtent(hdc,&ch,1) - tm.tmOverhang` per-character subtraction
+      the §B2.3 probe uses (subtraction distributes over sum), so **the
+      strategy measured in §B2.3 already reproduces this step without any
+      further change**, there is no new overhang correction to
+      incorporate.
+   7. `LLoadFce:` (`:523`) is the convergence point with the stream-
+      restore path (`initwin.c:2909-2965`): it copies `pfce->hqrgdxp` into
+      `pfti->rgdxp[256]` via `bltbh` (`:544-547`) regardless of the
+      array's origin. Fixed-pitch font: no table, `pfce->dxpWidth =
+      tm.tmAveCharWidth` (`:386`) replicated to all 256 positions with
+      `SetWords` (`:539`).
 
-   **Consecuencia:** cerrado. §B2.3 no necesita ajuste — midió
-   exactamente el mecanismo que `C_LoadFcid` usa (GDI per-char / bulk
-   `GetCharWidth`, mismo neto tras overhang). El único hallazgo nuevo,
-   real: **`OpusFontKey.ftc` no basta como clave de entrada del contrato
-   sin la tabla `ftc → nombre de época` que hoy solo existe dentro de
-   `Opus/initwin.c` (`vhsttbFont`, orden verificado: `ibstFontDefault` =
-   Tms Rmn, `+1` Symbol, `+2` Helv, `+3` Courier —
+   **Consequence:** closed. §B2.3 needs no adjustment, it measured
+   exactly the mechanism `C_LoadFcid` uses (GDI per-char / bulk
+   `GetCharWidth`, same net result after overhang). The one real new
+   finding: **`OpusFontKey.ftc` is not enough as the contract's input
+   key without the `ftc -> era name` table that today only exists inside
+   `Opus/initwin.c` (`vhsttbFont`, verified order: `ibstFontDefault` =
+   Tms Rmn, `+1` Symbol, `+2` Helv, `+3` Courier,
    `Opus/initwin.c:1541-1583`).** `OpusShellFontMetrics()`/
-   `OpusShellCharWidths()` tal como están declaradas reciben `ftc` (un
-   entero sin significado fuera de esa tabla), pero el shell
-   (`OpusShellFontSubstitution`) solo conoce nombres de época (cadenas).
-   Antes de escribir la implementación real hace falta decidir: (a) el
-   núcleo traduce `ftc → nombre` antes de llamar al shell (el contrato ya
-   dice "el núcleo traduce", §B2.2, así que esto puede ser tan simple
-   como añadir esa tabla de 4 entradas al lado núcleo del wrapper, no al
-   header de frontera); o (b) el contrato cambia para recibir el nombre
-   directamente. (a) no requiere tocar `OpusShellFontMetrics.h`.
+   `OpusShellCharWidths()` as declared receive `ftc` (an integer with no
+   meaning outside that table), but the shell
+   (`OpusShellFontSubstitution`) only knows era names (strings). Before
+   writing the real implementation a decision is needed: (a) the core
+   translates `ftc -> name` before calling the shell (the contract
+   already says "the core translates", §B2.2, so this can be as simple
+   as adding that 4-entry table to the core side of the wrapper, not to
+   the boundary header); or (b) the contract changes to receive the name
+   directly. (a) requires no changes to `OpusShellFontMetrics.h`.
 
-4. **¿Deberían el núcleo Qt (`src/core`) y el port Winelib vivir en
-   repositorios separados, para que el núcleo termine siendo una
-   aplicación Qt de verdad? Preguntada por el mantenedor 2026-08-14 — no
-   se separa por ahora:**
+4. **Should the Qt core (`src/core`) and the Winelib port live in
+   separate repositories, so the core ends up as a real Qt application?
+   Asked by the maintainer 2026-08-14, not separated for now:**
 
-   Hoy `src/core` no es una aplicación: son cinco bibliotecas estáticas
-   angostas (`opus_shell_config`/`memory`/`font_substitution`/
-   `font_metrics`/`spine`) cuya única razón de existir es enlazarse dentro
-   de `WORD1` (Winelib) y ser llamadas desde call sites dentro de `Opus/`
-   — árbol restringido de este mismo repo (ver "Estado real de hoy"
-   arriba). Separar ahora movería la mitad del acoplamiento — los headers
-   de contrato, el `ExternalProject_Add(opus_core_build ...)` de
-   `src/CMakeLists.txt` — a través de un límite de repositorio sin
-   eliminarlo: `Opus/` seguiría necesitando enlazar contra ese código en
-   cada build de `WORD1`, ahora vía submódulo o paquete instalado en vez
-   de un subdirectorio del mismo checkout. Y la estrategia de fidelidad de
-   §B2.3/§B2.5 depende de capturar comportamiento real del oráculo
-   Winelib (`docs/port-qt/scripts/fidelity/capture.py` →
-   `opus_shell_font_metrics_oracle_table.h`): la tabla ya capturada viaja
-   bien entre repos (es un header generado, no un binario), pero
-   regenerarla cuando cambie la versión de Wine exige tener el oráculo
-   Winelib al lado, en el mismo checkout o en uno hermano sincronizado a
-   mano.
+   Today `src/core` is not an application: it is five narrow static
+   libraries (`opus_shell_config`/`memory`/`font_substitution`/
+   `font_metrics`/`spine`) whose only reason to exist is to be linked
+   inside `WORD1` (Winelib) and be called from call sites inside `Opus/`,
+   a restricted tree of this same repo (see "Actual status as of today"
+   above). Separating now would move half the coupling, the contract
+   headers, the `ExternalProject_Add(opus_core_build ...)` in `src/
+   CMakeLists.txt`, across a repository boundary without eliminating it:
+   `Opus/` would still need to link against that code on every `WORD1`
+   build, now via a submodule or an installed package instead of a
+   subdirectory of the same checkout. And the §B2.3/§B2.5 fidelity
+   strategy depends on capturing real behavior from the Winelib oracle
+   (`docs/port-qt/scripts/fidelity/capture.py` ->
+   `opus_shell_font_metrics_oracle_table.h`): the already-captured table
+   travels fine across repos (it is a generated header, not a binary),
+   but regenerating it when the Wine version changes requires having the
+   Winelib oracle alongside, in the same checkout or a manually
+   synchronized sibling.
 
-   La separación empieza a tener sentido el día que exista un ejecutable
-   Qt que ya no dependa de `Opus/`/Winelib para nada — es decir, cuando el
-   paso 7 de "Secuencia recomendada para Qt-2" deje de ser demostración
-   (`opus_qt_shell`, sin motor de documento) y pase a ser la migración
-   real de `Opus/wproc.c`. Antes de eso, separar repos no compra
-   independencia: solo cambia dónde vive el mismo acoplamiento, y agrega
-   fricción de versión cruzada (¿qué commit de `src/core` fija cada commit
-   de `WORD1`?) que hoy resuelve gratis un solo `git log` sobre un único
-   árbol.
+   Separation starts to make sense the day a Qt executable exists that no
+   longer depends on `Opus/`/Winelib for anything, that is, when step 7
+   of "Recommended sequence for Qt-2" stops being a demonstration
+   (`opus_qt_shell`, no document engine) and becomes the real migration
+   of `Opus/wproc.c`. Before that, splitting repos buys no independence:
+   it only changes where the same coupling lives, and adds cross-version
+   friction (which `src/core` commit pins which `WORD1` commit?) that a
+   single `git log` over one tree resolves for free today.
 
-   No cerrado para siempre — reabrir cuando `opus_qt_shell` (o un sucesor)
-   tenga motor de documento propio y dependa de `Opus/` en cero sitios, no
-   antes.
+   Not closed forever, reopen when `opus_qt_shell` (or a successor) has
+   its own document engine and depends on `Opus/` in zero places, not
+   before.
 
-   **Addendum, mismo día:** el hallazgo de que `WORD1.exe.so` ya enlaza en
-   runtime contra `libQt6Widgets/Gui/Core/DBus.so.6` (ver "Estado real de
-   hoy" arriba) refuerza esta recomendación en vez de cambiarla — el
-   acoplamiento entre `src/core` y `WORD1` no es solo de build
-   (`ExternalProject_Add`) sino de carga en cada arranque del binario. Eso
-   es más razón, no menos, para no partirlo en dos repos mientras ese
-   enlace exista.
+   **Addendum, same day:** the finding that `WORD1.exe.so` already links
+   at runtime against `libQt6Widgets/Gui/Core/DBus.so.6` (see "Actual
+   status as of today" above) reinforces this recommendation rather than
+   changing it, the coupling between `src/core` and `WORD1` is not just a
+   build-time one (`ExternalProject_Add`) but a load-time one on every
+   binary startup. That is more reason, not less, not to split it into
+   two repos while that link exists.
 
 ---
 
-## Bloqueador de build: `disp.h:248` en GCC 14 (VPS Debian) — solo diagnóstico
+## Build blocker: `disp.h:248` on GCC 14 (Debian VPS): diagnosis only
 
-**Estado real: reproducido y caracterizado, no resuelto.** No es un bug de este
-fork: reproducido también con `git stash` antes de cualquier cambio propio, así
-que es preexistente al trabajo de esta rama. No reproducible en Fedora
-44/GCC 16.1.1 (sin acceso a esa máquina en esta sesión — dato reportado, no
-reverificado aquí). No se tocó `src/Opus/` ni `src/OpusEtAl/`: solo lectura,
-compilación de prueba aislada y búsqueda.
+**Actual status: reproduced and characterized, not resolved.** It is not
+a bug in this fork: also reproduced with `git stash` before any change of
+its own, so it predates this branch's work. Not reproducible on Fedora
+44/GCC 16.1.1 (no access to that machine this session, reported data, not
+re-verified here). `src/Opus/` and `src/OpusEtAl/` were not touched: only
+reading, isolated test compilation, and searching.
 
-### El código exacto
+### The exact code
 
 `Opus/wordtech/disp.h:235-250`:
 
@@ -1537,15 +1536,15 @@ struct PLDR
 #define cwPLDR   (sizeof(struct PLDR) / sizeof(int))
 ```
 
-La construcción es un flexible array member (`struct DR rgdr[]`) como miembro
-de una `union`, junto a `HQ hqpldre`. Presente desde el commit inicial del
-fork (`a1c4a1f`, `git blame` no muestra ningún commit posterior tocando estas
-líneas) — no es una regresión introducida en esta rama.
+The construct is a flexible array member (`struct DR rgdr[]`) as a member
+of a `union`, alongside `HQ hqpldre`. Present since the fork's initial
+commit (`a1c4a1f`, `git blame` shows no later commit touching these
+lines), not a regression introduced on this branch.
 
-### El error, literal
+### The error, verbatim
 
-Compilación real vía `cmake --build --preset linux-winelib-debug --target
-opus_original_engine`, disparado por `port/original/opus_x64_layout.c:6`
+Real compilation via `cmake --build --preset linux-winelib-debug --target
+opus_original_engine`, triggered by `port/original/opus_x64_layout.c:6`
 (`#include "wordtech/disp.h"`):
 
 ```
@@ -1555,7 +1554,7 @@ opus_original_engine`, disparado por `port/original/opus_x64_layout.c:6`
 winegcc: /usr/bin/gcc failed
 ```
 
-Flags reales de esa TU (capturados con `ninja -t commands`):
+Real flags for that TU (captured with `ninja -t commands`):
 
 ```
 winegcc -DCRLF -DNOMINMAX -DNONATIVE -DOPUS_X64 -DWIN -DWIN23 [...] \
@@ -1563,73 +1562,74 @@ winegcc -DCRLF -DNOMINMAX -DNONATIVE -DOPUS_X64 -DWIN -DWIN23 [...] \
   -c src/port/original/opus_x64_layout.c
 ```
 
-**Dato clave: `-fms-extensions` ya está activo en el build real** (línea de
-CMake existente) y el error persiste. No es un `-Werror` — es un `error:`
-directo del front-end de C, sin prefijo `[-W...]`, así que ningún flag de
-warning-a-error lo controla.
+**Key fact: `-fms-extensions` is already active in the real build** (an
+existing CMake line) and the error persists. It is not a `-Werror`, it is
+a direct `error:` from the C front end, with no `[-W...]` prefix, so no
+warning-to-error flag controls it.
 
-### Causa exacta — confirmada, no supuesta
+### Exact cause: confirmed, not assumed
 
-Reproducido aislado (`gcc -std=gnu89 -fms-extensions -fpermissive`, mismo
-resultado). Con `-pedantic-errors` el mismo caso también dispara, por
-separado, `ISO C90 does not support flexible array members [-Wpedantic]` —
-pero ese es un diagnóstico *distinto* (gateable por `-Wpedantic`); el que
-realmente bloquea el build (`flexible array member in union`, sin sufijo
-`-W`) no aparece bajo ningún nombre de warning: es un `error_at()`
-incondicional en el front-end de C de GCC 14, en `c/c-decl.cc` (mensaje
-localizado en `#: c/c-decl.cc:9556` en el árbol fuente de
-`gcc-14_14.2.0-19.debian.tar.xz`, confirmado descargando el paquete fuente
-Debian real, no por inspección de memoria).
+Reproduced in isolation (`gcc -std=gnu89 -fms-extensions -fpermissive`,
+same result). With `-pedantic-errors` the same case also separately
+triggers `ISO C90 does not support flexible array members
+[-Wpedantic]`, but that is a *different* diagnostic (gateable via
+`-Wpedantic`); the one that actually blocks the build (`flexible array
+member in union`, no `-W` suffix) does not appear under any warning name:
+it is an unconditional `error_at()` in GCC 14's C front end, in
+`c/c-decl.cc` (message located at `#: c/c-decl.cc:9556` in the source
+tree of `gcc-14_14.2.0-19.debian.tar.xz`, confirmed by downloading the
+real Debian source package, not by inspecting memory).
 
-**Por qué GCC 16 no lo reproduce — confirmado por búsqueda, no supuesto:**
-GCC aceptó oficialmente PR53548 ("allow flexible array members in unions")
-como commit `r15-209` (rama de desarrollo de GCC 15, mayo 2024), que
-convirtió este `error_at()` incondicional en un `pedwarn` (advertencia
-pedante, no error duro) y documentó la construcción como extensión soportada
-("Flexible Array Members in Unions" en la documentación oficial de GCC:
+**Why GCC 16 does not reproduce it: confirmed by search, not assumed:**
+GCC officially accepted PR53548 ("allow flexible array members in
+unions") as commit `r15-209` (GCC 15 development branch, May 2024), which
+turned that unconditional `error_at()` into a `pedwarn` (a pedantic
+warning, not a hard error) and documented the construct as a supported
+extension ("Flexible Array Members in Unions" in the official GCC
+documentation:
 <https://gcc.gnu.org/onlinedocs/gcc/Flexible-Array-Members-in-Unions.html>,
-confirma "GCC permits a C99 flexible array member (FAM) to be in a union").
-Debian `gcc-14.2.0` es anterior a ese cambio (GCC 14 se ramificó antes de
-mayo 2024); Fedora 44 con GCC 16.1.1 lo hereda. **Es una diferencia de
-versión del compilador, no de flags ni de modo de lenguaje** — por eso
-ningún flag de `-std=`/`-fms-extensions`/`-fplan9-extensions` lo mueve: el
-soporte no está condicionado a un flag, está condicionado a que el
-front-end tenga el parche aplicado.
+confirms "GCC permits a C99 flexible array member (FAM) to be in a
+union"). Debian's `gcc-14.2.0` predates that change (GCC 14 branched
+before May 2024); Fedora 44 with GCC 16.1.1 inherits it. **It is a
+compiler version difference, not a matter of flags or language mode**,
+that is why no `-std=`/`-fms-extensions`/`-fplan9-extensions` flag moves
+it: support is not gated behind a flag, it is gated behind the front end
+having the patch applied.
 
-Referencias usadas (búsqueda web, no memoria del modelo):
-- <https://gcc.gnu.org/pipermail/gcc-cvs/2024-May/401756.html> — commit
+References used (web search, not model memory):
+- <https://gcc.gnu.org/pipermail/gcc-cvs/2024-May/401756.html>: commit
   `r15-209`, "C and C++ FE changes to support flexible array members in
   unions and alone in structures."
-- <https://www.mail-archive.com/gcc-patches@gcc.gnu.org/msg364477.html> —
-  serie de parches posteriores (PR119001, febrero 2025) afinando casos de
-  inicialización, confirma que el soporte sigue activo y evolucionando en
-  ramas posteriores a GCC 15.
+- <https://www.mail-archive.com/gcc-patches@gcc.gnu.org/msg364477.html>:
+  a later patch series (PR119001, February 2025) refining initialization
+  cases, confirms the support keeps being active and evolving in
+  branches after GCC 15.
 - <https://gcc.gnu.org/onlinedocs/gcc/Flexible-Array-Members-in-Unions.html>
 
-### Flags probados — ninguno resuelve, en este orden
+### Flags tested: none resolve it, in this order
 
-Repro aislado (`/tmp/.../repro.c`, mismo patrón exacto: `union { HQ; struct
-DR rgdr[]; }`), cada uno con salida literal idéntica (`error: flexible array
-member in union`, exit 1):
+Isolated repro (`/tmp/.../repro.c`, exact same pattern: `union { HQ;
+struct DR rgdr[]; }`), each with identical literal output (`error:
+flexible array member in union`, exit 1):
 
-| Flag probado | Resultado |
+| Flag tested | Result |
 |---|---|
-| `-fms-extensions` (ya activo en el build real) | falla |
-| `-fplan9-extensions` | falla |
-| `-std=gnu17 -fms-extensions` | falla |
-| `-std=gnu2x -fms-extensions` | falla |
-| `-Wno-error=pedantic -fms-extensions` | falla (confirma que no es un `-Werror`; el error no tiene tag `-W`, así que no hay warning que degradar) |
+| `-fms-extensions` (already active in the real build) | fails |
+| `-fplan9-extensions` | fails |
+| `-std=gnu17 -fms-extensions` | fails |
+| `-std=gnu2x -fms-extensions` | fails |
+| `-Wno-error=pedantic -fms-extensions` | fails (confirms it is not a `-Werror`; the error carries no `-W` tag, so there is no warning to downgrade) |
 
-Ninguno de los cinco cambia el resultado. Esperable dado lo anterior: el
-`error_at()` de GCC 14 es incondicional, no depende de dialecto de C ni de
-extensión GNU/MS/Plan9 activada — solo del parche de front-end que llegó en
-GCC 15.
+None of the five change the result. Expected given the above: GCC 14's
+`error_at()` is unconditional, it does not depend on C dialect or on any
+GNU/MS/Plan9 extension enabled, only on the front-end patch that arrived
+in GCC 15.
 
-### Candidato de código mínimo — NO aplicado, solo propuesto para revisión
+### Minimal code candidate: NOT applied, proposed for review only
 
-No hay flag de compilador que resuelva esto en GCC 14. El cambio mínimo
-sería en `disp.h`, guardado como exige la disciplina del proyecto para
-código Linux-only dentro de `Opus/`:
+There is no compiler flag that resolves this on GCC 14. The minimal
+change would be in `disp.h`, guarded as project discipline requires for
+Linux-only code inside `Opus/`:
 
 ```diff
 --- a/src/Opus/wordtech/disp.h
@@ -1646,123 +1646,127 @@ código Linux-only dentro de `Opus/`:
  	};
 ```
 
-Por qué `rgdr[1]` y no otra cosa: no es un patrón nuevo importado — es
-exactamente el idiom que ya usa `struct WWD` en el mismo archivo
-(`disp.h:471`, comentario original `/* WWD is a pldr */`), para el mismo
-propósito (tail de `struct DR` de tamaño variable tras un header fijo).
-Verificado antes de proponerlo: `cwPLDR` (única macro que depende de
-`sizeof(struct PLDR)`, `disp.h:251`) no tiene ningún sitio de uso en
-`src/Opus/**/*.c` (`grep` vacío) — así que el único efecto observable de
-pasar de `rgdr[]` a `rgdr[1]` (que `sizeof(struct PLDR)` crezca en
-`sizeof(struct DR)`) no llega a ningún cálculo de asignación real. Todo el
-acceso real al array es vía puntero (`&(pwwd)->rgdr[0]` en el macro
-`PdrGalley`, mismo archivo) o vía offsets calculados a mano con `cbDr`, no
-vía `sizeof` de la struct completa — el patrón pre-C99 "struct hack" que
-`rgdr[1]` implementa es semánticamente neutro aquí, no solo "compila".
+Why `rgdr[1]` and not something else: it is not a newly imported pattern,
+it is exactly the idiom `struct WWD` already uses in the same file
+(`disp.h:471`, original comment `/* WWD is a pldr */`), for the same
+purpose (a variable-size `struct DR` tail after a fixed header). Verified
+before proposing it: `cwPLDR` (the only macro depending on
+`sizeof(struct PLDR)`, `disp.h:251`) has no usage site anywhere in
+`src/Opus/**/*.c` (empty `grep`), so the only observable effect of moving
+from `rgdr[]` to `rgdr[1]` (that `sizeof(struct PLDR)` grows by
+`sizeof(struct DR)`) never reaches any real allocation calculation. All
+real access to the array is via pointer (`&(pwwd)->rgdr[0]` in the
+`PdrGalley` macro, same file) or via hand-computed offsets using `cbDr`,
+not via `sizeof` of the whole struct, the pre-C99 "struct hack" pattern
+`rgdr[1]` implements is semantically neutral here, not just "it
+compiles".
 
-**No implementado.** Pendiente autorización explícita (issue de GitHub) para
-tocar `src/Opus/`, por disciplina del proyecto.
+**Not implemented.** Pending explicit authorization (a GitHub issue) to
+touch `src/Opus/`, per project discipline.
 
-### Aplicado y verificado 2026-08-12 — autorizado explícitamente
+### Applied and verified 2026-08-12: explicitly authorized
 
-El cambio anterior se aplicó tal cual (misma guarda, mismo idiom `[1]`),
-**más un segundo hallazgo del mismo tipo, expuesto solo al destrabar el
-primero:** `Opus/rsb.h:38` (`struct BMS rgbms []`, dentro de `struct RSBI`) y
-`Opus/rsb.h:73` (`struct ZPP rgzpp[]`, dentro de `union GRPZPP`), ambos
-diagnosticados por GCC 14 como *"flexible array member in a struct with no
-named members"* — variante distinta del mismo `error_at()` incondicional
-(cubierta por el mismo commit upstream `r15-209`/PR53548, que dice
-explícitamente "in unions **and alone in structures**"). Confirmado
-pre-existente con `git stash` antes de tocar `rsb.h`: el error ya estaba ahí,
-solo quedaba oculto detrás del bloqueo de `disp.h` porque `ninja` no llega a
-compilar `cmdwnd.c` (el primer TU que arrastra `rsb.h`) hasta que otro TU en
-paralelo falla primero. Ambos sitios recibieron la misma guarda `#if
-defined(__GNUC__) && !defined(_MSC_VER) && (__GNUC__ < 15)` con `rgbms[1]` /
-`rgzpp[1]`, autorizado explícitamente por el mantenedor tras reportar el
-hallazgo (no estaba en el alcance original aprobado, se pidió permiso aparte
-antes de tocar el segundo archivo).
+The change above was applied as is (same guard, same `[1]` idiom), **plus
+a second finding of the same kind, exposed only once the first one was
+unblocked:** `Opus/rsb.h:38` (`struct BMS rgbms []`, inside `struct
+RSBI`) and `Opus/rsb.h:73` (`struct ZPP rgzpp[]`, inside `union GRPZPP`),
+both diagnosed by GCC 14 as *"flexible array member in a struct with no
+named members"*, a different variant of the same unconditional
+`error_at()` (covered by the same upstream commit `r15-209`/PR53548,
+which explicitly says "in unions **and alone in structures**"). Confirmed
+preexisting with `git stash` before touching `rsb.h`: the error was
+already there, it was just hidden behind the `disp.h` block because
+`ninja` never reaches compiling `cmdwnd.c` (the first TU that pulls in
+`rsb.h`) until another TU running in parallel fails first. Both sites got
+the same guard, `#if defined(__GNUC__) && !defined(_MSC_VER) &&
+(__GNUC__ < 15)`, with `rgbms[1]` / `rgzpp[1]`, explicitly authorized by
+the maintainer after the finding was reported (not part of the originally
+approved scope, permission was requested separately before touching the
+second file).
 
-**Es un contorno de compatibilidad de versión de compilador, no un cambio de
-diseño.** El layout de `struct PLDR`, `struct RSBI` y `union GRPZPP` es el
-mismo en intención (tail de tamaño variable tras un header fijo/alias sobre
-campos nombrados); lo único que cambia es qué expresión de C acepta GCC 14
-para declararlo. Bajo GCC ≥15 (rama `#else` de cada guarda) el código sigue
-siendo el flexible array member `[]` original, sin ningún cambio de
-comportamiento — la guarda es simétrica y no toca el camino MSVC
-(`_MSC_VER` excluido) ni GCC ≥15.
+**This is a compiler-version compatibility shim, not a design change.**
+The layout of `struct PLDR`, `struct RSBI`, and `union GRPZPP` is the
+same in intent (a variable-size tail after a fixed header/alias over
+named fields); the only thing that changes is which C expression GCC 14
+accepts to declare it. Under GCC >=15 (the `#else` branch of each guard)
+the code remains the original flexible array member `[]`, with no
+behavior change, the guard is symmetric and touches neither the MSVC path
+(`_MSC_VER` excluded) nor GCC >=15.
 
-**Neutralidad de `cwPLDR` confirmada, no solo argumentada:** `grep -rn
-cwPLDR src/Opus` antes y después del cambio devuelve únicamente la
-definición de la macro (`disp.h:251`), cero sitios de uso. `izppMax`
-(`rsb.h:89`, `sizeof(union GRPZPP)/sizeof(struct ZPP)`) tampoco se movió:
-la rama nombrada de la unión (5 `struct ZPP`) sigue siendo estrictamente
-mayor que la rama con `rgzpp[1]` (1 `struct ZPP`), así que
-`sizeof(union GRPZPP)` no cambió — mismo razonamiento para `struct RSBI`
-frente a `ibmsMax`/`ibmsMax2`/`ibmsMax3` (constantes literales, no
-derivadas de `sizeof`, y en cualquier caso la rama nombrada de 5-9 `BMS`
-domina sobre `rgbms[1]`).
+**Neutrality of `cwPLDR` confirmed, not just argued:** `grep -rn cwPLDR
+src/Opus` before and after the change returns only the macro's
+definition (`disp.h:251`), zero usage sites. `izppMax` (`rsb.h:89`,
+`sizeof(union GRPZPP)/sizeof(struct ZPP)`) did not move either: the
+union's named branch (5 `struct ZPP`) remains strictly larger than the
+branch with `rgzpp[1]` (1 `struct ZPP`), so `sizeof(union GRPZPP)` did
+not change, same reasoning for `struct RSBI` versus
+`ibmsMax`/`ibmsMax2`/`ibmsMax3` (literal constants, not derived from
+`sizeof`, and in any case the named branch of 5-9 `BMS` dominates over
+`rgbms[1]`).
 
-**Verificación real ejecutada (VPS Debian, GCC 14.2.0, este build):**
+**Real verification performed (Debian VPS, GCC 14.2.0, this build):**
 
-1. `cmake --build --preset linux-winelib-debug --target opus_original_engine`
-   — **compila y linka limpio (exit 0)**, sin ningún `error: flexible array
-   member ...` en la salida. Confirmado antes/después con `git stash`: sin
-   el fix, el mismo build para en `disp.h:248`; con el fix, no vuelve a
-   aparecer esa clase de error en ningún punto del árbol `Opus/`.
-2. `cmake --build --preset linux-winelib-debug --target WORD1` — **sigue sin
-   completar, pero por un motivo totalmente ajeno**: `wrc: Error: codepage
-   1252 not supported` al compilar `port/word1.rc` (falta de datos de
-   codepage en el `wrc` de este VPS). No relacionado con FAM/union, no
-   tocado, ya venía así.
-3. `ctest --test-dir out/linux-winelib-debug` (suite gating completa) — los
-   tests que dependen de `opus_original_engine`/enlace Winelib puro contra
-   `user32`/`gdi32`/`comdlg32`
+1. `cmake --build --preset linux-winelib-debug --target opus_original_engine`:
+   **compiles and links clean (exit 0)**, no `error: flexible array
+   member ...` anywhere in the output. Confirmed before/after with `git
+   stash`: without the fix, the same build stops at `disp.h:248`; with
+   the fix, that class of error does not reappear anywhere in the
+   `Opus/` tree.
+2. `cmake --build --preset linux-winelib-debug --target WORD1`: **still
+   does not complete, but for a wholly unrelated reason**: `wrc: Error:
+   codepage 1252 not supported` while compiling `port/word1.rc` (missing
+   codepage data in this VPS's `wrc`). Unrelated to FAM/union, not
+   touched, was already like this.
+3. `ctest --test-dir out/linux-winelib-debug` (full gating suite): the
+   tests that depend on `opus_original_engine`/pure Winelib linking
+   against `user32`/`gdi32`/`comdlg32`
    (`opus_x64_runtime_test`, `opus_original_sttb_test`,
    `opus_original_plc_test`, `opus_sdm_cab_test`,
-   `opus_original_command_test`) **no llegan a linkar en este VPS por falta
-   de `wine32:i386`/multiarch** (`it looks like wine32 is missing... apt-get
-   install wine32:i386`) — confirmado pre-existente con `git stash`, mismo
-   síntoma con o sin el fix de FAM. Bloqueador de entorno, no de código,
-   fuera de alcance de esta tarea.
-   Los tres que sí dependen de la frontera núcleo/shell cruzando
-   winegcc/wineg++ **compilan, linkan y pasan**: `opus_shell_memory_foreign_test`,
-   `opus_shell_config_test`, `opus_shell_font_substitution_test` — 3/3
-   ✓ (sin regresión).
-4. Suite propia de `src/core` (`OPUS_CORE_BUILD_TESTS`, compilador nativo,
+   `opus_original_command_test`) **fail to link on this VPS for lack of
+   `wine32:i386`/multiarch** (`it looks like wine32 is missing... apt-get
+   install wine32:i386`), confirmed preexisting with `git stash`, same
+   symptom with or without the FAM fix. Environment blocker, not a code
+   one, out of scope for this task.
+   The three that do depend on the core/shell boundary crossing
+   winegcc/wineg++ **compile, link, and pass**:
+   `opus_shell_memory_foreign_test`, `opus_shell_config_test`,
+   `opus_shell_font_substitution_test`: 3/3 OK (no regression).
+4. `src/core`'s own suite (`OPUS_CORE_BUILD_TESTS`, native compiler,
    `ctest --test-dir
-   out/linux-winelib-debug/opus_core_build-prefix/src/opus_core_build-build`)
-   — **5/5 ✓** (`opus_shell_font_substitution_test`,
+   out/linux-winelib-debug/opus_core_build-prefix/src/opus_core_build-build`):
+   **5/5 OK** (`opus_shell_font_substitution_test`,
    `opus_shell_font_metrics_test`, `opus_shell_font_metrics_fidelity_test`,
-   `opus_shell_spine_test`, `opus_shell_config_test`). Esperable: `src/core`
-   nunca incluye `Opus/wordtech/disp.h` ni `Opus/rsb.h`, el cambio no podía
-   afectarlo; se corrió de todas formas por rigor, sin regresión.
+   `opus_shell_spine_test`, `opus_shell_config_test`). Expected:
+   `src/core` never includes `Opus/wordtech/disp.h` or `Opus/rsb.h`, the
+   change could not have affected it; run anyway for rigor, no
+   regression.
 
-**Pendiente, fuera de esta tarea:** el bloqueador de `wrc`/codepage 1252
-(bloquea `WORD1` completo) y la falta de `wine32:i386` en este VPS (bloquea
-5 tests gating por enlace) son blockers de entorno distintos, sin relación
-con FAM/union — no se investigan ni se tocan aquí.
+**Pending, out of scope for this task:** the `wrc`/codepage 1252 blocker
+(blocks all of `WORD1`) and the missing `wine32:i386` on this VPS (blocks
+5 gating tests by link failure) are separate environment blockers,
+unrelated to FAM/union, not investigated or touched here.
 
-### Verificación cruzada en Fedora 44 / GCC 16.1.1 (segunda máquina) — 2026-08-12
+### Cross-check on Fedora 44 / GCC 16.1.1 (second machine): 2026-08-12
 
-**Estado real: el guard `__GNUC__ < 15` se comporta como se esperaba —
-GCC 16 toma la rama `#else` original, cero diagnósticos de FAM/union en
-todo el árbol.** Pero el build completo (`ninja -k 0`, reconfigurado limpio)
-y la suite de `src/core` **no quedan en verde** en esta máquina, por motivos
-enteramente ajenos al guard — un hueco de enlace real recién expuesto
-(`WORD1` → `opus_shell_spine`) y dos diferencias de entorno (convención de
-rutas de fuentes de Fedora, segfault de Qt). Se documentan las dos salidas
-de compilador lado a lado porque son las dos máquinas reales donde se probó
-este fix, no una proyección:
+**Actual status: the `__GNUC__ < 15` guard behaves as expected, GCC 16
+takes the original `#else` branch, zero FAM/union diagnostics across the
+whole tree.** But the full build (`ninja -k 0`, reconfigured clean) and
+the `src/core` suite **do not end up green** on this machine, for reasons
+entirely unrelated to the guard, a real link gap just exposed
+(`WORD1` -> `opus_shell_spine`) and two environment differences (Fedora's
+font-path packaging convention, a Qt segfault). Both compiler outcomes
+are documented side by side because they are the two real machines this
+fix was tested on, not a projection:
 
-| | VPS Debian (sección anterior) | Fedora 44 (esta sección) |
+| | Debian VPS (previous section) | Fedora 44 (this section) |
 |---|---|---|
-| Compilador | GCC 14.2.0 | **GCC 16.1.1** (`gcc (GCC) 16.1.1 20260515 (Red Hat 16.1.1-2)`) |
-| Rama del guard que compila | `#if` (`rgdr[1]`/`rgbms[1]`/`rgzpp[1]`) | **`#else`** (`rgdr[]`/`rgbms[]`/`rgzpp[]`, forma original sin workaround) |
-| `opus_original_engine` (207 TUs) | compila y linka limpio | **compila y linka limpio** |
-| `WORD1.exe` completo | bloqueado por `wrc`/codepage 1252 (ajeno) | **bloqueado por enlace: falta `opus_shell_spine`** (ajeno, ver más abajo) |
-| Suite `src/core` (5 tests) | 5/5 ✓ | **1/5 ✓** (4 fallos ajenos al guard, ver más abajo) |
+| Compiler | GCC 14.2.0 | **GCC 16.1.1** (`gcc (GCC) 16.1.1 20260515 (Red Hat 16.1.1-2)`) |
+| Guard branch that compiles | `#if` (`rgdr[1]`/`rgbms[1]`/`rgzpp[1]`) | **`#else`** (`rgdr[]`/`rgbms[]`/`rgzpp[]`, original form, no workaround) |
+| `opus_original_engine` (207 TUs) | compiles and links clean | **compiles and links clean** |
+| Full `WORD1.exe` | blocked by `wrc`/codepage 1252 (unrelated) | **blocked by linking: missing `opus_shell_spine`** (unrelated, see below) |
+| `src/core` suite (5 tests) | 5/5 OK | **1/5 OK** (4 failures unrelated to the guard, see below) |
 
-#### Comando y salida literal: versión de compilador
+#### Command and literal output: compiler version
 
 ```
 $ gcc --version
@@ -1773,7 +1777,7 @@ garantía; ni siquiera para MERCANTIBILIDAD o IDONEIDAD PARA UN PROPÓSITO EN
 PARTICULAR
 ```
 
-#### Guard confirmado, contexto exacto (`git grep -n -A4 -B6 '__GNUC__ < 15'`)
+#### Guard confirmed, exact context (`git grep -n -A4 -B6 '__GNUC__ < 15'`)
 
 ```
 src/Opus/rsb.h-35-struct RSBI {
@@ -1800,14 +1804,14 @@ src/Opus/wordtech/disp.h-251-		struct DR rgdr[];   /* when fExternal false */
 src/Opus/wordtech/disp.h-252-#endif
 ```
 
-Con `__GNUC__` = 16 en esta máquina, `(__GNUC__ < 15)` evalúa a falso en los
-tres sitios: se compila la rama `#else`, es decir **la forma original de
-Microsoft sin ningún workaround**, exactamente como debía ser. Confirmado
-no solo por lectura del guard sino por el resultado de compilación (próxima
-sección): cero apariciones de `flexible array member` en ningún log, en
-ninguna de las dos pasadas de build completas que se corrieron.
+With `__GNUC__` = 16 on this machine, `(__GNUC__ < 15)` evaluates false
+at all three sites: the `#else` branch compiles, that is, **the original
+Microsoft form with no workaround at all**, exactly as intended.
+Confirmed not just by reading the guard but by the compilation result
+(next section): zero occurrences of `flexible array member` in any log,
+across both complete build passes that were run.
 
-#### Build limpio, `ninja -k 0`: reconfiguración + resultado
+#### Clean build, `ninja -k 0`: reconfiguration plus result
 
 ```
 $ rm -rf out/linux-winelib-debug out/linux-winelib-release
@@ -1839,18 +1843,17 @@ $ cmake --preset linux-winelib-debug
 $ ninja -k 0 -j4
 ```
 
-(`-j4` en vez del paralelismo por defecto de 12: esta máquina tiene 7,7 GiB
-de RAM, no 32+; con -j12 el build de 370 objetivos arriesgaba OOM. `-k 0`
-se preservó tal cual se pidió — no limita reintentos, solo limita
-paralelismo.)
+(`-j4` instead of the default parallelism of 12: this machine has 7.7 GiB
+of RAM, not 32+; with -j12 the 370-target build risked OOM. `-k 0` was
+kept as requested, it does not limit retries, only limits parallelism.)
 
-El build avanzó **370/370 objetivos intentados** (sin bloqueo temprano por
-`disp.h`/`rsb.h` — la clase de error que bloqueaba el VPS ni aparece) y
-terminó con exactamente **3 `FAILED:`**, ninguno relacionado con FAM/union.
-Log completo (120118 líneas, 7,5 MB) guardado en
+The build advanced through **370/370 attempted targets** (no early block
+from `disp.h`/`rsb.h`, the error class that blocked the VPS does not even
+appear) and ended with exactly **3 `FAILED:`**, none related to
+FAM/union. Full log (120118 lines, 7.5 MB) saved at
 `/tmp/claude-1000/-home-exia-word1-msword/ef583425-7fc7-457c-b877-9abeeaa77950/scratchpad/ninja-full-build.log`
-de esta sesión — no se incluye íntegro aquí por tamaño; se pega cada
-`FAILED:` completo, que es donde está toda la señal:
+from this session, not included in full here due to size; each full
+`FAILED:` block, where all the signal is, is pasted below:
 
 ```
 $ grep -c 'FAILED:' ninja-full-build.log
@@ -1858,10 +1861,10 @@ $ grep -c 'FAILED:' ninja-full-build.log
 $ grep -c ' error:' ninja-full-build.log
 3
 $ grep -in 'flexible array' ninja-full-build.log ninja-targeted-retry.log
-(sin coincidencias)
+(no matches)
 ```
 
-**Fallo 1/3 — `opus_original_plc_test.exe`, enlace, no relacionado con el guard:**
+**Failure 1/3: `opus_original_plc_test.exe`, linking, unrelated to the guard:**
 
 ```
 FAILED: [code=2] /home/exia/word1/msword/build/tests/Debug/opus_original_plc_test.exe 
@@ -1885,16 +1888,17 @@ collect2: error: ld devolvió el estado de salida 1
 winegcc: /usr/bin/g++ failed
 ```
 
-Causa: `src/CMakeLists.txt:1220` — `target_link_libraries(opus_original_plc_test
-PRIVATE opus_original_c_dialect opus_x64_runtime user32)` — no lista
-`gdi32` ni `shell32`, y `opus_win16_platform.cpp` (dentro de
-`opus_x64_runtime`) llama a las variantes `*Ex` de GDI (`gdi32`) y a
-`ShellExecuteA` (`shell32`). No es un hueco nuevo de esta sesión: no hay
-ningún cambio reciente en ese target — es preexistente, solo visible ahora
-porque en el VPS ni se llegaba a intentar enlazar (bloqueado antes por
-`disp.h`, y luego por falta de `wine32:i386`).
+Cause: `src/CMakeLists.txt:1220`,
+`target_link_libraries(opus_original_plc_test PRIVATE
+opus_original_c_dialect opus_x64_runtime user32)`, does not list `gdi32`
+or `shell32`, and `opus_win16_platform.cpp` (inside `opus_x64_runtime`)
+calls the `*Ex` GDI variants (`gdi32`) and `ShellExecuteA` (`shell32`).
+Not a new gap from this session: there is no recent change to that
+target, it is preexisting, only visible now because on the VPS linking
+was never even attempted (blocked earlier by `disp.h`, and then by the
+missing `wine32:i386`).
 
-**Fallo 2/3 — `opus_x64_runtime_test.exe`, enlace, no relacionado con el guard:**
+**Failure 2/3: `opus_x64_runtime_test.exe`, linking, unrelated to the guard:**
 
 ```
 FAILED: [code=2] /home/exia/word1/msword/build/tests/Debug/opus_x64_runtime_test.exe 
@@ -1912,19 +1916,20 @@ collect2: error: ld devolvió el estado de salida 1
 winegcc: /usr/bin/g++ failed
 ```
 
-Dos causas distintas en el mismo fallo: (a) `GetOpenFileNameA`/
-`GetSaveFileNameA`/`CommDlgExtendedError` son de `comdlg32`, ausente del
-`target_link_libraries` (`src/CMakeLists.txt:1447`, solo lista `user32
-gdi32`); (b) `OpusX64TraceRibbon` — `extern "C" void OpusX64TraceRibbon(...)`
-está **declarada** en `opus_sdm_runtime.cpp:24` y **llamada** desde ahí, pero
-solo está **definida** en
-`port/original/opus_original_startup_probe.cpp:387`, que es fuente exclusiva
-del ejecutable `WORD1` — no forma parte de `libopus_x64_runtime.a`. Cualquier
-binario que enlace `opus_x64_runtime` sin también incluir el probe (como
-este test) queda con una referencia sin resolver por diseño del árbol
-actual, no por un error transitorio.
+Two distinct causes in the same failure: (a) `GetOpenFileNameA`/
+`GetSaveFileNameA`/`CommDlgExtendedError` belong to `comdlg32`, absent
+from `target_link_libraries` (`src/CMakeLists.txt:1447`, lists only
+`user32 gdi32`); (b) `OpusX64TraceRibbon`, `extern "C" void
+OpusX64TraceRibbon(...)` is **declared** in `opus_sdm_runtime.cpp:24`
+and **called** from there, but is only **defined** in
+`port/original/opus_original_startup_probe.cpp:387`, which is source
+exclusive to the `WORD1` executable, not part of
+`libopus_x64_runtime.a`. Any binary that links `opus_x64_runtime`
+without also including the probe (like this test) ends up with an
+unresolved reference by the current tree's design, not by a transient
+error.
 
-**Fallo 3/3 — `WORD1.exe`, enlace, no relacionado con el guard — bloquea la Fase 4 completa en esta máquina:**
+**Failure 3/3: `WORD1.exe`, linking, unrelated to the guard, blocks all of Phase 4 on this machine:**
 
 ```
 FAILED: [code=2] /home/exia/word1/msword/bin/WORD1.exe 
@@ -1936,28 +1941,27 @@ winegcc: /usr/bin/g++ failed
 ninja: build stopped: cannot make progress due to previous errors.
 ```
 
-Causa, identificada con `git show`: el commit `ea5f908` (B4.4, "conecta
-`error.c:1618` al contrato `OpusShellReportError`") agregó la llamada real
-en `error.c` pero **no tocó `src/CMakeLists.txt`** — el target `WORD1`
-(línea 1298-1309) nunca recibió `opus_shell_spine` en su
-`target_link_libraries`, a diferencia de `opus_shell_config`,
-`opus_shell_memory` y `opus_shell_font_metrics`, que sí están (líneas
-1306-1308). El propio §B4.4 de este documento ya advertía la falta de
-verificación de punta a punta ("no se disparó ni se observó en ejecución
-esta sesión"), atribuyéndolo entonces al bloqueo de `disp.h` — en Fedora
-`disp.h` ya no bloquea, y este es el siguiente bloqueador real de la
-cadena, no una regresión de esta tarea. Reintentado explícitamente con
-`ninja -k 0 opus_original_plc_test opus_x64_runtime_test WORD1` tras el
-build completo: mismos tres fallos, idénticos, byte a byte en el mensaje
-de enlace (log en
-`.../scratchpad/ninja-targeted.log`).
+Cause, identified with `git show`: commit `ea5f908` (B4.4, "connects
+`error.c:1618` to the `OpusShellReportError` contract") added the real
+call in `error.c` but **did not touch `src/CMakeLists.txt`**, the
+`WORD1` target (lines 1298-1309) never received `opus_shell_spine` in
+its `target_link_libraries`, unlike `opus_shell_config`,
+`opus_shell_memory`, and `opus_shell_font_metrics`, which are present
+(lines 1306-1308). §B4.4 itself already warned about the missing
+end-to-end verification ("not triggered or observed running this
+session"), attributing it at the time to the `disp.h` block; on Fedora
+`disp.h` no longer blocks, and this is the next real blocker in the
+chain, not a regression from this task. Explicitly retried with `ninja
+-k 0 opus_original_plc_test opus_x64_runtime_test WORD1` after the full
+build: same three failures, identical byte for byte in the link message
+(log at `.../scratchpad/ninja-targeted.log`).
 
-**No se tocó `src/CMakeLists.txt` ni ningún archivo de código en esta
-tarea** — los tres fallos se dejan diagnosticados, no corregidos, a la
-espera de decisión (afecta directamente a la Tarea 2 de esta misma sesión,
-que necesita un `WORD1.exe.so` enlazable).
+**Neither `src/CMakeLists.txt` nor any code file was touched in this
+task**, the three failures are left diagnosed, not fixed, pending a
+decision (it directly affects Task 2 of this same session, which needs a
+linkable `WORD1.exe.so`).
 
-#### `ctest` de `src/core` — 1/5 ✓, 4 fallos ajenos al guard
+#### `ctest` for `src/core`: 1/5 OK, 4 failures unrelated to the guard
 
 ```
 $ cd out/linux-winelib-debug/opus_core_build-prefix/src/opus_core_build-build
@@ -1988,11 +1992,12 @@ OpusShellFontSubstitution_test: 4 fallo(s) de 16 verificaciones.
 20% tests passed, 4 tests failed out of 5
 ```
 
-**Los 3 fallos de fuentes son un solo hallazgo, no tres:** las rutas
-hardcodeadas en `src/core/src/OpusShellFontSubstitution.cpp:31-34` y su
-espejo en `OpusShellFontSubstitution_test.cpp:35-38` asumen la convención
-Debian/Ubuntu (`/usr/share/fonts/truetype/liberation/…`). **Las fuentes sí
-están instaladas en esta máquina** — confirmado, no asumido:
+**The 3 font failures are a single finding, not three:** the hardcoded
+paths in `src/core/src/OpusShellFontSubstitution.cpp:31-34` and their
+mirror in `OpusShellFontSubstitution_test.cpp:35-38` assume the
+Debian/Ubuntu convention (`/usr/share/fonts/truetype/liberation/...`).
+**The fonts are indeed installed on this machine**, confirmed, not
+assumed:
 
 ```
 $ rpm -q liberation-serif-fonts liberation-sans-fonts liberation-mono-fonts
@@ -2003,25 +2008,25 @@ $ fc-match "Liberation Serif"
 LiberationSerif-Regular.ttf: "Liberation Serif" "Regular"
 $ find / -iname 'LiberationSerif-Regular.ttf' 2>/dev/null
 /usr/share/fonts/liberation-serif-fonts/LiberationSerif-Regular.ttf
-[...dos rutas más dentro de runtimes Flatpak, irrelevantes...]
+[...two more paths inside Flatpak runtimes, irrelevant...]
 ```
 
-Fedora empaqueta cada familia en su propio directorio
-(`liberation-serif-fonts/`, no `truetype/liberation/`). Es una diferencia
-de convención de empaquetado entre distribuciones, no una fuente ausente —
-el mismo bug de portabilidad que §B2.6/B2.7 de este documento ya resuelve
-para la *sustitución de nombre de época → familia* (vía `fc-match`), pero
-que **no se aplicó a la ruta de archivo físico**: ese segundo paso sigue
-hardcodeado a una ruta absoluta en vez de resolverse vía `fc-match -f
-'%{file}'` como hace la sonda de §B2.6. Es un bug real de portabilidad
-entre distros, descubierto por esta verificación cruzada — no estaba
-caracterizado antes porque el VPS es Debian y ahí la ruta sí existe. Fuera
-del alcance de esta tarea (solo pide verificar el guard FAM/union); se deja
-anotado para una tarea de port aparte, no se corrige aquí.
+Fedora packages each family in its own directory
+(`liberation-serif-fonts/`, not `truetype/liberation/`). It is a
+packaging-convention difference between distributions, not a missing
+font, the same portability bug §B2.6/B2.7 of this document already
+solves for the *era name -> family substitution* (via `fc-match`), but
+that **was not applied to the physical file path**: that second step is
+still hardcoded to an absolute path instead of being resolved via
+`fc-match -f '%{file}'` the way the §B2.6 probe does. It is a real
+cross-distro portability bug, discovered by this cross-check, it was not
+characterized before because the VPS is Debian and the path does exist
+there. Out of scope for this task (it only asks to verify the FAM/union
+guard); noted for a separate porting task, not fixed here.
 
-**`opus_shell_spine_test` segfaulta**, causa no diagnosticada en esta
-tarea (esta máquina no tiene `gdb` ni `valgrind` instalados — ver Tarea 2
-de esta misma sesión para el mismo hueco de herramientas). Capturado por
+**`opus_shell_spine_test` segfaults**, cause not diagnosed in this task
+(this machine has neither `gdb` nor `valgrind` installed, see Task 2 of
+this same session for the same tooling gap). Captured by
 `systemd-coredump`:
 
 ```
@@ -2029,28 +2034,29 @@ $ coredumpctl list | tail -1
 Tue 2026-08-11 22:49:36 -04 27390 1000 1000 SIGSEGV present  .../core/bin/opus_shell_spine_test  1.7M
 ```
 
-Sin `gdb`, `coredumpctl info` no produce un backtrace simbólico utilizable
-(solo lista de módulos cargados). No se investigó más a fondo: es un
-segundo hallazgo nuevo, no pedido por esta tarea, y comparte el mismo
-bloqueador de herramientas que la Tarea 2. Reproducido dos veces
-(`QT_QPA_PLATFORM=offscreen` incluido) con el mismo resultado, así que no es
-un fallo intermitente relacionado con la sesión Wayland de esta máquina.
+Without `gdb`, `coredumpctl info` produces no usable symbolic backtrace
+(only a list of loaded modules). Not investigated further: it is a
+second finding, not asked for by this task, and shares the same tooling
+blocker as Task 2. Reproduced twice (`QT_QPA_PLATFORM=offscreen`
+included) with the same result, so it is not an intermittent failure
+related to this machine's Wayland session.
 
-#### Conclusión de esta sección
+#### Conclusion of this section
 
-**El fix del guard `__GNUC__ < 15` queda verificado en las dos máquinas
-reales donde se probó, con las dos versiones de compilador documentadas
-explícitamente: GCC 14.2.0 (VPS Debian, toma la rama `#if`, con workaround)
-y GCC 16.1.1 (Fedora 44, esta sección, toma la rama `#else`, sin
-workaround) — ambas compilan `opus_original_engine` (207 TUs) limpio, cero
-diagnósticos de FAM/union en ningún caso.** Esa es la afirmación puntual que
-esta tarea pedía verificar, y se sostiene.
+**The `__GNUC__ < 15` guard fix is verified on the two real machines it
+was tested on, with the two compiler versions explicitly documented: GCC
+14.2.0 (Debian VPS, takes the `#if` branch, with the workaround) and GCC
+16.1.1 (Fedora 44, this section, takes the `#else` branch, without the
+workaround), both compile `opus_original_engine` (207 TUs) clean, zero
+FAM/union diagnostics in either case.** That is the specific claim this
+task asked to verify, and it holds.
 
-**Lo que NO se sostiene es "el build/los tests están en verde en Fedora"**
-— no lo están, por motivos enteramente ajenos al guard: un hueco de enlace
-real (`WORD1`/`opus_shell_spine`, expuesto ahora que `disp.h` deja de
-bloquear antes de llegar ahí) y dos diferencias de entorno (convención de
-rutas de fuentes, segfault de Qt sin diagnóstico por falta de `gdb`).
-Documentado con el mismo rigor que el hallazgo del VPS: cada afirmación
-tiene su comando y su salida literal arriba, nada se da por bueno sin
-evidencia.
+**What does NOT hold is "the build/tests are green on Fedora"**, they
+are not, for reasons entirely unrelated to the guard: a real link gap
+(`WORD1`/`opus_shell_spine`, now exposed since `disp.h` no longer blocks
+before reaching it) and two environment differences (font path
+convention, an undiagnosed Qt segfault for lack of `gdb`). Documented
+with the same rigor as the VPS finding: every claim above has its
+command and its literal output, nothing is taken on faith without
+evidence.
+</content>

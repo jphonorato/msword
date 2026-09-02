@@ -248,6 +248,9 @@ constexpr Word kIddCharacter = 16;
 constexpr Word kIddApplyStyle = 23;
 constexpr Word kIddDefineStyle = 24;
 constexpr Word kIddAbout = 44;
+constexpr Word kIddSearch = 31;  /* Opus/idd.h IDDSearch */
+constexpr Word kIddReplace = 32; /* Opus/idd.h IDDReplace */
+constexpr Word kIddConfirmRepl = 69; /* Opus/idd.h IDDConfirmRepl */
 constexpr Word kCxtRibbonIconBar = 0x8005;
 constexpr Word kCxtRulerIconBar = 0x8006;
 constexpr Tmc kTmcOk = 1;
@@ -273,6 +276,41 @@ constexpr Tmc kTmcDefineCommit = kTmcUserMin + 13;
 constexpr Tmc kTmcDefineDelete = kTmcUserMin + 14;
 constexpr Tmc kTmcDefineRename = kTmcUserMin + 15;
 constexpr Tmc kTmcDefineMerge = kTmcUserMin + 16;
+/* Search/Replace (Opus/search.c FDlgSearchRepl, shared by both dialogs).
+   kTmcSearchText and kTmcReplaceText MUST equal the engine's own tmcSearch
+   (search.hs: tmcUserMin+0) and tmcReplace (Opus/tmc.h: tmcUserMin+2) --
+   FDlgSearchRepl's dlmChange/dlmTerm cases compare tmc against those two
+   symbols by identity (CchGetTmcText(tmcSearch,...), CchGetTmcText
+   (tmcReplace,...)) to know which edit control just changed. The whole-word
+   and confirm checkboxes are never compared by tmc identity inside
+   FDlgSearchRepl -- it reads them generically through ValGetTmc at dlmTerm
+   -- so their tmc values are ours to pick; kTmcUserMin+10/+11 avoid the
+   tmcWholeWord/tmcReplace numbering collision already present between
+   search.hs and Opus/tmc.h (both resolve to tmcUserMin+2 for search.c's
+   compiled macros -- a pre-existing inconsistency in those reconstructed
+   headers, harmless here because nothing in FDlgSearchRepl branches on
+   tmcWholeWord by identity). */
+constexpr Tmc kTmcSearchText = kTmcUserMin;
+constexpr Tmc kTmcSearchBanter = kTmcUserMin + 1;
+constexpr Tmc kTmcReplaceText = kTmcUserMin + 2;
+constexpr Tmc kTmcReplaceBanter = kTmcUserMin + 3;
+constexpr Tmc kTmcSearchWholeWord = kTmcUserMin + 10;
+constexpr Tmc kTmcSearchConfirm = kTmcUserMin + 11;
+constexpr Tmc kTmcSearchMatchCase = kTmcUserMin + 12;
+/* Opus/replace.c FDlgConfirmRepl (confirmr.hs), the per-match Y/N/A prompt
+   WReplaceCore falls into when the Replace dialog's Confirm Changes
+   checkbox is left on (the fAll=false path -- fAll=true instead runs
+   ChangeAll(), which needs a progress-report dialog this port does not
+   have). tmcReplYes/tmcReplNo drive dismissal (ACTION DISMISS in
+   confirmr.des) via the hid-specific check in handle_dialog_command's
+   BN_CLICKED branch, the same pattern kIddOpen/kTmcOpenCatalog and
+   kIddNewDoc/kTmcSummary already use there. tmcReplConfirm's live state is
+   read generically by ValGetTmc -- no CAB sync function needed for this
+   dialog. */
+constexpr Tmc kTmcReplText = kTmcUserMin;
+constexpr Tmc kTmcReplYes = kTmcUserMin + 1;
+constexpr Tmc kTmcReplNo = kTmcUserMin + 2;
+constexpr Tmc kTmcReplConfirmCheck = kTmcUserMin + 3;
 constexpr Word kTmmCount = 2;
 constexpr Word kTmmText = 3;
 constexpr Word kUnknownListCount = 0xffff;
@@ -372,7 +410,8 @@ HWND create_dialog_host(const DialogState& dialog, const Dli* initializer) {
         (dialog.hid == kIddOpen || dialog.hid == kIddNewDoc ||
          dialog.hid == kIddSaveAs || dialog.hid == kIddAbout ||
          dialog.hid == kIddCharacter || dialog.hid == kIddApplyStyle ||
-         dialog.hid == kIddDefineStyle)) {
+         dialog.hid == kIddDefineStyle || dialog.hid == kIddSearch ||
+         dialog.hid == kIddReplace || dialog.hid == kIddConfirmRepl)) {
         if (ensure_native_dialog_class() == 0) {
             return nullptr;
         }
@@ -430,6 +469,13 @@ HWND create_dialog_host(const DialogState& dialog, const Dli* initializer) {
                 break;
             case kIddAbout:
                 caption = "About Microsoft Word";
+                break;
+            case kIddSearch:
+                caption = "Search";
+                break;
+            case kIddReplace:
+            case kIddConfirmRepl:
+                caption = "Replace";
                 break;
         }
         return CreateWindowExA(
@@ -1439,6 +1485,13 @@ void set_native_check(DialogState& dialog, const Tmc tmc, const int value) {
     }
 }
 
+int checked_native(DialogState& dialog, const Tmc tmc) {
+    const auto found = dialog.controls.find(tmc);
+    return found != dialog.controls.end() && found->second.window != nullptr &&
+           SendMessageA(found->second.window, BM_GETCHECK, 0, 0) ==
+               BST_CHECKED;
+}
+
 void read_character_cab(DialogState& dialog) {
     auto* cab = character_cab(dialog);
     if (cab == nullptr) {
@@ -1693,6 +1746,219 @@ void materialize_define_style_template(DialogState& dialog) {
     populate_original_list(dialog, kTmcDefineStyle);
 }
 
+/* CABSEARCH/CABREPLACE (Opus/search.c CmdSearch, Opus/replace.c CmdReplace)
+   as laid out by opus_sdm_cab.cpp's native CAB allocator: CabHeader (2
+   Words) + sab (Word) + a padding Word so the first pointer-typed ("hsz")
+   field lands 8-byte aligned, then the hsz fields packed together (each
+   kPointerWords=4 Words apart on this x64 build), then the plain int
+   fields. Mirrors the CabSaveNative / CabCharacterNative pattern above --
+   field order and types copied from src/port/original/search.hs and
+   replace.hs, which is what Opus/search.c and Opus/replace.c actually
+   compile against. */
+struct CabSearchNative {
+    Word simple_words;
+    Word handle_words;
+    Word sab;
+    Word alignment;
+    char** hsz_search;   /* offset 8 */
+    int f_whole_word;    /* offset 16 */
+    int f_match_up_low;  /* offset 20 */
+    int i_direction;     /* offset 24 */
+    int f_formatted;     /* offset 28 */
+};
+
+struct CabReplaceNative {
+    Word simple_words;
+    Word handle_words;
+    Word sab;
+    Word alignment;
+    char** hsz_search;   /* offset 8 */
+    char** hsz_replace;  /* offset 16 */
+    int f_whole_word;    /* offset 24 */
+    int f_match_up_low;  /* offset 28 */
+    int f_confirm;       /* offset 32 */
+    int f_formatted;     /* offset 36 */
+};
+
+/* Handle-slot ("hsz") argument indices for FSetCabSz/GetCabSz: the first
+   handle field is always at word-index 1 on this x64 build (kHandleBaseIag
+   in opus_sdm_cab.cpp), each subsequent one kPointerWords=4 words later. */
+constexpr int kCchSearchLikeMax = 257; /* Opus/search.h cchSearchMax */
+constexpr Word kSearchHszSearchIndex = 1;
+constexpr Word kReplaceHszSearchIndex = 1;
+constexpr Word kReplaceHszReplaceIndex = 5;
+
+CabSearchNative* search_cab(DialogState& dialog) {
+    if (dialog.cab == nullptr || *dialog.cab == nullptr ||
+        OpusCbOfH(dialog.cab) < sizeof(CabSearchNative)) {
+        return nullptr;
+    }
+    return static_cast<CabSearchNative*>(*dialog.cab);
+}
+
+CabReplaceNative* replace_cab(DialogState& dialog) {
+    if (dialog.cab == nullptr || *dialog.cab == nullptr ||
+        OpusCbOfH(dialog.cab) < sizeof(CabReplaceNative)) {
+        return nullptr;
+    }
+    return static_cast<CabReplaceNative*>(*dialog.cab);
+}
+
+std::string read_edit_text(DialogState& dialog, const Tmc tmc) {
+    auto& state = dialog.controls[tmc];
+    if (state.window != nullptr) {
+        const int length = GetWindowTextLengthA(state.window);
+        std::vector<char> buffer(static_cast<std::size_t>(length) + 1);
+        GetWindowTextA(state.window, buffer.data(),
+                       static_cast<int>(buffer.size()));
+        state.text = buffer.data();
+    }
+    return state.text;
+}
+
+void read_search_cab(DialogState& dialog) {
+    char text[kCchSearchLikeMax] = {};
+    GetCabSz(dialog.cab, text, static_cast<Word>(sizeof(text)),
+             kSearchHszSearchIndex);
+    auto& edit = dialog.controls[kTmcSearchText];
+    edit.text = text;
+    if (edit.window != nullptr) {
+        SetWindowTextA(edit.window, edit.text.c_str());
+    }
+    if (auto* cab = search_cab(dialog); cab != nullptr) {
+        set_native_check(dialog, kTmcSearchWholeWord, cab->f_whole_word);
+        set_native_check(dialog, kTmcSearchMatchCase, cab->f_match_up_low);
+    }
+}
+
+void sync_search_cab(DialogState& dialog) {
+    const std::string text = read_edit_text(dialog, kTmcSearchText);
+    if (dialog.cab != nullptr) {
+        FSetCabSz(dialog.cab, text.c_str(), kSearchHszSearchIndex);
+    }
+    if (auto* cab = search_cab(dialog); cab != nullptr) {
+        cab->f_whole_word = checked_native(dialog, kTmcSearchWholeWord);
+        cab->f_match_up_low = checked_native(dialog, kTmcSearchMatchCase);
+    }
+}
+
+void read_replace_cab(DialogState& dialog) {
+    char search_text[kCchSearchLikeMax] = {};
+    GetCabSz(dialog.cab, search_text, static_cast<Word>(sizeof(search_text)),
+             kReplaceHszSearchIndex);
+    auto& search_edit = dialog.controls[kTmcSearchText];
+    search_edit.text = search_text;
+    if (search_edit.window != nullptr) {
+        SetWindowTextA(search_edit.window, search_edit.text.c_str());
+    }
+    char replace_text[kCchSearchLikeMax] = {};
+    GetCabSz(dialog.cab, replace_text,
+             static_cast<Word>(sizeof(replace_text)),
+             kReplaceHszReplaceIndex);
+    auto& replace_edit = dialog.controls[kTmcReplaceText];
+    replace_edit.text = replace_text;
+    if (replace_edit.window != nullptr) {
+        SetWindowTextA(replace_edit.window, replace_edit.text.c_str());
+    }
+    if (auto* cab = replace_cab(dialog); cab != nullptr) {
+        set_native_check(dialog, kTmcSearchWholeWord, cab->f_whole_word);
+        set_native_check(dialog, kTmcSearchMatchCase, cab->f_match_up_low);
+        set_native_check(dialog, kTmcSearchConfirm, cab->f_confirm);
+    }
+}
+
+void sync_replace_cab(DialogState& dialog) {
+    const std::string search_text = read_edit_text(dialog, kTmcSearchText);
+    const std::string replace_text = read_edit_text(dialog, kTmcReplaceText);
+    if (dialog.cab != nullptr) {
+        FSetCabSz(dialog.cab, search_text.c_str(), kReplaceHszSearchIndex);
+        FSetCabSz(dialog.cab, replace_text.c_str(), kReplaceHszReplaceIndex);
+    }
+    if (auto* cab = replace_cab(dialog); cab != nullptr) {
+        cab->f_whole_word = checked_native(dialog, kTmcSearchWholeWord);
+        cab->f_match_up_low = checked_native(dialog, kTmcSearchMatchCase);
+        cab->f_confirm = checked_native(dialog, kTmcSearchConfirm);
+    }
+}
+
+void materialize_search_template(DialogState& dialog) {
+    if (dialog.hid != kIddSearch || dialog.window == nullptr) {
+        return;
+    }
+    create_static_text(dialog, "&Search For:", {5, 2, 46, 9});
+    create_native_control(dialog, kTmcSearchText, "EDIT", "",
+                          {5, 13, 154, 12},
+                          WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL);
+    create_native_control(dialog, kTmcSearchBanter, "STATIC", "",
+                          {5, 26, 153, 8}, SS_LEFT);
+    create_native_control(dialog, kTmcSearchWholeWord, "BUTTON",
+                          "&Whole Word", {5, 36, 52, 12},
+                          WS_TABSTOP | BS_AUTOCHECKBOX);
+    create_native_control(dialog, kTmcSearchMatchCase, "BUTTON",
+                          "&Match Upper/Lowercase", {5, 48, 95, 12},
+                          WS_TABSTOP | BS_AUTOCHECKBOX);
+    create_native_control(dialog, kTmcOk, "BUTTON", "OK", {163, 6, 34, 14},
+                          WS_TABSTOP | BS_DEFPUSHBUTTON);
+    create_native_control(dialog, kTmcCancel, "BUTTON", "Cancel",
+                          {163, 24, 34, 14}, WS_TABSTOP | BS_PUSHBUTTON);
+    dialog.caption = "Search";
+    dialog.native_modal = true;
+    read_search_cab(dialog);
+}
+
+void materialize_replace_template(DialogState& dialog) {
+    if (dialog.hid != kIddReplace || dialog.window == nullptr) {
+        return;
+    }
+    create_static_text(dialog, "&Search For:", {5, 2, 46, 9});
+    create_native_control(dialog, kTmcSearchText, "EDIT", "",
+                          {5, 13, 154, 12},
+                          WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL);
+    create_native_control(dialog, kTmcSearchBanter, "STATIC", "",
+                          {5, 26, 154, 8}, SS_LEFT);
+    create_static_text(dialog, "&Replace With:", {5, 35, 54, 9});
+    create_native_control(dialog, kTmcReplaceText, "EDIT", "",
+                          {5, 45, 154, 12},
+                          WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL);
+    create_native_control(dialog, kTmcReplaceBanter, "STATIC", "",
+                          {5, 58, 194, 8}, SS_LEFT);
+    create_native_control(dialog, kTmcSearchWholeWord, "BUTTON",
+                          "&Whole Word", {5, 65, 52, 12},
+                          WS_TABSTOP | BS_AUTOCHECKBOX);
+    create_native_control(dialog, kTmcSearchMatchCase, "BUTTON",
+                          "&Match Upper/Lowercase", {5, 77, 95, 12},
+                          WS_TABSTOP | BS_AUTOCHECKBOX);
+    create_native_control(dialog, kTmcSearchConfirm, "BUTTON",
+                          "&Confirm Changes", {130, 65, 71, 12},
+                          WS_TABSTOP | BS_AUTOCHECKBOX);
+    create_native_control(dialog, kTmcOk, "BUTTON", "OK", {164, 6, 34, 14},
+                          WS_TABSTOP | BS_DEFPUSHBUTTON);
+    create_native_control(dialog, kTmcCancel, "BUTTON", "Cancel",
+                          {164, 24, 34, 14}, WS_TABSTOP | BS_PUSHBUTTON);
+    dialog.caption = "Replace";
+    dialog.native_modal = true;
+    read_replace_cab(dialog);
+}
+
+void materialize_confirm_repl_template(DialogState& dialog) {
+    if (dialog.hid != kIddConfirmRepl || dialog.window == nullptr) {
+        return;
+    }
+    create_native_control(dialog, kTmcReplText, "STATIC", "Replace selection?",
+                          {7, 6, 152, 9}, SS_LEFT);
+    create_native_control(dialog, kTmcReplYes, "BUTTON", "&Yes", {7, 19, 34, 14},
+                          WS_TABSTOP | BS_DEFPUSHBUTTON);
+    create_native_control(dialog, kTmcReplNo, "BUTTON", "&No", {44, 19, 34, 14},
+                          WS_TABSTOP | BS_PUSHBUTTON);
+    create_native_control(dialog, kTmcCancel, "BUTTON", "Cancel",
+                          {82, 19, 34, 14}, WS_TABSTOP | BS_PUSHBUTTON);
+    create_native_control(dialog, kTmcReplConfirmCheck, "BUTTON", "&Confirm",
+                          {120, 20, 40, 12}, WS_TABSTOP | BS_AUTOCHECKBOX);
+    set_native_check(dialog, kTmcReplConfirmCheck, 1);
+    dialog.caption = "Replace";
+    dialog.native_modal = true;
+}
+
 void materialize_icon_bar_template(DialogState& dialog) {
     constexpr DWORD combo_style =
         WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWN | CBS_AUTOHSCROLL;
@@ -1849,16 +2115,16 @@ std::string selected_list_text(const ControlState& control_state) {
     if (selection == (combo ? CB_ERR : LB_ERR)) {
         return {};
     }
-    const LRESULT length = SendMessageA(
-        control_state.window, combo ? CB_GETLBTEXTLEN : LB_GETTEXTLEN,
-        selection, 0);
-    if (length == (combo ? CB_ERR : LB_ERR)) {
+    std::vector<char> text(256, '\0');
+    const LRESULT copied = SendMessageA(
+        control_state.window, combo ? CB_GETLBTEXT : LB_GETTEXT, selection,
+        reinterpret_cast<LPARAM>(text.data()));
+    if (copied == (combo ? CB_ERR : LB_ERR) || copied < 0) {
         return {};
     }
-    std::vector<char> text(static_cast<std::size_t>(length) + 1);
-    SendMessageA(control_state.window, combo ? CB_GETLBTEXT : LB_GETTEXT,
-                 selection,
-                 reinterpret_cast<LPARAM>(text.data()));
+    const std::size_t used =
+        (std::min)(static_cast<std::size_t>(copied), text.size() - 1);
+    text[used] = '\0';
     return text.data();
 }
 
@@ -1938,6 +2204,10 @@ void finish_native_dialog(DialogState& dialog, const Tmc result) {
         sync_style_cab(dialog, kTmcDefineStyle);
     } else if (dialog.hid == kIddCharacter) {
         sync_character_cab(dialog);
+    } else if (dialog.hid == kIddSearch) {
+        sync_search_cab(dialog);
+    } else if (dialog.hid == kIddReplace) {
+        sync_replace_cab(dialog);
     }
     if (!invoke_dialog_proc(dialog, kDlmTerm, result)) {
         return;
@@ -2085,6 +2355,17 @@ void handle_dialog_command(const Hdlg handle, const WPARAM w_param,
         invoke_dialog_proc(*dialog, kDlmChange, tmc);
         return;
     }
+    if ((dialog->hid == kIddSearch || dialog->hid == kIddReplace) &&
+        (tmc == kTmcSearchText || tmc == kTmcReplaceText) &&
+        notification == EN_CHANGE && found != dialog->controls.end()) {
+        const int length = GetWindowTextLengthA(found->second.window);
+        std::vector<char> text(static_cast<std::size_t>(length) + 1);
+        GetWindowTextA(found->second.window, text.data(),
+                       static_cast<int>(text.size()));
+        found->second.text = text.data();
+        invoke_dialog_proc(*dialog, kDlmChange, tmc);
+        return;
+    }
     if (dialog->hid == kIddSaveAs && tmc == kTmcSaveDirectoryList &&
         (notification == LBN_SELCHANGE || notification == LBN_DBLCLK)) {
         const LRESULT selection = SendMessageA(
@@ -2133,7 +2414,9 @@ void handle_dialog_command(const Hdlg handle, const WPARAM w_param,
                    (dialog->hid == kIddOpen &&
                     tmc == kTmcOpenCatalog) ||
                    (dialog->hid == kIddNewDoc &&
-                    tmc == kTmcSummary)) {
+                    tmc == kTmcSummary) ||
+                   (dialog->hid == kIddConfirmRepl &&
+                    (tmc == kTmcReplYes || tmc == kTmcReplNo))) {
             if ((dialog->hid == kIddOpen || dialog->hid == kIddSaveAs) &&
                 (tmc == kTmcOk || tmc == kTmcCancel) &&
                 g_active_win95_file_dialog != nullptr &&
@@ -2599,6 +2882,9 @@ Hdlg HdlgStartDlg(DltHeader** dialog_template, Hcab cab, Dli* initializer) {
     materialize_character_template(g_dialogs.at(handle));
     materialize_apply_style_template(g_dialogs.at(handle));
     materialize_define_style_template(g_dialogs.at(handle));
+    materialize_search_template(g_dialogs.at(handle));
+    materialize_replace_template(g_dialogs.at(handle));
+    materialize_confirm_repl_template(g_dialogs.at(handle));
     return handle;
 }
 

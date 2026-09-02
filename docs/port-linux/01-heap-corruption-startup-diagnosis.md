@@ -1,32 +1,32 @@
-# Diagnóstico: corrupción de heap en el arranque de WORD1 (Fedora 44)
+# Diagnosis: heap corruption on WORD1 startup (Fedora 44)
 
-**Fecha:** 2026-08-12 · Fedora 44, GCC 16.1.1, wine-staging 11.0, `gdb` 17.2 y
-`valgrind` 3.27.1 (instalados en esta sesión, con autorización explícita,
-para esta tarea).
+**Date:** 2026-08-12 · Fedora 44, GCC 16.1.1, wine-staging 11.0, `gdb` 17.2 and
+`valgrind` 3.27.1 (installed in this session, with explicit authorization,
+for this task).
 
-**Estado real: reproducido de forma consistente, con dos firmas de
-corrupción distintas según la corrida; punto de crash simbolizado con
-`addr2line` contra el propio binario; origen exacto de la corrupción NO
-aislado — bloqueado por dos problemas de toolchain independientes del bug
-en sí (ver más abajo). Diagnóstico puro: no se tocó ningún archivo de
-código de `src/Opus/`, `src/OpusEtAl/` ni `src/port/` en esta tarea.**
+**Actual status: reproduced consistently, with two distinct corruption
+signatures depending on the run; crash point symbolized with
+`addr2line` against the binary itself; exact origin of the corruption NOT
+isolated, blocked by two toolchain problems independent of the bug
+itself (see below). Pure diagnosis: no code file under `src/Opus/`,
+`src/OpusEtAl/`, or `src/port/` was touched in this task.**
 
-Prerrequisito resuelto antes de empezar: el `HEAD` de esta sesión no
-enlazaba `WORD1.exe.so` (faltaba `opus_shell_spine` en el link de `WORD1`,
-hueco dejado por el commit `ea5f908` — ver
-`01-core-shell-boundary.md`, sección "Verificación cruzada en Fedora 44").
-Se corrigió con una línea en `src/CMakeLists.txt` (agregar
-`target_link_libraries(WORD1 PRIVATE opus_shell_spine)` más el bloque
-`IMPORTED` correspondiente, mismo patrón que las otras 3 libs de núcleo) y
-se reconstruyó. El binario diagnosticado aquí (`bin/WORD1.exe.so`,
-mtime 2026-08-11 23:57 CLT) corresponde al `HEAD` real de esta sesión, no a
-una copia vieja.
+Prerequisite resolved before starting: this session's `HEAD` did not
+link `WORD1.exe.so` (`opus_shell_spine` was missing from `WORD1`'s link,
+a gap left by commit `ea5f908`, see
+`01-core-shell-boundary.md`, section "Cross-verification on Fedora 44").
+Fixed with one line in `src/CMakeLists.txt` (adding
+`target_link_libraries(WORD1 PRIVATE opus_shell_spine)` plus the matching
+`IMPORTED` block, same pattern as the other 3 core libs) and
+rebuilt. The binary diagnosed here (`bin/WORD1.exe.so`,
+mtime 2026-08-11 23:57 CLT) corresponds to this session's real `HEAD`, not
+an old copy.
 
 ---
 
-## 1. Reproducción — dos firmas de corrupción, no una
+## 1. Reproduction, two corruption signatures, not one
 
-**Corrida bajo `gdb` (repetida 5 veces, mismo resultado en las 5):**
+**Run under `gdb` (repeated 5 times, same result all 5):**
 
 ```
 $ gdb -q --batch -ex "run" -ex "bt full" --args wine WORD1.exe.so
@@ -38,7 +38,7 @@ Program received signal SIGABRT, Aborted.
 0x00007ffff7e0bccc in ?? ()
 ```
 
-**Corrida directa (`wine WORD1.exe.so`, sin depurador, repetida 2 veces):**
+**Direct run (`wine WORD1.exe.so`, no debugger, repeated 2 times):**
 
 ```
 $ wine WORD1.exe.so
@@ -50,38 +50,39 @@ free(): invalid next size (normal)
 Assertion failed: NULL != abbrev_entry, file dlls/dbghelp/dwarf.c, line 465
 ```
 
-**Lectura:** dos mensajes distintos de glibc (`malloc(): invalid size
-(unsorted)` vs. `free(): invalid next size (normal)`) para la misma
-secuencia de arranque, sin cambiar una sola línea entre corridas. Es la
-firma característica de una corrupción de heap real (un `write`
-fuera de rango daña metadatos de un chunk de `malloc`), no de un bug
-determinista de lógica: el punto exacto donde el allocator *detecta* el
-daño depende del estado interno del heap en ese momento (qué chunk
-coalesce/split ocurre primero), que a su vez depende de timing y del
-mecanismo de tracing activo (gdb ralentiza y serializa la ejecución,
-valgrind more aún). Ambos son sí-o-sí sobre el mismo hecho: **hay memoria
-de heap escrita fuera de los límites de su bloque antes de que `malloc`/
-`free` lo note.**
+**Reading:** two distinct glibc messages (`malloc(): invalid size
+(unsorted)` vs. `free(): invalid next size (normal)`) for the same
+startup sequence, without changing a single line between runs. This is the
+characteristic signature of real heap corruption (an out-of-range
+`write` damages a `malloc` chunk's metadata), not of a
+deterministic logic bug: the exact point where the allocator *detects*
+the damage depends on the heap's internal state at that moment (which chunk
+coalesce/split happens first), which in turn depends on timing and on
+which tracing mechanism is active (gdb slows down and serializes execution,
+valgrind more so). Both point to the same fact regardless: **heap
+memory is being written outside the bounds of its block before `malloc`/
+`free` notices it.**
 
-En todos los casos el punto de arranque hasta el fallo es idéntico:
-`loader_init` de wine-staging, un stub de `DwmSetWindowAttribute`, y
-entonces la corrupción. Consistente y reproducible, no intermitente en el
-sentido de "a veces no pasa" — siempre pasa, solo cambia *cómo* se anuncia.
+In every case the startup path up to the failure is identical:
+wine-staging's `loader_init`, a `DwmSetWindowAttribute` stub, and
+then the corruption. Consistent and reproducible, not intermittent in
+the sense of "sometimes it doesn't happen"; it always happens, only *how* it
+is announced changes.
 
 ---
 
-**MATIZADO — ver §12 (punto 2).** El síntoma central de esta sección
-(`info sharedlibrary` vacío) tiene una explicación alternativa suficiente
-—leerlo después de que el inferior ya salió— confirmada en un entorno sin
-`wine-preloader`. La atribución de causa a `wine-preloader` hecha aquí (en
-Fedora 44/wine-staging 11.0, donde ese binario sí existe) no fue puesta a
-prueba de nuevo ni reprobada en esta sesión: sigue siendo la explicación
-más probable *en ese entorno específico*, pero ya no es la única
-explicación posible para el síntoma observado.
+**QUALIFIED, see §12 (point 2).** The central symptom of this section
+(`info sharedlibrary` empty) has a sufficient alternative explanation
+(reading it after the inferior has already exited) confirmed in an environment without
+`wine-preloader`. The attribution of cause to `wine-preloader` made here (on
+Fedora 44/wine-staging 11.0, where that binary does exist) was not tested
+again or refuted in this session: it remains the most likely explanation
+*in that specific environment*, but it is no longer the only possible
+explanation for the observed symptom.
 
-## 2. `gdb`: la traza no es utilizable — causa aislada, no es el bug
+## 2. `gdb`: the trace is not usable, an isolated cause, not the bug
 
-`bt full` después del `SIGABRT` no da una pila real:
+`bt full` after the `SIGABRT` does not give a real stack:
 
 ```
 #0  0x00007ffff7e0bccc in ?? ()
@@ -90,51 +91,51 @@ explicación posible para el síntoma observado.
 #3  0x0000000000000000 in ?? ()
 ```
 
-Los frames `#1`/`#2` son basura (se leen como texto ASCII arbitrario si se
-decodifican los bytes — no son direcciones de retorno reales). Investigado
-a fondo antes de descartarlo como ruido:
+Frames `#1`/`#2` are garbage (they read as arbitrary ASCII text if the
+bytes are decoded, they are not real return addresses). Investigated
+in depth before dismissing it as noise:
 
-- `info symbol $pc` → `No symbol matches $pc`, **a pesar de** que
-  `info proc mappings` confirma que `$pc` (`0x7ffff7e0bccc`) cae dentro del
-  rango cargado de `/usr/lib64/libc.so.6` (`0x7ffff7d97000`-`0x7ffff7f88000`).
-- `info sharedlibrary` devuelve **vacío** — ninguna biblioteca compartida
-  registrada, ni siquiera `libc.so.6` o `ntdll.so`, pese a estar mapeadas.
-- Se descargaron símbolos de depuración reales vía `debuginfod` (`set
-  debuginfod enabled on`): 6.75 MB de `libc.so.6`, 2.76 MB de `ntdll.so`,
-  más `libunwind`. No cambió nada — el problema no es falta de símbolos,
-  es que gdb nunca asoció ningún objeto de biblioteca a esas direcciones.
-- Se forzó un rescaneo con el comando `sharedlibrary` después de la señal:
-  mismo resultado, vacío.
+- `info symbol $pc` gives `No symbol matches $pc`, **despite**
+  `info proc mappings` confirming that `$pc` (`0x7ffff7e0bccc`) falls within
+  the loaded range of `/usr/lib64/libc.so.6` (`0x7ffff7d97000`-`0x7ffff7f88000`).
+- `info sharedlibrary` returns **empty**, no shared library
+  registered at all, not even `libc.so.6` or `ntdll.so`, despite being mapped.
+- Real debug symbols were downloaded via `debuginfod` (`set
+  debuginfod enabled on`): 6.75 MB of `libc.so.6`, 2.76 MB of `ntdll.so`,
+  plus `libunwind`. Nothing changed; the problem is not missing symbols,
+  it is that gdb never associated any library object with those addresses.
+- A rescan was forced with the `sharedlibrary` command after the signal:
+  same result, empty.
 
-**Causa identificada, no solo sospechada:** `wine-preloader` (el binario
-real que `wine` ejecuta primero — visible en la traza como `process NNNNN
+**Cause identified, not merely suspected:** `wine-preloader` (the actual
+binary that `wine` runs first, visible in the trace as `process NNNNN
 is executing new program: /usr/lib64/wine-wow64/wine/x86_64-unix/
-wine-preloader`) es un cargador ELF propio de Wine que mapea manualmente
-`ntdll.so`, las bibliotecas del sistema y a sí mismo **sin pasar por el
-protocolo estándar de `_dl_debug_state`/`r_debug` de glibc** — reserva a
-mano el espacio de direcciones bajo para compatibilidad de layout Win32
-antes de que corra ningún cargador dinámico normal. `gdb` (a través de
-`solib-svr4.c`) depende exactamente de ese protocolo para poblar `info
-sharedlibrary`. Como nunca se activa de la forma que `gdb` espera, la
-resolución de símbolos para *todo el proceso* (no solo `WORD1.exe.so`)
-queda rota, independientemente de si hay símbolos de depuración
-disponibles. **Es una limitación conocida de depurar binarios Winelib con
-`gdb` vainilla, no un defecto de este build ni de esta tarea** — la vía
-recomendada por el propio proyecto Wine es `winedbg --gdb`, probada en la
-sección siguiente.
+wine-preloader`) is Wine's own ELF loader that manually maps
+`ntdll.so`, the system libraries, and itself **without going through
+glibc's standard `_dl_debug_state`/`r_debug` protocol**; it reserves the
+low address space by hand for Win32 layout compatibility before any
+normal dynamic loader runs. `gdb` (through
+`solib-svr4.c`) depends exactly on that protocol to populate `info
+sharedlibrary`. Since it never activates the way `gdb` expects, symbol
+resolution for *the whole process* (not just `WORD1.exe.so`) is
+broken, regardless of whether debug symbols are
+available. **This is a known limitation of debugging Winelib binaries with
+vanilla `gdb`, not a defect of this build or of this task**; the path
+recommended by the Wine project itself is `winedbg --gdb`, tried in
+the next section.
 
 ---
 
-**MATIZADO — ver §12.** No verificado ni reproducido de nuevo en esta
-sesión: el entorno usado aquí (Debian 13/wine-10.0/GCC 14.2.0) no es el de
-esta sección (Fedora 44/wine-staging 11.0/GCC 16.1.1), y `winedbg` no se
-probó. Se deja tal cual, sin refutar ni confirmar.
+**QUALIFIED, see §12.** Not re-verified or reproduced again in this
+session: the environment used here (Debian 13/wine-10.0/GCC 14.2.0) is not
+the one from this section (Fedora 44/wine-staging 11.0/GCC 16.1.1), and
+`winedbg` was not tried. Left as is, neither refuted nor confirmed.
 
-## 3. `winedbg --gdb`: bloqueado por un bug de Wine, no del build
+## 3. `winedbg --gdb`: blocked by a Wine bug, not a build issue
 
-`winedbg` es el puente diseñado para este caso exacto (entiende el layout
-PE + ELF de Wine, y expone un proxy compatible con `gdb`). Falla antes de
-llegar a ejecutar nada:
+`winedbg` is the bridge designed for exactly this case (it understands
+Wine's PE + ELF layout, and exposes a `gdb`-compatible proxy). It fails
+before it gets to run anything:
 
 ```
 $ printf 'c\nbt 20\n...' | winedbg --gdb "$(pwd)/WORD1.exe.so"
@@ -145,50 +146,49 @@ WineDbg starting on pid 0130
 Assertion failed: NULL != abbrev_entry, file dlls/dbghelp/dwarf.c, line 465
 ```
 
-**El propio `dbghelp` de Wine se cae** intentando leer el DWARF de
-`WORD1.exe.so` — antes incluso de llegar al `run`/`continue`. Mismo
-`assert` que ya aparece en la corrida directa sin depurador (§1): no es un
-efecto secundario de `winedbg`, es `dbghelp.dll` (la misma biblioteca que
-usa **el propio probe de arranque del proyecto**,
-`port/original/opus_original_startup_probe.cpp`, vía `SymInitialize`/
-`SymFromAddr`/`StackWalk64`) fallando al parsear el DWARF que GCC 16
-genera para este binario.
+**Wine's own `dbghelp` crashes** trying to read the DWARF of
+`WORD1.exe.so`, before even reaching `run`/`continue`. It is the same
+`assert` already seen in the direct run without a debugger (§1): it is not
+a side effect of `winedbg`, it is `dbghelp.dll` (the same library used by
+**the project's own startup probe**,
+`port/original/opus_original_startup_probe.cpp`, via `SymInitialize`/
+`SymFromAddr`/`StackWalk64`) failing to parse the DWARF that GCC 16
+generates for this binary.
 
-**Esto explica, con evidencia y no por sospecha, un hallazgo colateral
-importante:** por qué `WORD1-crash.txt` (el log que el propio probe del
-proyecto escribe en cada arranque, ver `build/WORD1-crash.txt`) **nunca
-tiene nombres de función ni líneas — solo `WORD1+0xoffset` crudo.** No es
-una limitación del probe ni de `dbghelp` en general: es que `dbghelp.dll`
-de Wine no puede parsear el formato de DWARF que emite GCC 16 para este
-binario, así que cualquier intento de simbolizar en tiempo de ejecución
-(el probe, `winedbg`) queda ciego. `addr2line` (offline, fuera de Wine,
-§5) sí puede leerlo — es un problema del parser de Wine, no del contenido
-del DWARF.
+**This explains, with evidence and not just suspicion, an important
+side finding:** why `WORD1-crash.txt` (the log the project's own probe
+writes on every startup, see `build/WORD1-crash.txt`) **never
+has function names or line numbers, only raw `WORD1+0xoffset`.** It is not
+a limitation of the probe or of `dbghelp` in general: it is that Wine's
+`dbghelp.dll` cannot parse the DWARF format GCC 16 emits for this
+binary, so any attempt to symbolize at runtime (the probe, `winedbg`)
+is blind. `addr2line` (offline, outside Wine, §5) can read it, it is
+a problem with Wine's parser, not with the DWARF content itself.
 
-No investigado más a fondo (fuera de alcance de esta tarea: es un bug de
-Wine, no del port). Reportable aguas arriba si en algún momento se
-necesita que el probe simbolice en vivo.
+Not investigated further (out of scope for this task: it is a Wine
+bug, not a port bug). Worth reporting upstream if the probe ever
+needs to symbolize live.
 
 ---
 
-## 4. `valgrind`: dos intentos, ninguno da señal utilizable
+## 4. `valgrind`: two attempts, neither gives a usable signal
 
-**Sin `--trace-children`:** valgrind solo instrumenta el proceso `wine`
-supervisor, que hace `exec` hacia el binario real sin que valgrind lo
-siga — cero errores reportados porque nunca llegó a ver el proceso que
-realmente corrompe memoria:
+**Without `--trace-children`:** valgrind only instruments the `wine`
+supervisor process, which does an `exec` into the real binary without
+valgrind following it; zero errors reported because it never actually saw
+the process that really corrupts memory:
 
 ```
 $ valgrind --error-exitcode=99 --track-origins=yes wine WORD1.exe.so
 ==47068== Memcheck, a memory error detector
 ==47068== Command: wine WORD1.exe.so
 ==47068== Parent PID: 47067
-[proceso termina, exit=0, sin errores -- porque no rastreó el proceso hijo]
+[process terminates, exit=0, no errors -- because it never tracked the child process]
 ```
 
-**Con `--trace-children=yes`:** rompe la reserva de espacio de
-direcciones que `wine-preloader` necesita hacer para el layout Win32,
-antes de llegar siquiera a cargar `WORD1.exe.so`:
+**With `--trace-children=yes`:** it breaks the address-space reservation
+that `wine-preloader` needs to make for the Win32 layout, before even
+getting to load `WORD1.exe.so`:
 
 ```
 $ valgrind --trace-children=yes --track-origins=yes wine WORD1.exe.so
@@ -196,19 +196,19 @@ preloader: Warning: failed to reserve range 0000000000110000-0000000068000000
 wine: dlls/ntdll/unix/virtual.c:3704: virtual_init: Assertion `view_block_start != MAP_FAILED' failed.
 ```
 
-Es una incompatibilidad conocida entre el gestor de memoria propio de
-Valgrind y la reserva de bajo-espacio-de-direcciones de `wine-preloader`
-para procesos de 64 bits — no específica de este build. No se probó más
-flags de Valgrind (`--soname-synonyms`, reservas manuales) por estar fuera
-del alcance de "diagnóstico, sin arreglar nada" de esta tarea: son ajustes
-de entorno de Wine/Valgrind, no del bug.
+This is a known incompatibility between Valgrind's own memory
+manager and `wine-preloader`'s low-address-space reservation for 64-bit
+processes; it is not specific to this build. No further Valgrind flags
+were tried (`--soname-synonyms`, manual reservations) since that would be
+out of scope for this task's "diagnosis only, fix nothing": they are
+Wine/Valgrind environment tweaks, not the bug.
 
 ---
 
-## 5. Lo que sí funcionó: `addr2line` directo contra el DWARF del binario
+## 5. What did work: `addr2line` directly against the binary's DWARF
 
-Sin pasar por el loader de Wine ni por `dbghelp`, leyendo el ELF
-`WORD1.exe.so` (no stripped, con `debug_info`) directamente:
+Without going through Wine's loader or through `dbghelp`, reading the
+`WORD1.exe.so` ELF (not stripped, with `debug_info`) directly:
 
 ```
 $ addr2line -e WORD1.exe.so -f -C -i 0x1FD57C
@@ -216,8 +216,8 @@ N_FormatLineDxa
 /home/exia/word1/msword/src/port/original/opus_asm_resn2_adapters.cpp:185
 ```
 
-El log del propio probe (`build/WORD1-crash.txt`, escrito en esta sesión,
-arranque real bajo `wine` sin depurador) da:
+The project's own probe log (`build/WORD1-crash.txt`, written in this
+session, from a real startup under `wine` without a debugger) gives:
 
 ```
 Exception 0xC0000005 at 0x00006FFFFFC1B75F
@@ -229,14 +229,13 @@ stack+0x0: WORD1+0x1FD57C
 [...]
 ```
 
-Los tres `unwind #N` son los únicos frames que `StackWalk64` (usado por el
-probe) pudo verificar de verdad; el resto (`stack+0xNN`) es un barrido
-heurístico de la pila en busca de valores que caigan dentro del rango de
-`WORD1` — útil como pista, no como prueba de una secuencia de llamadas
-real.
+The three `unwind #N` entries are the only frames `StackWalk64` (used by
+the probe) could actually verify; the rest (`stack+0xNN`) is a
+heuristic sweep of the stack for values that fall inside `WORD1`'s
+range, useful as a lead, not as proof of a real call sequence.
 
-**Frame verificado #1, simbolizado — el hallazgo concreto de esta
-tarea:**
+**Verified frame #1, symbolized, the concrete finding of this
+task:**
 
 ```
 WORD1+0x1FD57C → N_FormatLineDxa
@@ -247,39 +246,39 @@ WORD1+0x1FD57C → N_FormatLineDxa
       }
 ```
 
-Es un adaptador nativo de una sola línea que llama directo a
-`C_FormatLineDxa` — el motor real de formateo de línea (paginación, el
-mismo subsistema que documenta B1.3/B2 de `01-core-shell-boundary.md`).
+It is a one-line native adapter that calls straight into
+`C_FormatLineDxa`, the real line-formatting engine (pagination, the
+same subsystem documented in B1.3/B2 of `01-core-shell-boundary.md`).
 
-**Frame #0** (el punto exacto del fallo, `write` a `0x0`) es la dirección
-cruda `0x00006FFFFFC1B75F` — **no cae dentro del rango de `WORD1`** (no
-tiene prefijo `WORD1+`), así que es código de algún otro módulo cargado
-(muy probablemente una DLL de Wine — `user32`/`gdi32`/`ntdll`, dado el
-rango de dirección). No se pudo simbolizar en esta tarea: `addr2line`
-solo tiene el DWARF de `WORD1.exe.so`, no el de las `.so` de Wine, y
-`winedbg`/`dbghelp` (que sí sabría resolver eso) está roto (§3).
+**Frame #0** (the exact point of failure, a `write` to `0x0`) is the raw
+address `0x00006FFFFFC1B75F`, **which does not fall inside `WORD1`'s
+range** (no `WORD1+` prefix), so it is code from some other loaded
+module (most likely a Wine DLL, `user32`/`gdi32`/`ntdll`, given the
+address range). It could not be symbolized in this task: `addr2line`
+only has the DWARF for `WORD1.exe.so`, not for Wine's `.so` files, and
+`winedbg`/`dbghelp` (which would know how to resolve that) is broken (§3).
 
-**Lectura de conjunto, con cautela explícita sobre qué es evidencia dura y
-qué es lectura razonable:** `N_FormatLineDxa` llama a `C_FormatLineDxa`, y
-el fallo ocurre *dentro de* esa llamada, en código fuera de `WORD1` —
-consistente con (no probado como) una llamada a través de un puntero de
-función dañado, o una escritura a través de un puntero ya liberado/movido
-que apunta a memoria fuera del proceso o a una página no mapeada en `0x0`.
-Encaja con el patrón de la arquitectura documentada en
-`docs/port-linux/00-reconnaissance.md` §1.7: el motor resuelve comandos
-dinámicamente vía `GetProcAddress` sobre tablas generadas por MKCMD, así
-que un puntero de función corrupto en esa zona (tabla de despacho, no la
-pila) produciría exactamente esta forma de fallo. **Esto es una lectura
-razonada, no una prueba** — no se aisló el `write` que corrompe el heap en
-sí, solo su consecuencia unos pasos después.
+**Overall reading, with explicit caution about what is hard evidence and
+what is a reasonable interpretation:** `N_FormatLineDxa` calls
+`C_FormatLineDxa`, and the failure occurs *inside* that call, in code
+outside `WORD1`; consistent with (not proven as) a call through a
+damaged function pointer, or a write through an already-freed/moved
+pointer that points to memory outside the process or to an unmapped page
+at `0x0`. This fits the architecture pattern documented in
+`docs/port-linux/00-reconnaissance.md` §1.7: the engine resolves commands
+dynamically via `GetProcAddress` over tables generated by MKCMD, so a
+corrupt function pointer in that area (dispatch table, not the stack)
+would produce exactly this shape of failure. **This is a reasoned
+interpretation, not proof**; the `write` that corrupts the heap itself was
+not isolated, only its consequence a few steps later.
 
-**Rastro heurístico** (mismo método, offsets de `stack+0xNN`, no
-verificados por `StackWalk64` — tratar como pista de la zona del código,
-no como secuencia de llamadas confirmada):
+**Heuristic trail** (same method, `stack+0xNN` offsets, not
+verified by `StackWalk64`, treat as a lead about the code area,
+not a confirmed call sequence):
 
-| Offset | Símbolo | Ubicación |
+| Offset | Symbol | Location |
 |---|---|---|
-| `0x4C727B`, `0x457EFD`, `0x3AC0D8` | *(sin símbolo — código externo a `WORD1`, no resuelto)* | — |
+| `0x4C727B`, `0x457EFD`, `0x3AC0D8` | *(no symbol, code external to `WORD1`, not resolved)* | -- |
 | `0x200FC2`, `0x200CB3` | `configure_word95_menus` | `opus_win95_chrome.cpp:425`, `:381` |
 | `0x1FF0DF` | `NatRulerMarkWndProc` | `opus_asm_wproc.cpp:187` |
 | `0x1FDD0C` | `N_FillIfldFlcd` | `opus_asm_native_adapters.cpp:286` |
@@ -290,206 +289,205 @@ no como secuencia de llamadas confirmada):
 | `0x1EF77B` | `CmdUndo` | `src/Opus/wordtech/undo.c:206` |
 | `0x1FAA16` | `invoke_macro_ints_n` | `opus_asm_misc.cpp:81` |
 | `0xE89A1` | `ExecEndProc` | `src/Opus/interp/elcore.c:3643` |
-| `0x2DE5DA`, `0x2DE881` | `InvokeValue<...>` (plantilla) | `opus_elx_dispatch.cpp:34`, `:27` |
+| `0x2DE5DA`, `0x2DE881` | `InvokeValue<...>` (template) | `opus_elx_dispatch.cpp:34`, `:27` |
 
-Leído de abajo hacia arriba (offsets de pila más altos = llamadas más
-externas si el barrido heurístico reflejara la pila real, que no está
-garantizado): el patrón visible —despacho de macro/ELX vía plantillas
-`InvokeValue`, pasando por `ExecEndProc`, `CmdUndo`, rutinas de
-diccionario ortográfico, configuración de menús Win95, y terminando en
-formateo de línea— es compatible con una secuencia de arranque real
-(inicialización de menús → diccionario → deshacer → macro nativa →
-formateo), pero **de nuevo: es un barrido de coincidencias de texto en la
-pila, no una pila confirmada.** Se reporta como pista para acotar dónde
-mirar, no como el camino de ejecución probado.
-
----
-
-## 6. Origen de la corrupción: no aislado en esta tarea
-
-**No se identificó la instrucción exacta que escribe fuera de rango.** Lo
-que sí queda establecido con evidencia real:
-
-1. Hay corrupción de heap real y reproducible (glibc lo detecta, con dos
-   mensajes distintos según la corrida — §1).
-2. El punto donde el daño se manifiesta como violación de acceso (no el
-   origen) está en código externo a `WORD1`, alcanzado desde
-   `N_FormatLineDxa`/`C_FormatLineDxa` (§5) — un `write` a `0x0`.
-3. Las dos vías estándar para ir más allá (`gdb`, `valgrind`) están
-   bloqueadas por incompatibilidades de entorno/toolchain **independientes
-   del bug**: el cargador propio de Wine rompe el rastreo de símbolos de
-   `gdb` (§2), y `dbghelp`/`winedbg` no pueden parsear el DWARF de GCC 16
-   en este binario (§3), y `valgrind --trace-children` choca con la
-   reserva de memoria de `wine-preloader` (§4).
-
-## 7. Próximos pasos sugeridos — no implementados, a la espera de decisión
-
-- **ASan.** Es el candidato más directo para aislar el `write` real: un
-  build con `-fsanitize=address` detectaría la escritura fuera de rango
-  en el momento exacto, no varios pasos después como ahora. Requiere
-  reconfigurar el build (`CMAKE_C_FLAGS`/`CMAKE_CXX_FLAGS` para el target
-  `WORD1`/`opus_original_engine`, o un preset nuevo) — **no se aplicó en
-  esta tarea**, según lo pactado; se propone y se espera confirmación.
-  Riesgo conocido de antemano: ASan y el propio manejo de excepciones/SEH
-  de Wine no siempre conviven bien (el manejador de señales de ASan puede
-  chocar con el de Wine) — habría que probarlo y estar preparado para que
-  dé una señal distinta a la esperada, no asumir que "simplemente
-  funciona".
-- **Symbolizar frame #0.** Encontrar qué módulo de Wine cubre el rango de
-  `0x00006FFFFFC1B75F` (vía `addr2line`/`nm` contra las `.so` de Wine
-  instaladas, ya que `winedbg` no sirve) acotaría si el salto es a
-  `user32`/`gdi32`/`ntdll`, lo que ayudaría a decidir si el puntero
-  corrupto es una tabla de comandos (§1.7 de `00-reconnaissance.md`), un
-  callback de ventana, o algo distinto.
-- **Revisar `C_FormatLineDxa` y su vecindario en `Opus/wordtech/`** a mano
-  (sin herramientas dinámicas) buscando escrituras con índice/tamaño no
-  acotado alrededor de estructuras que dependan de `long`/`DWORD` de 8
-  bytes bajo LP64 — el mismo patrón de bug que ya causó daño real y
-  confirmado en BITAPP (`00-reconnaissance.md`, Fase 1, `bitapp.h:29`).
-  No se hizo en esta tarea por ser ya análisis de causa, no diagnóstico de
-  síntoma.
-- **Reportar el assert de `dbghelp.dll` aguas arriba a Wine**, si el
-  proyecto llega a depender de que el probe propio simbolice en vivo —
-  hoy es un bloqueador de tooling, no del port.
+Read from bottom to top (higher stack offsets meaning outer calls, if
+the heuristic sweep reflected the real stack, which is not
+guaranteed): the visible pattern (macro/ELX dispatch via `InvokeValue`
+templates, passing through `ExecEndProc`, `CmdUndo`, spell-dictionary
+routines, Win95 menu configuration, and ending in line formatting) is
+compatible with a real startup sequence (menu initialization → dictionary
+→ undo → native macro → formatting), but **again: this is a sweep of
+text matches on the stack, not a confirmed stack.** Reported as a lead
+to narrow down where to look, not as a proven execution path.
 
 ---
 
-**MATIZADO — ver §12 (punto 4).** El resultado de ASan en sí (pasos 1-2,
-Fedora, con `wine-preloader` real presente) no se puso en duda. Lo que se
-matiza es la generalización de cierre ("tercera de tres herramientas
-dinámicas bloqueada por la misma fricción"): un cuarto instrumento
-dinámico (el checker de heap de glibc) sí se mapea y sí corre bajo Wine en
-un entorno sin `wine-preloader` — con el matiz de que su valor
-diagnóstico para este bug específico es limitado (ver §12).
+## 6. Origin of the corruption: not isolated in this task
 
-## 8. ASan — descartado, no solo propuesto (2026-08-12)
+**The exact instruction that writes out of bounds was not identified.**
+What is established with real evidence:
 
-Se probó el candidato de §7 en aislamiento (binario Winelib trivial en
-`/tmp`, sin tocar `out/linux-winelib-*` ni ningún archivo de código) antes
-de invertir en reconfigurar el build real.
+1. There is real, reproducible heap corruption (glibc detects it, with two
+   distinct messages depending on the run, §1).
+2. The point where the damage manifests as an access violation (not the
+   origin) is in code external to `WORD1`, reached from
+   `N_FormatLineDxa`/`C_FormatLineDxa` (§5), a `write` to `0x0`.
+3. The two standard avenues for going further (`gdb`, `valgrind`) are
+   blocked by environment/toolchain incompatibilities **independent of
+   the bug**: Wine's own loader breaks `gdb`'s symbol tracking (§2), and
+   `dbghelp`/`winedbg` cannot parse the DWARF from GCC 16
+   in this binary (§3), and `valgrind --trace-children` collides with
+   `wine-preloader`'s memory reservation (§4).
 
-**Paso 1 — `winegcc` no propaga `-fsanitize=address` al link final.** Su
-driver arma el comando de link él mismo y descarta la flag: el `.o` se
-compila instrumentado, pero el link final (`gcc -m64 -shared ... -ldl -lm
--lc`, sin `-fsanitize=address` ni `-lasan`) deja `__asan_init`/
-`__asan_version_mismatch_check_v8` sin resolver (`ld: undefined
-reference`, `winegcc: /usr/bin/gcc failed`, código de salida 2).
-Confirmado con `winegcc -v` mostrando el comando de link real emitido.
-Se resuelve pasando `-lasan` explícito (`-Wl,--no-as-needed -lasan
--lpthread -ldl -lrt -lm`): el binario linkea y produce `t.exe`/`t.exe.so`.
+## 7. Suggested next steps, not implemented, pending a decision
 
-**Paso 2 — corre bajo `wine` con `LD_PRELOAD=libasan.so`, y falla en la
-inicialización del propio ASan, antes de llegar a `main`:**
+- **ASan.** It is the most direct candidate for isolating the real
+  `write`: a build with `-fsanitize=address` would catch the
+  out-of-range write at the exact moment, not several steps later as
+  now. Requires reconfiguring the build (`CMAKE_C_FLAGS`/`CMAKE_CXX_FLAGS`
+  for the `WORD1`/`opus_original_engine` target, or a new preset),
+  **not applied in this task**, as agreed; proposed and awaiting
+  confirmation. Known risk beforehand: ASan and Wine's own SEH/exception
+  handling do not always coexist well (ASan's signal handler can clash
+  with Wine's), it would need to be tried and one should be prepared for
+  a different signal than expected, not assume it "just works".
+- **Symbolize frame #0.** Finding which Wine module covers the range of
+  `0x00006FFFFFC1B75F` (via `addr2line`/`nm` against the installed
+  Wine `.so` files, since `winedbg` is not usable) would narrow down
+  whether the jump lands in `user32`/`gdi32`/`ntdll`, which would help
+  decide whether the corrupt pointer is a command table (§1.7 of
+  `00-reconnaissance.md`), a window callback, or something else.
+- **Review `C_FormatLineDxa` and its neighborhood in `Opus/wordtech/`**
+  by hand (no dynamic tools) looking for unbounded index/size writes
+  around structures that depend on `long`/`DWORD` being 8 bytes under
+  LP64, the same bug pattern that already caused real, confirmed damage
+  in BITAPP (`00-reconnaissance.md`, Phase 1, `bitapp.h:29`).
+  Not done in this task since it is already root-cause analysis, not
+  symptom diagnosis.
+- **Report the `dbghelp.dll` assert upstream to Wine**, if the project
+  ever comes to depend on the probe symbolizing live; today it is a
+  tooling blocker, not a port blocker.
+
+---
+
+**QUALIFIED, see §12 (point 4).** The ASan result itself (steps 1-2,
+Fedora, with `wine-preloader` genuinely present) was not called into
+question. What is qualified is the closing generalization ("third of
+three dynamic tools blocked by the same friction"): a fourth dynamic
+instrument (glibc's heap checker) does map and does run under Wine in
+an environment without `wine-preloader`, with the caveat that its
+diagnostic value for this specific bug is limited (see §12).
+
+## 8. ASan, ruled out, not just proposed (2026-08-12)
+
+The §7 candidate was tried in isolation (a trivial Winelib binary in
+`/tmp`, without touching `out/linux-winelib-*` or any code file) before
+investing in reconfiguring the real build.
+
+**Step 1, `winegcc` does not propagate `-fsanitize=address` to the final
+link.** Its driver builds the link command itself and drops the flag: the
+`.o` compiles instrumented, but the final link (`gcc -m64 -shared ... -ldl -lm
+-lc`, without `-fsanitize=address` or `-lasan`) leaves `__asan_init`/
+`__asan_version_mismatch_check_v8` unresolved (`ld: undefined
+reference`, `winegcc: /usr/bin/gcc failed`, exit code 2).
+Confirmed with `winegcc -v` showing the actual link command emitted.
+Resolved by passing `-lasan` explicitly (`-Wl,--no-as-needed -lasan
+-lpthread -ldl -lrt -lm`): the binary links and produces `t.exe`/`t.exe.so`.
+
+**Step 2, it runs under `wine` with `LD_PRELOAD=libasan.so`, and fails
+during ASan's own initialization, before reaching `main`:**
 
 ```
 ==PID==ERROR: AddressSanitizer failed to deallocate 0xc800 (51200) bytes
 at address 0x00007ffb3800 (error code: 22)
 ```
 
-Se probaron cuatro combinaciones de `ASAN_OPTIONS`
+Four combinations of `ASAN_OPTIONS` were tried
 (`allocator_may_return_null=1`, `protect_shadow_gap=0`,
-`verify_asan_link_order=0`, y las cuatro juntas) más
-`WINEPRELOADRESERVE=0x0-0x0` (intento de desactivar la reserva de
-bajo-espacio-de-direcciones de `wine-preloader`) — mismo error en los
-cinco casos, sin cambio en el mensaje ni en el código de retorno.
+`verify_asan_link_order=0`, and all four together) plus
+`WINEPRELOADRESERVE=0x0-0x0` (an attempt to disable `wine-preloader`'s
+low-address-space reservation), same error in all five cases, no change
+in the message or the return code.
 
-**Lectura:** es la misma clase de incompatibilidad que ya bloqueaba
-`valgrind --trace-children` en §4 — un gestor de memoria externo que
-reserva/desmapea su propio espacio de direcciones choca con la reserva
-que `wine-preloader` hace por adelantado para el layout Win32, antes de
-que corra ningún constructor de biblioteca. No es un bug de ASan ni de
-este build: es la tercera herramienta dinámica de las tres intentadas
-(`gdb`/`winedbg` en §2-3, `valgrind` en §4, ahora ASan) bloqueada por el
-mismo tipo de fricción de toolchain Winelib/x86-64, y no por el bug en
-sí. **Descartado como vía — no se reconfiguró el build real, no queda
-como "pendiente de intentar".**
+**Reading:** it is the same class of incompatibility that already
+blocked `valgrind --trace-children` in §4, an external memory manager
+that reserves/unmaps its own address space clashes with the reservation
+`wine-preloader` makes ahead of time for the Win32 layout, before any
+library constructor runs. This is not a bug in ASan or in
+this build: it is the third dynamic tool out of three tried
+(`gdb`/`winedbg` in §2-3, `valgrind` in §4, now ASan) blocked by the
+same kind of Winelib/x86-64 toolchain friction, not by the bug itself.
+**Ruled out as an avenue, the real build was not reconfigured, it is not
+left as "still to try".**
 
-## 9. Revisión manual de `C_FormatLineDxa` — arrancada, sin causa raíz aislada aún
+## 9. Manual review of `C_FormatLineDxa`, started, no root cause isolated yet
 
-Primer tramo del último punto de §7 ("revisar `C_FormatLineDxa` y su
-vecindario a mano"). Alcance cubierto en esta sesión, con evidencia:
+First stretch of the last item of §7 ("review `C_FormatLineDxa` and its
+neighborhood by hand"). Scope covered in this session, with evidence:
 
-- **Los macros `CwFromCch`/`FChngSizeHCw`/`HAllocateCw` que gobiernan el
-  buffer `vhgrpchr` (la tabla de runs `CHR`/`CHRV`/`CHRT`/... que
-  `C_FormatLineDxa` llena) se verificaron consistentes, no son el bug.**
-  `CwFromCch(cch)` (`wordtech/word.h:196`) usa `sizeof(int)` — 4 bytes
-  tanto en Win16 original (`int` de 2 bytes → la unidad "cw" real ahí es
-  de 2 bytes) como en este build GCC x64 (`int` de 4 bytes → unidad "cw"
-  de 4 bytes). El macro original `heap.h:84`
-  (`FChngSizeHCw(h,cw,f) = FChngSizeHCb(h,(cw)<<1,f)`, asume unidad de 2
-  bytes) **no se usa en este build**: `heap.h:3-5` toma la rama
-  `#ifdef OPUS_X64` y solo incluye `opus_x64_heap.h`, cuya versión
-  (`FChngSizeHCw(h,cw,shrink) = OpusFChngSizeHCb(h, cw*sizeof(int),
-  shrink)`) multiplica por 4, no por 2 — coherente con la nueva unidad de
-  `CwFromCch` bajo `int` de 4 bytes. Sin mezcla de las dos definiciones
-  confirmada por lectura directa de `heap.h`. El patrón de crecimiento en
-  `FExpandGrpchr` (`fetch1.c:838-853`, +25% con reserva de `cbCHRE`) y su
-  único call site relevante también se leyeron completos — sin señal de
-  desajuste de tamaño.
-- `cbCHR`/`cbCHRT`/`cbCHRV`/`cbCHRDF`/`cbCHRFG` (`wordtech/format.h`) son
-  todos `sizeof(struct ...)` calculados por el propio compilador — a
-  diferencia del bug ya confirmado de `bitapp.h:29` (`DWORD` fijo
-  serializado contra un formato de archivo externo), esta tabla es
-  interna y autoconsistente: no hay una constante de formato fija de por
-  medio que pueda desalinearse bajo LP64. Se descarta como clase de bug
-  para este buffer específico.
-- Los ~15 puntos donde `vbchrMac`/`bchrPrev`/`ffs.bchr` se comparan
-  contra `vbchrMax` antes de indexar `(**vhgrpchr)[...]` (grep completo
-  de `format.c`) están todos guardados (`if ((vbchrMac += cbCHR...) <=
-  vbchrMax ...)` o equivalente) — no se encontró un guard faltante en
-  esta pasada, pero **no se verificó cada rama a mano línea por línea**,
-  solo el patrón general del guard.
+- **The `CwFromCch`/`FChngSizeHCw`/`HAllocateCw` macros that govern the
+  `vhgrpchr` buffer (the `CHR`/`CHRV`/`CHRT`/... run table that
+  `C_FormatLineDxa` fills) were verified to be consistent; they are not the
+  bug.** `CwFromCch(cch)` (`wordtech/word.h:196`) uses `sizeof(int)`,
+  4 bytes both in the original Win16 (`int` of 2 bytes, so the real "cw"
+  unit there is 2 bytes) and in this GCC x64 build (`int` of 4 bytes,
+  so a "cw" unit of 4 bytes). The original macro `heap.h:84`
+  (`FChngSizeHCw(h,cw,f) = FChngSizeHCb(h,(cw)<<1,f)`, assumes a 2-byte
+  unit) **is not used in this build**: `heap.h:3-5` takes the
+  `#ifdef OPUS_X64` branch and only includes `opus_x64_heap.h`, whose
+  version (`FChngSizeHCw(h,cw,shrink) = OpusFChngSizeHCb(h, cw*sizeof(int),
+  shrink)`) multiplies by 4, not by 2, consistent with the new unit of
+  `CwFromCch` under a 4-byte `int`. No mixing of the two definitions
+  confirmed by direct reading of `heap.h`. The growth pattern in
+  `FExpandGrpchr` (`fetch1.c:838-853`, +25% with `cbCHRE` headroom) and
+  its single relevant call site were also read in full, no sign of
+  a size mismatch.
+- `cbCHR`/`cbCHRT`/`cbCHRV`/`cbCHRDF`/`cbCHRFG` (`wordtech/format.h`) are
+  all `sizeof(struct ...)` computed by the compiler itself, unlike
+  the already-confirmed bug in `bitapp.h:29` (a fixed `DWORD` serialized
+  against an external file format), this table is internal and
+  self-consistent: there is no fixed format constant in between that
+  could get misaligned under LP64. Ruled out as a bug class for this
+  specific buffer.
+- The ~15 points where `vbchrMac`/`bchrPrev`/`ffs.bchr` are compared
+  against `vbchrMax` before indexing `(**vhgrpchr)[...]` (a full grep
+  of `format.c`) are all guarded (`if ((vbchrMac += cbCHR...) <=
+  vbchrMax ...)` or equivalent), no missing guard was found in
+  this pass, but **each branch was not verified by hand line by line**,
+  only the general guard pattern.
 
-**No cubierto todavía — sigue pendiente:** el cuerpo completo de
-`C_FormatLineDxa` (`wordtech/format.c:454-1206+`, la función tiene más de
-600 líneas) no se leyó entero; el tramo revisado fue el de inicialización
-(454-750) y el subsistema de asignación del buffer de runs. Falta el
-cuerpo principal del bucle de formateo de línea (medición de ancho de
-carácter, tabs, campos/fórmulas, breaks) donde vive la llamada real a
-GDI/medición de texto que el crash de §5 alcanza fuera de `WORD1`.
+**Not yet covered, still pending:** the full body of
+`C_FormatLineDxa` (`wordtech/format.c:454-1206+`, the function is more
+than 600 lines) was not read in full; the stretch reviewed was the
+initialization (454-750) and the run-buffer allocation subsystem.
+The main body of the line-formatting loop is missing (character-width
+measurement, tabs, fields/formulas, breaks) where the real call to
+GDI/text measurement that the §5 crash reaches outside `WORD1` lives.
 
-**Pista nueva, no perseguida aún, que cambia el ángulo de búsqueda:**
-esta rama del proyecto viene wireando progresivamente `WORD1` a los
-contratos `OpusShell*` (commits recientes: `00de60f2` conecta
-`C_LoadFcid` — medición de ancho de carácter en pantalla — a
-`OpusShellCharWidths`; `b803cc0` enlaza `opus_shell_font_metrics` en
-`WORD1`). Si el bucle de `C_FormatLineDxa` todavía llama a GDI real
-(`vpri.hdc`/`vfti`, HDC de pantalla) para algo que `C_LoadFcid` ya
-resuelve por el contrato Qt en otro punto del mismo flujo de formateo,
-un HDC nulo o un estado de fuente inconsistente entre las dos vías
-encajaría con "write a 0x0 en código fuera de `WORD1`" (§5) sin requerir
-corrupción de heap previa como explicación única. **No confirmado — es
-la siguiente hipótesis a probar, no un hallazgo.** `vpri.hdc` en sí
-resultó ser solo el HDC de impresora (`disp1.c`, `print.c`,
-`initwin.c`) por lectura de sus asignaciones — no es el HDC de pantalla
-que usaría el bucle de formateo, así que la hipótesis necesita
-identificar primero cuál variable sí lo es antes de poder probarse.
+**New lead, not yet pursued, that changes the search angle:** this
+branch of the project has been progressively wiring `WORD1` to the
+`OpusShell*` contracts (recent commits: `00de60f2` connects
+`C_LoadFcid`, on-screen character-width measurement, to
+`OpusShellCharWidths`; `b803cc0` wires `opus_shell_font_metrics` into
+`WORD1`). If the `C_FormatLineDxa` loop still calls real GDI
+(`vpri.hdc`/`vfti`, screen HDC) for something `C_LoadFcid` already
+resolves through the Qt contract at another point in the same
+formatting flow, a null HDC or an inconsistent font state between the
+two paths would fit "write to 0x0 in code outside `WORD1`" (§5) without
+requiring prior heap corruption as the only explanation. **Not
+confirmed, this is the next hypothesis to test, not a finding.**
+`vpri.hdc` itself turned out to be only the printer HDC (`disp1.c`,
+`print.c`, `initwin.c`) based on reading its assignments; it is not the
+screen HDC that the formatting loop would use, so the hypothesis needs
+to first identify which variable actually is the screen HDC before it
+can be tested.
 
-## 10. Hipótesis del HDC en el bucle de formateo — descartada para la ruta de ancho de carácter; corrección de alcance de la función (2026-08-12)
+## 10. Hypothesis about the HDC in the formatting loop, ruled out for the character-width path; scope correction for the function (2026-08-12)
 
-Continuación de §9. Lectura directa (no gdb, no ejecución — solo lectura de
-código fuente) de `wordtech/format.c` y de `LOADFONT.C` completo.
+Continuation of §9. Direct reading (no gdb, no execution, only source
+reading) of `wordtech/format.c` and the full `LOADFONT.C`.
 
-**Corrección de alcance importante para la siguiente sesión:** §9 estimaba
-`C_FormatLineDxa` en "600+ líneas" (454-1206+). Es mucho más grande: la
-función real corre `format.c:454` hasta el `return; }` en `format.c:2604`
-(cierre de `#ifdef DEBUGORNOTWIN` en 2606) — **~2150 líneas**, no ~750. Los
-targets `LEndJ:` (línea 2378) y `LEnd:` (línea 2481) están mucho más abajo
-de lo que el rango citado en §9 sugería.
+**Important scope correction for the next session:** §9 estimated
+`C_FormatLineDxa` at "600+ lines" (454-1206+). It is much bigger: the
+real function runs from `format.c:454` through the `return; }` at
+`format.c:2604` (closing the `#ifdef DEBUGORNOTWIN` at 2606), **~2150
+lines, not ~750.** The `LEndJ:` (line 2378) and `LEnd:` (line 2481)
+targets are much further down than the range cited in §9 suggested.
 
-**Hallazgo 1 — la ruta de medición de ancho de carácter del bucle principal
-NO llama a GDI ni toca ningún HDC:**
+**Finding 1, the character-width measurement path of the main loop does
+NOT call GDI or touch any HDC:**
 
-`grep` de `GetTextExtent*|GetCharWidth|SelectObject|hdc|HDC|GetDC` sobre
-todo `wordtech/format.c` no tiene coincidencias. El cálculo de ancho en el
-bucle caliente (`format.c:900-907`, y repetido en `~15` puntos más
-mapeados por grep de `DxpFromCh` en el archivo) es:
+A `grep` for `GetTextExtent*|GetCharWidth|SelectObject|hdc|HDC|GetDC`
+over the whole of `wordtech/format.c` has no matches. The width
+calculation in the hot loop (`format.c:900-907`, and repeated at
+~15 more points mapped by a grep for `DxpFromCh` in the file) is:
 
 ```c
 dxt = dxp = DxpFromCh(ch, &vfti);
 ```
 
-`C_DxpFromCh` (`format.c:2912-2917`) es una función pura:
+`C_DxpFromCh` (`format.c:2912-2917`) is a pure function:
 
 ```c
 HANDNATIVE int C_DxpFromCh( ch, pfti )
@@ -500,161 +498,164 @@ HANDNATIVE int C_DxpFromCh( ch, pfti )
     }
 ```
 
-Solo indexa el array `rgdxp[256]` de `struct FTI` (`Opus/fontwin.h:157`),
-ya poblado antes de entrar al bucle. **No hay ningún HDC vivo en el
-tramo 900-1259 de `format.c`** (rango efectivamente revisado línea por
-línea en esta sesión) — la hipótesis de §9 ("el bucle sigue llamando a GDI
-real con un HDC inconsistente") queda **descartada para esta ruta
-específica**: no hay llamada GDI que hacer inconsistente, es una lectura de
-tabla.
+It only indexes the `rgdxp[256]` array of `struct FTI`
+(`Opus/fontwin.h:157`), already populated before entering the loop.
+**There is no live HDC anywhere in the 900-1259 stretch of
+`format.c`** (the range effectively reviewed line by line in this
+session), the §9 hypothesis ("the loop still calls real GDI with an
+inconsistent HDC") is **ruled out for this specific path**: there is
+no GDI call to make inconsistent, it is a table lookup.
 
-**Hallazgo 2 — el HDC de pantalla real vive en `LOADFONT.C`, no en
-`format.c`, y sigue siendo necesario incluso en la ruta ya wireada a Qt:**
+**Finding 2, the real screen HDC lives in `LOADFONT.C`, not in
+`format.c`, and is still needed even on the path already wired to
+Qt:**
 
-`vfti`/`vftiDxt` (los `struct FTI` que `format.c` lee) se llenan en
-`C_LoadFcid` (`Opus/LOADFONT.C:198-608`), no en `format.c`. El HDC de
-pantalla real es `vsci.hdcScratch` (o el `hdc` de cada ventana,
-`(*hwwd)->hdc`), asignado dentro de `FSelectFont`
-(`LOADFONT.C:663-813`, rama pantalla en 709-808) y consumido por
-`C_LoadFcid` en `GetTextMetrics(hdc, ...)` (`LOADFONT.C:349`, justo después
-de la etiqueta `LNewMetrics:`).
+`vfti`/`vftiDxt` (the `struct FTI` values `format.c` reads) are filled
+in `C_LoadFcid` (`Opus/LOADFONT.C:198-608`), not in `format.c`. The real
+screen HDC is `vsci.hdcScratch` (or each window's `hdc`,
+`(*hwwd)->hdc`), assigned inside `FSelectFont`
+(`LOADFONT.C:663-813`, screen branch at 709-808) and consumed by
+`C_LoadFcid` in `GetTextMetrics(hdc, ...)` (`LOADFONT.C:349`, right after
+the `LNewMetrics:` label).
 
-Punto clave: el guard `OPUS_X64`/`__GNUC__` que desvía la tabla de anchos
-variable-pitch a `OpusShellCharWidths` (`LOADFONT.C:428-467`, comentado
-como wireado por `00de60f2`) es **posterior** a `FSelectFont` (línea 345) y
-a `GetTextMetrics` (línea 349) — es decir, **incluso en la ruta ya
-conectada al contrato Qt, `C_LoadFcid` sigue llamando a GDI real
-(`FSelectFont` + `GetTextMetrics`) sobre `vsci.hdcScratch` para
-`dypAscent`/`dypDescent`/`dxpOverhang` antes de decidir si la tabla de
-anchos viene de GDI o de `OpusShellCharWidths`.** Esto ya estaba anotado
-como pregunta abierta #3 en `docs/port-qt/01-core-shell-boundary.md`
-(referenciada en el prompt de esta tarea); esta sesión no la resuelve,
-solo confirma por lectura directa que el mecanismo es exactamente ese
-(`GetTextMetrics` incondicional en `LNewMetrics`, línea 349) y que no hay
-una ruta paralela en `format.c` que la esquive.
+Key point: the `OPUS_X64`/`__GNUC__` guard that diverts the
+variable-pitch width table to `OpusShellCharWidths`
+(`LOADFONT.C:428-467`, noted as wired by `00de60f2`) comes **after**
+`FSelectFont` (line 345) and `GetTextMetrics` (line 349), meaning that,
+**even on the path already connected to the Qt contract, `C_LoadFcid`
+still calls real GDI (`FSelectFont` + `GetTextMetrics`) on
+`vsci.hdcScratch` for `dypAscent`/`dypDescent`/`dxpOverhang` before
+deciding whether the width table comes from GDI or from
+`OpusShellCharWidths`.** This was already noted as open question #3 in
+`docs/port-qt/01-core-shell-boundary.md` (referenced in this task's
+prompt); this session does not resolve it, it only confirms by direct
+reading that the mechanism is exactly that (unconditional
+`GetTextMetrics` in `LNewMetrics`, line 349) and that there is no
+parallel path in `format.c` that avoids it.
 
-**Hipótesis del HDC — estado revisado:** descartada para el bucle de
-`C_FormatLineDxa` en sí (no hay HDC ahí); **sigue abierta, sin
-confirmar**, para `vsci.hdcScratch` dentro de `C_LoadFcid`/`FSelectFont` —
-si ese HDC queda nulo o stale frente al arranque Qt, el crash ocurriría
-dentro de `LOADFONT.C`/`disp*.c` (donde se inicializa `vsci.hdcScratch`),
-no dentro de `format.c`. No se leyó en esta sesión el código de
-inicialización de `vsci.hdcScratch` (candidato: `disp1.c`/`initwin.c`, sin
-confirmar) — es el siguiente paso natural, no `format.c`.
+**HDC hypothesis, revised status:** ruled out for the
+`C_FormatLineDxa` loop itself (there is no HDC there); **still open,
+unconfirmed**, for `vsci.hdcScratch` inside `C_LoadFcid`/`FSelectFont`,
+if that HDC ends up null or stale relative to the Qt startup, the crash
+would occur inside `LOADFONT.C`/`disp*.c` (where `vsci.hdcScratch` is
+initialized), not inside `format.c`. The initialization code for
+`vsci.hdcScratch` was not read this session (candidate: `disp1.c`/`initwin.c`,
+unconfirmed), it is the natural next step, not `format.c`.
 
-**Tramo de `C_FormatLineDxa` cubierto en esta sesión (lectura completa,
-línea por línea):** `format.c:454-1259` (inicialización + bucle principal
-hasta el manejo de `chSpace`/`LBreakOppR`) y `format.c:2560-2605` (cola de
-la función: cálculo de `dypAfter`, ajuste `fPageView`, cierre de
-`grpchr`). También se leyó completo `Opus/LOADFONT.C` (1064 líneas).
+**Stretch of `C_FormatLineDxa` covered this session (full, line-by-line
+reading):** `format.c:454-1259` (initialization + main loop up through
+`chSpace`/`LBreakOppR` handling) and `format.c:2560-2605` (the tail of
+the function: `dypAfter` calculation, `fPageView` adjustment, closing
+`grpchr`). `Opus/LOADFONT.C` (1064 lines) was also read in full.
 
-**No cubierto — pendiente para la siguiente sesión:**
-`format.c:1259-2560` (~1300 líneas sin leer): manejo de tabs
-(`case chTab` y vecindario, no localizado aún), campos/fórmulas
-(`chrmFormula`/`chrmDisplayField`/`chrmFormatGroup`, mencionados en
-`format.h` pero su tratamiento en el bucle no revisado), `LEndJ:` (2378,
-lógica de justificación) y `LEnd:` (2481, cierre de línea antes de la cola
-ya revisada en 2560-2605). Este es el tramo con mayor probabilidad
-restante de contener la causa, dado que §9 ya descartó el buffer de runs y
-esta sesión descartó la ruta de ancho de carácter simple.
+**Not covered, pending for the next session:**
+`format.c:1259-2560` (~1300 lines unread): tab handling
+(`case chTab` and its neighborhood, not yet located), fields/formulas
+(`chrmFormula`/`chrmDisplayField`/`chrmFormatGroup`, mentioned in
+`format.h` but their handling in the loop not reviewed), `LEndJ:` (2378,
+justification logic) and `LEnd:` (2481, line closing before the tail
+already reviewed at 2560-2605). This is the stretch with the highest
+remaining probability of containing the cause, given that §9 already
+ruled out the run buffer and this session ruled out the simple
+character-width path.
 
-**No se ejecutó gdb en esta sesión** — todo lo anterior es lectura de
-código fuente, no verificación en vivo. Cualquier confirmación de "HDC
-nulo" en `vsci.hdcScratch` requiere breakpoint en `FSelectFont`
-(`LOADFONT.C:709`) o `GetTextMetrics` (`LOADFONT.C:349`) durante el
-arranque real de `WORD1`, no hecho todavía.
+**No gdb was run this session**, everything above is source-code
+reading, not live verification. Any confirmation of "null HDC" in
+`vsci.hdcScratch` requires a breakpoint at `FSelectFont`
+(`LOADFONT.C:709`) or `GetTextMetrics` (`LOADFONT.C:349`) during a
+real `WORD1` startup, not done yet.
 
-**REFUTADO — ver §12 (puntos 1-2).** La premisa de §11.3 ("`gdb` vainilla
-no puede resolver breakpoints por archivo:línea en `WORD1.exe.so`") es
-falsa. Causa real: los 18 archivos case-shimmed (`LOADFONT.C` entre ellos)
-registran su compilation unit DWARF con el path del symlink en
-minúsculas; `break LOADFONT.C:349` nunca podía resolver por eso, no por
-ninguna limitación de `gdb`/Wine. `break loadfont.c:349` resuelve y
-dispara en el primer intento, con backtrace simbólico completo hasta
-`C_FormatLineDxa`. El "resultado neto" de §11.4 y el "camino recomendado"
-de 3 pasos quedan obsoletos — ver Promoted Plan en la revisión de esta
-sesión y §12.
+**REFUTED, see §12 (points 1-2).** The premise of §11.3 ("vanilla `gdb`
+cannot resolve file:line breakpoints in `WORD1.exe.so`") is false. Real
+cause: the 18 case-shimmed files (`LOADFONT.C` among them) register
+their compilation unit's DWARF with the symlink's path in
+lowercase; `break LOADFONT.C:349` could never resolve because of that,
+not because of any limitation of `gdb`/Wine. `break loadfont.c:349`
+resolves and fires on the first try, with a complete symbolic backtrace
+up to `C_FormatLineDxa`. The "net result" of §11.4 and the 3-step
+"recommended path" become obsolete, see the Promoted Plan in this
+session's revision and §12.
 
-## 11. Verificación en vivo intentada — bloqueada por dos motivos distintos, ninguno confirma ni descarta la hipótesis (2026-08-12)
+## 11. Live verification attempted, blocked for two distinct reasons, neither confirms nor rules out the hypothesis (2026-08-12)
 
-Continuación directa de §10. Entorno **distinto** al de §1-§9: sandbox
-nuevo (Debian 13 "trixie", GCC 14.2.0, `wine-10.0` Debian repack,
-`gdb` 16.3), no Fedora 44/GCC 16.1.1/wine-staging 11.0. Sin binario
-`WORD1.exe.so` preexistente — se reconstruyó desde cero. Esta diferencia
-de entorno termina siendo el hallazgo principal de la sesión (ver más
-abajo), no un detalle incidental.
+Direct continuation of §10. Environment **different** from §1-§9: a new
+sandbox (Debian 13 "trixie", GCC 14.2.0, `wine-10.0` Debian repack,
+`gdb` 16.3), not Fedora 44/GCC 16.1.1/wine-staging 11.0. No pre-existing
+`WORD1.exe.so` binary, it was rebuilt from scratch. This environment
+difference ends up being the session's main finding (see below), not an
+incidental detail.
 
-### 11.1 Bloqueadores de build encontrados y resueltos (entorno, no `src/Opus/`)
+### 11.1 Build blockers found and resolved (environment, not `src/Opus/`)
 
-Tres problemas de toolchain nuevos, independientes del bug investigado,
-bloquearon incluso producir un binario:
+Three new toolchain problems, independent of the bug under
+investigation, blocked even producing a binary:
 
-1. **`wrc: Error: codepage 1252 not supported`** al compilar
-   `port/word1.rc`. Causa: el `wrc` de este sistema (Wine Resource
-   Compiler 10.0) no encuentra sus tablas NLS (`/usr/share/wine/nls/`)
-   sin `--nls-dir` explícito, aunque el archivo `c_1252.nls` sí existe en
-   disco. **Corregido** agregando `--nls-dir=/usr/share/wine/nls` al
-   `add_custom_command` de `wrc` en `src/CMakeLists.txt` (línea ~1370).
-2. **`GetCurrentThreadStackLimits was not declared in this scope`** al
-   compilar `port/original/opus_original_startup_probe.cpp:249`. Causa:
-   `processthreadsapi.h` de este paquete Wine 10.0 no declara esa función
-   (exportada por `kernel32` desde Vista+; sí presente en el Wine
-   11.0/Fedora usado en §1-§9). **Corregido** con una declaración local
-   `extern "C" WINBASEAPI` guardada por `#if !defined(_MSC_VER)`,
-   comentada in situ explicando la causa — no toca `src/Opus/` ni
-   `src/OpusEtAl/`, está en `src/port/`.
+1. **`wrc: Error: codepage 1252 not supported`** when compiling
+   `port/word1.rc`. Cause: this system's `wrc` (Wine Resource
+   Compiler 10.0) does not find its NLS tables (`/usr/share/wine/nls/`)
+   without explicit `--nls-dir`, even though `c_1252.nls` does exist on
+   disk. **Fixed** by adding `--nls-dir=/usr/share/wine/nls` to the
+   `wrc` `add_custom_command` in `src/CMakeLists.txt` (line ~1370).
+2. **`GetCurrentThreadStackLimits was not declared in this scope`** when
+   compiling `port/original/opus_original_startup_probe.cpp:249`. Cause:
+   this Wine 10.0 package's `processthreadsapi.h` does not declare that
+   function (exported by `kernel32` since Vista+; it was present in the
+   Wine 11.0/Fedora used in §1-§9). **Fixed** with a local
+   `extern "C" WINBASEAPI` declaration guarded by
+   `#if !defined(_MSC_VER)`, commented in place explaining the cause;
+   it does not touch `src/Opus/` or `src/OpusEtAl/`, it is in `src/port/`.
 3. **`opus_word1_ui_test.cpp:379`: no matching function for call to
-   `min(LONG, long int)`** al intentar compilar `opus_word1_ui_test`
-   (necesario para el plan original de disparar `C_FormatLineDxa` vía
-   `--typing`/`--font-typing` en vez de solo lanzar `WORD1` en vacío).
-   Causa: mismatch de tipo `LONG` (`int` en este `windows.h` de Wine
-   10.0) contra el literal `20L` (`long`). **No corregido** — fuera del
-   camino finalmente usado (ver 11.3); si una sesión futura necesita este
-   harness en este mismo tipo de entorno, el fix es un cast explícito en
-   `opus_word1_ui_test.cpp:379-380`, no tocado aquí.
+   `min(LONG, long int)`** when trying to compile `opus_word1_ui_test`
+   (needed for the original plan of triggering `C_FormatLineDxa` via
+   `--typing`/`--font-typing` instead of just launching `WORD1` empty).
+   Cause: a `LONG` type mismatch (`int` in this Wine 10.0 `windows.h`)
+   against the `20L` literal (`long`). **Not fixed**, out of the path
+   ultimately used (see 11.3); if a future session needs this harness in
+   this same kind of environment, the fix is an explicit cast at
+   `opus_word1_ui_test.cpp:379-380`, not touched here.
 
-Ninguno de los tres es el bug que se investiga — son huecos de
-portabilidad entre versiones de Wine/GCC en el propio árbol de soporte
-(`src/port/`, `src/CMakeLists.txt`), no en `src/Opus/`. **No se hizo
-commit de estos cambios** — quedan en el árbol de trabajo, pendientes de
-que el mantenedor decida si conservarlos (necesarios para reproducir en
-cualquier entorno Debian/wine-10.0) o revertirlos.
+None of the three is the bug under investigation, they are
+portability gaps between Wine/GCC versions within the project's own
+support tree (`src/port/`, `src/CMakeLists.txt`), not in `src/Opus/`.
+**These changes were not committed**, they remain in the working tree,
+pending the maintainer's decision on whether to keep them (needed to
+reproduce on any Debian/wine-10.0 environment) or revert them.
 
-### 11.2 El crash de §1 no se reproduce en este entorno
+### 11.2 The crash from §1 does not reproduce in this environment
 
-Con el binario ya compilado (`bin/WORD1.exe.so`, no stripped, con
-`debug_info` — confirmado con `file`), dos corridas directas bajo Xvfb
-(`DISPLAY=:99 timeout {30,60} /usr/lib/wine/wine64 WORD1.exe.so`, display
-real, no el camino `nodrv` que se ve al no exportar `DISPLAY`):
+With the binary already compiled (`bin/WORD1.exe.so`, not stripped, with
+`debug_info`, confirmed with `file`), two direct runs under Xvfb
+(`DISPLAY=:99 timeout {30,60} /usr/lib/wine/wine64 WORD1.exe.so`, a real
+display, not the `nodrv` path seen when `DISPLAY` is not exported):
 
 ```
 $ DISPLAY=:99 timeout 60 /usr/lib/wine/wine64 WORD1.exe.so
 04b0:fixme:dwmapi:DwmSetWindowAttribute (0000000000060088, 22, 00007FFFFE1F788C, 4) stub
-[fin de la salida -- timeout mata el proceso a los 60s, exit 124, sin crash]
+[end of output -- timeout kills the process at 60s, exit 124, no crash]
 ```
 
-Esta es **exactamente la misma línea** (`fixme:dwmapi:DwmSetWindowAttribute`)
-que en §1 aparece inmediatamente antes de `malloc(): invalid size
-(unsorted)` / `free(): invalid next size (normal)`. Aquí, en cambio, el
-proceso queda vivo e inactivo (confirmado con `ps aux`, `WORD1.exe.so`
-listado, consumiendo CPU mínima) indefinidamente — probado hasta 60s sin
-señal de corrupción, sin más salida.
+This is **exactly the same line** (`fixme:dwmapi:DwmSetWindowAttribute`)
+that in §1 appears immediately before `malloc(): invalid size
+(unsorted)` / `free(): invalid next size (normal)`. Here, instead, the
+process stays alive and idle (confirmed with `ps aux`, `WORD1.exe.so`
+listed, consuming minimal CPU) indefinitely, tested up to 60s with no
+sign of corruption, no further output.
 
-**Lectura, no confirmada más allá de esto:** el crash de §1 no es
-determinista entre entornos Wine 11.0/Fedora44/GCC16.1.1 y
-Wine 10.0/Debian13/GCC14.2.0. No se investigó cuál de las tres variables
-(versión de Wine, versión de GCC, o alguna diferencia de `wine.conf`/DPI/
-tema entre las dos instalaciones) es la causante — está fuera del alcance
-de esta tarea puntual. **Consecuencia práctica para la siguiente sesión:**
-reproducir el crash real para seguir diagnosticándolo con `gdb` requiere
-un entorno que iguale Fedora 44/wine-staging 11.0/GCC 16.1.1, no este
-sandbox Debian.
+**Reading, not confirmed beyond this:** the §1 crash is not
+deterministic across the Wine 11.0/Fedora44/GCC16.1.1 and
+Wine 10.0/Debian13/GCC14.2.0 environments. It was not investigated which
+of the three variables (Wine version, GCC version, or some difference in
+`wine.conf`/DPI/theme between the two installs) is the cause; that is out
+of scope for this specific task. **Practical consequence for the next
+session:** reproducing the real crash to keep diagnosing it with `gdb`
+requires an environment matching Fedora 44/wine-staging 11.0/GCC 16.1.1,
+not this Debian sandbox.
 
-### 11.3 Los breakpoints por archivo:línea nunca se resuelven — mismo mecanismo que §2, ahora confirmado también para breakpoints
+### 11.3 File:line breakpoints never resolve, same mechanism as §2, now also confirmed for breakpoints
 
-Se intentó de todas formas (el objetivo era ver `vsci.hdcScratch` en
-tránsito, no solo esperar el crash). Con `set breakpoint pending on` y
-`break LOADFONT.C:349` / `break LOADFONT.C:709` antes de `run`:
+Tried anyway (the goal was to see `vsci.hdcScratch` in transit, not
+just wait for the crash). With `set breakpoint pending on` and
+`break LOADFONT.C:349` / `break LOADFONT.C:709` before `run`:
 
 ```
 $ gdb -q --batch -ex "set breakpoint pending on" -ex "break LOADFONT.C:349" \
@@ -673,82 +674,83 @@ Num     Type           Disp Enb Address    What
 1       breakpoint     keep y   <PENDING>  LOADFONT.C:349
 ```
 
-(Esa corrida en particular falló por un error de path relativo del lado
-de Wine —`ShellExecuteEx`— nada que ver con el bug; se repitió con cwd
-correcto y el proceso corrió normalmente hasta el mismo punto idle de
-§11.2.) **Lo que importa de esta salida:** después de que el proceso
-corrió (aunque terminara por error ajeno), `info sharedlibrary` solo
-lista `ld-linux-x86-64.so.2` — ni `WORD1.exe.so`, ni `ntdll.so`, ni
-`libwine`, nada. El breakpoint 1 queda `<PENDING>` para siempre. Repetido
-con `DISPLAY=:99` y el proceso corriendo normalmente 25s sin crashear:
-mismo resultado, `run` nunca retorna control a gdb porque el breakpoint
-nunca se dispara (no puede dispararse: `WORD1.exe.so` nunca se registra
-como shared object).
+(That particular run failed on a relative-path error on Wine's side,
+`ShellExecuteEx`, unrelated to the bug; it was repeated with the correct
+cwd and the process ran normally up to the same idle point of §11.2.)
+**What matters in this output:** after the process ran (even though it
+terminated on an unrelated error), `info sharedlibrary` lists only
+`ld-linux-x86-64.so.2`, not `WORD1.exe.so`, not `ntdll.so`, not
+`libwine`, nothing. Breakpoint 1 stays `<PENDING>` forever. Repeated
+with `DISPLAY=:99` and the process running normally for 25s without
+crashing: same result, `run` never returns control to gdb because the
+breakpoint never fires (it cannot fire: `WORD1.exe.so` is never
+registered as a shared object).
 
-**Esto confirma y extiende el hallazgo de §2:** no es solo que `gdb` no
-pueda *simbolizar* una pila ya rota (§2) — tampoco puede *resolver
-breakpoints por archivo:línea* dentro de `WORD1.exe.so` en absoluto,
-porque nunca lo ve como shared object cargado (el mecanismo manual de
-`wine-preloader` sigue sin pasar por `_dl_debug_state`/`r_debug`). Un
-breakpoint por dirección absoluta (`break *0xDIRECCION`, con la dirección
-sacada de `addr2line` como en §5) probablemente sí funcionaría —no se
-probó en esta sesión por falta de tiempo, y de cualquier forma el crash
-no se reprodujo aquí (§11.2) para tener una dirección de interés que
-perseguir.
+**This confirms and extends the §2 finding:** it is not just that
+`gdb` cannot *symbolize* an already-broken stack (§2), it also cannot
+*resolve file:line breakpoints* inside `WORD1.exe.so` at all, because it
+never sees it as a loaded shared object (Wine's manual
+`wine-preloader` mechanism still does not go through
+`_dl_debug_state`/`r_debug`). A breakpoint by absolute address
+(`break *0xADDRESS`, with the address taken from `addr2line` as in §5)
+would probably work, not tried in this session for lack of time, and in
+any case the crash did not reproduce here (§11.2) to have an address of
+interest to chase.
 
-### 11.4 Resultado neto
+### 11.4 Net result
 
-**Ninguno de los dos breakpoints (`LOADFONT.C:349`, `LOADFONT.C:709`) se
-disparó nunca** — no por falta de camino de ejecución (el arranque de
-`WORD1` sí pasa por la carga de fuentes, es una ruta de arranque normal),
-sino porque `gdb` vainilla no puede poner breakpoints por archivo:línea
-en este binario, punto ya documentado en §2 y ahora confirmado que
-también aplica a breakpoints, no solo a resolución de pilas. **La
-hipótesis de `vsci.hdcScratch` nulo/stale sigue exactamente donde estaba
-en §10: abierta, ni confirmada ni descartada.** No se obtuvo ningún
-`print vsci.hdcScratch` ni `print hdc` real en esta sesión.
+**Neither of the two breakpoints (`LOADFONT.C:349`, `LOADFONT.C:709`)
+ever fired**, not for lack of an execution path (`WORD1`'s startup does
+go through font loading, it is a normal startup route), but because
+vanilla `gdb` cannot set file:line breakpoints in this binary, a
+point already documented in §2 and now confirmed to also apply to
+breakpoints, not just stack resolution. **The `vsci.hdcScratch`
+null/stale hypothesis stands exactly where it stood in §10: open,
+neither confirmed nor ruled out.** No real `print vsci.hdcScratch` or
+`print hdc` was obtained in this session.
 
-**Camino recomendado para la siguiente sesión** (no intentado aquí):
-1. Reproducir en un entorno que iguale Fedora 44/wine-staging
-   11.0/GCC 16.1.1 (§11.2) — este sandbox Debian/wine-10.0 no sirve para
-   esto.
-2. Usar `addr2line`/lectura estática (como en §5) para obtener la
-   dirección absoluta de `LOADFONT.C:349` y `:709` en el binario
-   reconstruido de ese entorno, y poner el breakpoint por dirección
-   (`break *0x...`), no por archivo:línea — evita el problema de §11.3.
-3. Alternativa sin `gdb`: instrumentar `LOADFONT.C` con un
-   `fprintf(stderr, ...)` temporal imprimiendo `vsci.hdcScratch` y `hdc`
-   en esos dos puntos — requiere autorización explícita para tocar
-   `src/Opus/LOADFONT.C` (issue de GitHub primero, por la restricción del
-   árbol), pero rodea tanto el bloqueador de §11.3 como la no-reproducción
-   de §11.2 (el print se vería en cualquier corrida, crashee o no).
+**Recommended path for the next session** (not attempted here):
+1. Reproduce in an environment matching Fedora 44/wine-staging
+   11.0/GCC 16.1.1 (§11.2), this Debian/wine-10.0 sandbox is not usable
+   for this.
+2. Use `addr2line`/static reading (as in §5) to get the absolute
+   address of `LOADFONT.C:349` and `:709` in the binary rebuilt in that
+   environment, and set the breakpoint by address
+   (`break *0x...`), not by file:line, avoiding the §11.3 problem.
+3. Alternative without `gdb`: instrument `LOADFONT.C` with a temporary
+   `fprintf(stderr, ...)` printing `vsci.hdcScratch` and `hdc`
+   at those two points, requires explicit authorization to touch
+   `src/Opus/LOADFONT.C` (a GitHub issue first, per the restriction on
+   that tree), but sidesteps both the §11.3 blocker and the §11.2
+   non-reproduction (the print would show in any run, crash or not).
 
-## 12. Refutaciones en vivo del "camino recomendado" de §11.4 (2026-08-12, misma sesión, entorno Debian 13/wine-10.0/gdb 16.3)
+## 12. Live refutations of the §11.4 "recommended path" (2026-08-12, same session, Debian 13/wine-10.0/gdb 16.3 environment)
 
-Continuación directa de §11, mismo binario (`bin/WORD1.exe.so`, sin
-recompilar). Los tres pasos de §11.4 resultaron innecesarios: el paso 2
-(`addr2line` + `break *0x`) resolvía un problema que no existía, y el
-paso 3 (parchar `src/Opus/LOADFONT.C`) da un dato que `gdb` ya da gratis.
-Lo que sigue es la evidencia, comando por comando, sin resumir.
+Direct continuation of §11, same binary (`bin/WORD1.exe.so`, not
+rebuilt). The three §11.4 steps turned out to be unnecessary: step 2
+(`addr2line` + `break *0x`) solved a problem that did not exist, and
+step 3 (patching `src/Opus/LOADFONT.C`) gives data `gdb` already gives
+for free. What follows is the evidence, command by command, without
+summarizing.
 
-### 12.1 Breakpoints por archivo:línea sí resuelven — el bloqueador era el case del symlink
+### 12.1 File:line breakpoints do resolve, the blocker was the symlink's case
 
-`src/CMakeLists.txt` (líneas ~944-964) symlinkea 18 fuentes —incluida
-`LOADFONT.C`— a `generated/lowercase-c/*.c` y las compila desde ahí. El
-DWARF registra el path en minúsculas. Reproducido dos veces con el mismo
-binario, cambiando solo el case del breakpoint:
+`src/CMakeLists.txt` (lines ~944-964) symlinks 18 sources, including
+`LOADFONT.C`, to `generated/lowercase-c/*.c` and compiles them from
+there. The DWARF records the path in lowercase. Reproduced twice with
+the same binary, changing only the case of the breakpoint:
 
-**Mayúsculas (como en §11.3) — nunca resuelve:**
+**Uppercase (as in §11.3), never resolves:**
 ```
 $ gdb -q --batch -ex "set breakpoint pending on" -ex "break LOADFONT.C:349" -ex "run" ...
 No symbol table is loaded.  Use the "file" command.
 Breakpoint 1 (LOADFONT.C:349) pending.
 [...]
 0518:fixme:dwmapi:DwmSetWindowAttribute (0000000000080094, 22, 00007FFFFE1F788C, 4) stub
-[el proceso queda idle -- run nunca retorna, breakpoint sigue <PENDING>]
+[the process stays idle -- run never returns, breakpoint stays <PENDING>]
 ```
 
-**Minúsculas — dispara en el primer intento, backtrace completo:**
+**Lowercase, fires on the first try, full backtrace:**
 ```
 $ gdb -q --batch -ex "set breakpoint pending on" \
     -ex "break loadfont.c:349" -ex "break loadfont.c:709" \
@@ -767,43 +769,42 @@ Breakpoint 2, FSelectFont (pfti=0x7ffff7508460 <vfti>, phfont=0x7ffff7508d60 <rg
 #5  0x00007ffff726d613 in N_FormatLineDxa (ww=5, doc=7, cp=0, dxa=8640) at /home/pablo/msword/src/port/original/opus_asm_resn2_adapters.cpp:186
 ```
 
-Corregido para futuras sesiones: usar minúsculas para las 18 fuentes
-listadas en `src/CMakeLists.txt` (`CLIPBORD.C CLIPBRD2.C CMD3.C CREATE2.C
+Fixed for future sessions: use lowercase for the 18 sources listed in
+`src/CMakeLists.txt` (`CLIPBORD.C CLIPBRD2.C CMD3.C CREATE2.C
 DDESRVR.C DLBENUM.C EDIT.C FIELDCMD.C FILE2.C GRSPEC.C LOADFONT.C PIC2.C
-RTFIN.C RTFOUT.C RTFRARE.C SCREEN2.C SPELL.C SYSCHG.C`); cualquier otro
-archivo de `src/Opus/` va con su nombre real.
+RTFIN.C RTFOUT.C RTFRARE.C SCREEN2.C SPELL.C SYSCHG.C`); any other
+file under `src/Opus/` uses its real name.
 
-Efecto colateral útil: la ruta caliente del arranque queda localizada sin
-ambigüedad — `C_FormatLineDxa` (`format.c:2269`) → `N_LoadFont` →
+Useful side effect: the startup hot path is now located
+unambiguously: `C_FormatLineDxa` (`format.c:2269`) → `N_LoadFont` →
 `C_LoadFcid` (`loadfont.c:131/345`) → `FSelectFont` (`loadfont.c:711`).
-`format.c:2269` cae dentro del tramo `1259-2560` que §10 marcó como de
-mayor probabilidad restante y dejó sin leer — pasa de "probable" a
-confirmado por ejecución real.
+`format.c:2269` falls within the `1259-2560` stretch that §10 flagged
+as the highest-probability remaining and left unread; it goes from
+"probable" to confirmed by real execution.
 
-### 12.2 La lectura de `info sharedlibrary` en §11.3 estaba contaminada por timing, no por un bloqueo de `gdb`/Wine
+### 12.2 The `info sharedlibrary` reading in §11.3 was contaminated by timing, not by a `gdb`/Wine block
 
-El propio bloque ya citado en §11.3 muestra la contaminación: la lectura
-se hizo **después** de `[Inferior 1 (process 134178) exited with code
-01]`, y el listado resultante solo tiene `ld-linux-x86-64.so.2` — ni
-siquiera `libc.so.6`, imposible en un proceso dinámico vivo. Ese dato por
-sí solo ya invalidaba la lectura de §11.3, sin necesidad de ninguna otra
-prueba.
+The block already quoted in §11.3 itself shows the contamination: the
+reading was taken **after** `[Inferior 1 (process 134178) exited with
+code 01]`, and the resulting listing only has
+`ld-linux-x86-64.so.2`, not even `libc.so.6`, impossible in a live
+dynamic process. That data point alone already invalidated the §11.3
+reading, without needing any further proof.
 
-Reproducido aquí de dos formas distintas, ambas contrastando con lo de
-arriba:
+Reproduced here in two distinct ways, both contrasting with the above:
 
-**(a) Mismo síntoma reproducido fresco, con el proceso realmente colgado
-en `run` (no hay `wine-preloader` en este entorno — ver 12.5 — así que
-"contaminación por timing" y "wine-preloader rompe el protocolo" quedan
-como dos explicaciones independientes para el mismo síntoma, no una sola):**
-el script con `break LOADFONT.C:349` (mayúsculas) más `run` +
-`info sharedlibrary` + `info breakpoints` nunca llega a ejecutar los dos
-últimos comandos porque `run` no retorna (proceso queda idle, igual que
-§11.2); el log se corta después de la línea `fixme:dwmapi`.
+**(a) Same symptom reproduced fresh, with the process actually stuck
+in `run` (there is no `wine-preloader` in this environment, see 12.5,
+so "timing contamination" and "wine-preloader breaks the protocol" stand
+as two independent explanations for the same symptom, not a single
+one):** the script with `break LOADFONT.C:349` (uppercase) plus `run` +
+`info sharedlibrary` + `info breakpoints` never gets to execute the two
+final commands because `run` does not return (the process stays idle,
+same as §11.2); the log cuts off after the `fixme:dwmapi` line.
 
-**(b) `info sharedlibrary` leído en el momento correcto (adjuntado a un
-proceso ya corriendo, sin esperar a que salga) — WORD1.exe.so aparece con
-`Syms Read = Yes`:**
+**(b) `info sharedlibrary` read at the right moment (attached to an
+already-running process, without waiting for it to exit), WORD1.exe.so
+appears with `Syms Read = Yes`:**
 ```
 $ gdb -q --batch -ex "info sharedlibrary" -ex "info line LOADFONT.C:349" \
     -ex "print vsci" -ex "print vsci.hdcScratch" -p <PID>
@@ -813,25 +814,25 @@ From                To                  Syms Read   Shared Object Library
 0x00007f1c29895000  0x00007f1c298bc3d1  Yes         /lib64/ld-linux-x86-64.so.2
 0x00007f1c295d2c40  0x00007f1c296321a0  Yes (*)     /usr/lib/wine/../x86_64-linux-gnu/wine/x86_64-unix/ntdll.so
 0x00007f1c28a867c0  0x00007f1c28d85346  Yes         /home/pablo/.wine/dosdevices/z:/home/pablo/msword/bin/WORD1.exe.so
-[... 60 líneas más, todas Yes o Yes (*), log completo en
-     /tmp/claude-*/scratchpad/gdb2.log de esta sesión ...]
+[... 60 more lines, all Yes or Yes (*), full log in
+     /tmp/claude-*/scratchpad/gdb2.log from this session ...]
 
 ===== RESOLVE FILE:LINE =====
 .../gdb2.txt:6: Error in sourced command file:
 No source file named LOADFONT.C.
 ```
 
-El último error (`No source file named LOADFONT.C`) es la misma huella
-del problema de 12.1, confirmada por segunda vía independiente: el objeto
-compartido sí está cargado y sí tiene símbolos (`WORD1.exe.so`, `Yes`);
-lo que no resuelve es el nombre en mayúsculas.
+The last error (`No source file named LOADFONT.C`) is the same
+fingerprint of the 12.1 problem, confirmed by a second independent path:
+the shared object really is loaded and really does have symbols
+(`WORD1.exe.so`, `Yes`); what fails to resolve is the uppercase name.
 
-### 12.3 Hipótesis `vsci.hdcScratch` — rama "nulo" descartada en vivo; rama "stale" sigue sin cerrar
+### 12.3 `vsci.hdcScratch` hypothesis, "null" branch ruled out live; "stale" branch still not closed
 
-Con los breakpoints en minúsculas ya disparando (12.1), se imprimió el
-estado real en los dos puntos que §10 dejó como pregunta abierta:
+With the lowercase breakpoints already firing (12.1), the real state
+was printed at the two points §10 left as an open question:
 
-**En `FSelectFont`, justo antes de `GetStockObject`/`SelectObject`
+**In `FSelectFont`, right before `GetStockObject`/`SelectObject`
 (`loadfont.c:711`):**
 ```
 Breakpoint 2, FSelectFont (...) at .../loadfont.c:711
@@ -840,7 +841,7 @@ $1 = (HDC) 0x7f750df50        # *phdc
 $2 = (HDC) 0x3410055          # vsci.hdcScratch
 ```
 
-**En `C_LoadFcid`, justo antes de `GetTextMetrics` (`loadfont.c:349`):**
+**In `C_LoadFcid`, right before `GetTextMetrics` (`loadfont.c:349`):**
 ```
 Breakpoint 1, C_LoadFcid (fcid=..., pfti=0x7ffff7508460 <vfti>, fWidthsOnly=1) at .../loadfont.c:349
 349		GetTextMetrics( hdc, (LPTEXTMETRIC) &tm );
@@ -849,28 +850,28 @@ $2 = {fMonochrome = 0, ..., {mdcdScratch = {hdc = 0x3410055, pbmi = ...}, {hdcSc
 $3 = 1   # fWidthsOnly
 ```
 
-**Rama "nulo": descartada.** `hdc`, `vsci.hdcScratch` y el resto de
-`vsci` están poblados con valores no-nulos y con pinta razonable
-(`dxpScreen=1024`, `dypScreen=768` — coincide con la resolución real de
-Xvfb `:99` usada en esta corrida) en ambos puntos.
+**"Null" branch: ruled out.** `hdc`, `vsci.hdcScratch`, and the rest of
+`vsci` are populated with non-null, reasonable-looking values
+(`dxpScreen=1024`, `dypScreen=768`, matching the actual resolution of
+the Xvfb `:99` used in this run) at both points.
 
-**Rama "stale": NO descartada — sigue abierta.** Un `HDC` liberado (por
-`DeleteDC`/`ReleaseDC` sobre el mismo valor, en otro punto del arranque)
-puede seguir teniendo un valor de puntero perfectamente no-nulo; la sola
-inspección de `print vsci.hdcScratch` no distingue "handle vivo y válido"
-de "handle liberado, valor colgante". Cerrar esta rama requiere una
-comprobación real de validez del handle — candidatos, ninguno probado en
-esta sesión: `GetObjectType(hdc)` (retorna 0 sobre handle inválido),
-`GetDeviceCaps` con chequeo de retorno, o el canal `WINEDEBUG=+gdi` (ver
-12.6) puesto alrededor de estos dos puntos para ver si Wine ya reportó
-un `DeleteDC` sobre `0x3410055` antes de este momento del arranque. §10
-queda como: **rama nulo cerrada, rama stale pendiente** — no "hipótesis
-descartada" sin más.
+**"Stale" branch: NOT ruled out, still open.** A freed `HDC` (via
+`DeleteDC`/`ReleaseDC` on the same value, at another point in startup)
+can still hold a perfectly non-null pointer value; simply inspecting
+`print vsci.hdcScratch` does not distinguish "live, valid handle" from
+"freed handle, dangling value". Closing this branch requires a real
+validity check on the handle, candidates, none tried in this
+session: `GetObjectType(hdc)` (returns 0 on an invalid handle),
+`GetDeviceCaps` with a return check, or the `WINEDEBUG=+gdi` channel
+(see 12.6) placed around these two points to see whether Wine already
+reported a `DeleteDC` on `0x3410055` before this point in startup. §10
+stands as: **null branch closed, stale branch pending**, not "hypothesis
+ruled out" outright.
 
-### 12.4 El checker de heap de glibc corre bajo Wine — con valor diagnóstico limitado, no "descartado igual que ASan/valgrind"
+### 12.4 glibc's heap checker runs under Wine, with limited diagnostic value, not "ruled out just like ASan/valgrind"
 
-Confirmado en vivo, proceso `WORD1.exe.so` real (PID 141797, lanzado
-desde `bin/`, sin recompilar):
+Confirmed live, real `WORD1.exe.so` process (PID 141797, launched
+from `bin/`, without rebuilding):
 
 ```
 $ grep -c malloc_debug /proc/141797/maps
@@ -889,16 +890,16 @@ $ ps -p 141797 -o pid,etimes,stat,cmd
  141797     154 S    WORD1.exe.so
 ```
 
-154s vivo, `LD_PRELOAD`/`GLIBC_TUNABLES` sobreviven el re-exec de
-`wine64`, sin abortar. No choca con la reserva de espacio de direcciones
-como ASan/valgrind (§4, §8) porque no reserva ni desmapea nada — solo
-instrumenta el `malloc` de glibc.
+154s alive, `LD_PRELOAD`/`GLIBC_TUNABLES` survive `wine64`'s re-exec,
+without aborting. It does not collide with the address-space
+reservation like ASan/valgrind (§4, §8) because it does not reserve or
+unmap anything, it only instruments glibc's `malloc`.
 
-**Pero — y esto es lo que matiza §8, no lo confirma sin más — casi toda
-la memoria de Word 1.1a pasa por `GlobalAlloc`/`LocalAlloc`/`HeapAlloc`
-(API Win16/Win32), que Wine resuelve con su propio asignador
-(`Rtl*Heap`, sobre `ntdll`), no con el `malloc` de glibc.** Evidencia
-directa, canal `WINEDEBUG=+heap` contra el mismo binario:
+**But, and this is what qualifies §8, not what confirms it outright,
+almost all of Word 1.1a's memory goes through `GlobalAlloc`/`LocalAlloc`/
+`HeapAlloc` (the Win16/Win32 API), which Wine resolves with its own
+allocator (`Rtl*Heap`, over `ntdll`), not with glibc's `malloc`.**
+Direct evidence, `WINEDEBUG=+heap` channel against the same binary:
 
 ```
 $ DISPLAY=:99 WINEDEBUG=+heap /usr/lib/wine/wine64 WORD1.exe.so
@@ -908,47 +909,47 @@ $ DISPLAY=:99 WINEDEBUG=+heap /usr/lib/wine/wine64 WORD1.exe.so
 05e4:trace:heap:RtlAllocateHeap handle 00007FFFFE220000, flags 0, size 0x10e2, return 00007FFFFE222E50, status 0.
 05e4:trace:heap:RtlFreeHeap handle 00007FFFFE220000, flags 0, ptr 00007FFFFE224690, return 1, status 0.
 05e4:trace:heap:RtlReAllocateHeap handle 00007FFFFE220000, flags 0x10, ptr 00007FFFFE225860, size 0x1180, return 00007FFFFE225860, status 0.
-[... decenas de líneas más, mismo patrón, handle 00007FFFFE220000 -- una
-     región de memoria propia de Wine, separada del heap de glibc ...]
+[... dozens more lines, same pattern, handle 00007FFFFE220000 -- a
+     memory region owned by Wine, separate from glibc's heap ...]
 ```
 
-Toda la actividad de asignación real del arranque pasa por
-`RtlAllocateHeap`/`RtlFreeHeap`/`RtlReAllocateHeap`/`RtlSizeHeap` sobre un
-`handle` propio (`00007FFFFE220000`), gestionado por `ntdll.so` de Wine
-— una capa de metadatos separada de los chunks de `malloc` de glibc que
-`glibc.malloc.check` inspecciona. Una corrupción que dañe los metadatos
-de *ese* heap (el candidato más probable para un bug de Word 1.1a
-original, que usa `GlobalAlloc`/`HeapAlloc` casi exclusivamente) **no la
-va a detectar** `glibc.malloc.check`, sin importar cuánto tiempo corra
-limpio. La corrida de 154s sin abortar (arriba) **no es evidencia de que
-el arranque esté libre de corrupción** — solo de que, si la hay, no está
-pasando por el heap de glibc.
+All the real allocation activity during startup goes through
+`RtlAllocateHeap`/`RtlFreeHeap`/`RtlReAllocateHeap`/`RtlSizeHeap` on a
+`handle` of its own (`00007FFFFE220000`), managed by Wine's `ntdll.so`,
+a metadata layer separate from the glibc `malloc` chunks that
+`glibc.malloc.check` inspects. Corruption that damages *that* heap's
+metadata (the most likely candidate for a bug in the original Word 1.1a,
+which uses `GlobalAlloc`/`HeapAlloc` almost exclusively) **will not be
+detected** by `glibc.malloc.check`, no matter how long it runs clean.
+The 154s clean run (above) **is not evidence that startup is free of
+corruption**, only that, if there is any, it is not going through
+glibc's heap.
 
-### 12.5 Ausencia de `wine-preloader` — específica de esta instalación, no generalizada
+### 12.5 Absence of `wine-preloader`, specific to this install, not generalized
 
 ```
 $ find /usr -iname '*preloader*'
-[sin salida]
+[no output]
 $ file /usr/lib/wine/wine64
 /usr/lib/wine/wine64: ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, BuildID[sha1]=017a68eb9b041254c9c597213f78aad6f1f32317, for GNU/Linux 3.2.0, stripped
 $ wine --version
 wine-10.0 (Debian 10.0~repack-6)
 ```
 
-`wine64` en este paquete (`wine64 10.0~repack-6`, Debian) es un PIE ELF
-normal con intérprete estándar `ld-linux`, sin binario `preloader`
-separado en ningún lado bajo `/usr`. Esto es específico de este empaquetado
-de wine-staging 10.0/Debian y **no se generalizó ni se puso a prueba**
-contra Fedora 44/wine-staging 11.0 (el entorno de §1-§9, donde §2 sí
-documenta con evidencia directa un proceso `wine-preloader` real
-apareciendo en la traza de `gdb`). No asumir que esta ausencia se
-sostiene en esa otra instalación.
+`wine64` in this package (`wine64 10.0~repack-6`, Debian) is a normal
+PIE ELF with the standard `ld-linux` interpreter, no separate
+`preloader` binary anywhere under `/usr`. This is specific to this
+particular wine-staging 10.0/Debian packaging and **was not generalized
+or tested** against Fedora 44/wine-staging 11.0 (the §1-§9 environment,
+where §2 does document with direct evidence a real `wine-preloader`
+process appearing in `gdb`'s trace). Do not assume this absence holds
+on that other install.
 
-### 12.6 `WINEDEBUG=+heap` — verificado contra el binario instalado, fuente `heap.c` no disponible localmente
+### 12.6 `WINEDEBUG=+heap`, verified against the installed binary, `heap.c` source not available locally
 
 ```
 $ find / -path '*/wine*/dlls/ntdll/heap.c' 2>/dev/null
-[sin salida, exit=1]
+[no output, exit=1]
 $ dpkg -l | grep -i wine
 ii  libwine:amd64        10.0~repack-6  amd64  Windows API implementation - library
 ii  libwine-dev:amd64     10.0~repack-6  amd64  Windows API implementation - development files
@@ -957,76 +958,75 @@ ii  wine64                10.0~repack-6  amd64  Windows API implementation - 64-
 ii  wine64-tools          10.0~repack-6  amd64  Windows API implementation - 64-bit developer tools
 ```
 
-Ningún paquete de fuentes de Wine está instalado en este sistema —
-`dpkg -l` solo lista los binarios/dev-headers. **No se pudo revisar
-`heap.c` real; lo que sigue está verificado contra el comportamiento en
-vivo del binario instalado, no contra su fuente.**
+No Wine source package is installed on this system, `dpkg -l` only
+lists binaries/dev-headers. **`heap.c` itself could not be reviewed;
+what follows is verified against the installed binary's live
+behavior, not against its source.**
 
-El canal `heap` existe y produce trazas reales (ver el bloque completo en
-12.4). Probado también a los otros dos niveles de clase que documenta
+The `heap` channel exists and produces real traces (see the full block
+in 12.4). Also tested at the other two class levels documented by
 `man wine`:
 
 ```
 $ DISPLAY=:99 timeout 3 env WINEDEBUG=warn+heap /usr/lib/wine/wine64 WORD1.exe.so
-[sin líneas de heap en 3s de arranque idle]
+[no heap lines in 3s of idle startup]
 $ DISPLAY=:99 timeout 3 env WINEDEBUG=err+heap /usr/lib/wine/wine64 WORD1.exe.so
-[sin líneas de heap en 3s de arranque idle]
+[no heap lines in 3s of idle startup]
 ```
 
-`warn+heap`/`err+heap` no emitieron nada en un arranque limpio de 3s —
-consistente con que solo hablan cuando hay algo que reportar, pero **sin
-la fuente no se puede confirmar qué condición exacta dispara un `warn` o
-`err` en este canal** (p. ej. si valida la integridad de la arena en cada
-llamada, o solo reporta fallos de `NtAllocateVirtualMemory`/parámetros
-inválidos). Esto queda como brecha explícita, no como asumido.
+`warn+heap`/`err+heap` emitted nothing in a 3s clean startup,
+consistent with them only speaking when there is something to report,
+but **without the source, it cannot be confirmed exactly what condition
+triggers a `warn` or `err` on this channel** (e.g. whether it validates
+arena integrity on every call, or only reports
+`NtAllocateVirtualMemory`/invalid-parameter failures). This is left as
+an explicit gap, not assumed.
 
-**Comando recomendado para el hito 2 del plan v2 (en Fedora, donde sí
-reproduce el crash de §1):**
+**Recommended command for milestone 2 of plan v2 (on Fedora, where the
+§1 crash does reproduce):**
 ```
 WINEDEBUG=+heap wine WORD1.exe.so 2>heap.trace
 ```
-`trace+heap` (`+heap` es alias de `trace+heap` según la sintaxis de
-`WINEDEBUG` en `man wine`) da el registro completo de
-`RtlAllocateHeap`/`RtlFreeHeap`/`RtlReAllocateHeap`/`RtlSizeHeap` con
-tamaño y puntero devuelto en cada llamada — suficiente para acotar la
-ventana temporal de la escritura corruptora cruzando ese log contra la
-dirección de crash que ya da `addr2line` (§5), sin necesitar la fuente de
-`heap.c`. Combinarlo con `warn+heap,err+heap` en la misma corrida
-(`WINEDEBUG=+heap,warn+heap,err+heap` es redundante ya que `+heap`
-activa todas las clases; alcanza con `WINEDEBUG=+heap`) para no perder
-ningún nivel de mensaje si el crash real sí dispara uno.
+`trace+heap` (`+heap` is an alias for `trace+heap` per the `WINEDEBUG`
+syntax in `man wine`) gives the full log of
+`RtlAllocateHeap`/`RtlFreeHeap`/`RtlReAllocateHeap`/`RtlSizeHeap` with
+size and returned pointer on every call, enough to bracket the time
+window of the corrupting write by cross-referencing that log against
+the crash address `addr2line` already gives (§5), without needing
+`heap.c`'s source. Combine it with `warn+heap,err+heap` in the same
+run (`WINEDEBUG=+heap,warn+heap,err+heap` is redundant since `+heap`
+already enables all classes; `WINEDEBUG=+heap` alone is enough) so as
+not to miss any message level if the real crash does trigger one.
 
-## 13. Rama "stale" de `vsci.hdcScratch` — cerrada en este entorno, sin usar `GetObjectType` (2026-08-13)
+## 13. `vsci.hdcScratch` "stale" branch, closed in this environment, without using `GetObjectType` (2026-08-13)
 
-Continuación de §10/§12.3, mismo entorno (Debian 13/wine-10.0/gdb 16.3),
-binario reconstruido tras los 7 commits de migración `OpusMem*` de esta
-sesión (`bf7a5e1`..`aab06e5`) — **el crash de §1 sigue sin reproducir
-acá**, verificado de nuevo antes de este análisis (`wine WORD1.exe.so`
-bajo `Xvfb :99`, 10s, sin salida, mismo comportamiento que §11.2). Este
-punto no toca el bloqueador principal; cierra el ítem secundario que
-§12.3 dejó abierto.
+Continuation of §10/§12.3, same environment (Debian 13/wine-10.0/gdb
+16.3), binary rebuilt after this session's 7 `OpusMem*` migration
+commits (`bf7a5e1`..`aab06e5`), **the §1 crash still does not reproduce
+here**, re-verified before this analysis (`wine WORD1.exe.so` under
+`Xvfb :99`, 10s, no output, same behavior as §11.2). This point does not
+touch the main blocker; it closes the secondary item §12.3 left open.
 
-**Intento fallido, documentado para no repetirlo:** llamar
-`GetObjectType(hdc)` desde `gdb` (`print GetObjectType(vsci.hdcScratch)`)
-falla con `No symbol "GetObjectType" en el contexto actual` en los dos
-breakpoints de §12.1 (`loadfont.c:711` y `:349`). Causa, confirmada con
-`info sharedlibrary` completo (sin filtro) en el mismo proceso: en esta
-build Winelib, `gdi32` no aparece como `.so` nativo separado — a
-diferencia de `win32u.so`/`winex11.so`/`winspool.so`
-(`/usr/lib/x86_64-linux-gnu/wine/x86_64-unix/`), que sí están en la
-lista. Confirmado también por `nm -D bin/WORD1.exe.so | grep -w
-GetObjectType` (sin resultado) y `GetTextMetrics` (sin resultado) — sólo
-`FSelectFont` (símbolo propio de `Opus/`) aparece exportado. Lectura: en
-esta configuración `gdi32` se resuelve puramente vía PE (importado a
-través de la maquinaria de carga PE de Wine, sin contraparte ELF que
-`gdb` pueda ver), así que `gdb` no tiene con qué resolver el nombre por
-symbol lookup nativo — llamar la función real requeriría reconstruir el
-thunk de import a mano, no vale el costo frente a la alternativa de
-abajo.
+**Failed attempt, documented so it is not repeated:** calling
+`GetObjectType(hdc)` from `gdb` (`print GetObjectType(vsci.hdcScratch)`)
+fails with `No symbol "GetObjectType" in current context` at the two
+§12.1 breakpoints (`loadfont.c:711` and `:349`). Cause, confirmed with a
+full, unfiltered `info sharedlibrary` on the same process: in this
+Winelib build, `gdi32` does not appear as a native `.so` on its own,
+unlike `win32u.so`/`winex11.so`/`winspool.so`
+(`/usr/lib/x86_64-linux-gnu/wine/x86_64-unix/`), which do appear in
+the list. Also confirmed by `nm -D bin/WORD1.exe.so | grep -w
+GetObjectType` (no result) and `GetTextMetrics` (no result), only
+`FSelectFont` (a symbol native to `Opus/`) appears exported. Reading:
+in this configuration `gdi32` resolves purely via PE (imported through
+Wine's PE loading machinery, with no ELF counterpart `gdb` can see), so
+`gdb` has nothing to resolve the name through by native symbol lookup;
+calling the real function would require rebuilding the import thunk by
+hand, not worth the cost against the alternative below.
 
-**Vía que sí funcionó: `WINEDEBUG=+gdi` sobre una corrida completa,
-grep por el valor de handle.** Mismo comando de arranque que el resto de
-esta sección (`cwd=bin/`, `DISPLAY=:99`):
+**Path that did work: `WINEDEBUG=+gdi` over a full run, grep for the
+handle value.** Same startup command as the rest of this section
+(`cwd=bin/`, `DISPLAY=:99`):
 
 ```
 $ DISPLAY=:99 timeout 8 env WINEDEBUG=+gdi wine WORD1.exe.so >gdi.trace 2>&1
@@ -1034,115 +1034,117 @@ $ wc -l gdi.trace
 45265 gdi.trace
 ```
 
-`vsci.hdcScratch` se crea una sola vez, temprano en el arranque:
+`vsci.hdcScratch` is created exactly once, early in startup:
 
 ```
 0024:trace:gdi:alloc_gdi_handle allocated NTGDI_OBJ_MEMDC 0x3410055 73/65536
 ```
 
-Mismo valor de handle (`0x3410055`) que en la corrida de `gdb` de §12.3
-— determinístico en este build/entorno, no una coincidencia de esta
-corrida. Se reutiliza 43 veces vía `SelectObject` a lo largo de las
-45265 líneas del trace (última aparición en la línea 39537, de 45265),
-y **cero** apariciones junto a `NtGdiDeleteObjectApp`/`free_gdi_handle`
-en las 3982 líneas que sí contienen esos dos tokens en todo el trace —
-verificado con `grep -c "free_gdi_handle\|DeleteDC" gdi.trace` (3982
-líneas, ninguna con `3410055`) y `grep -n 3410055 gdi.trace | grep -iv
-"SelectObject\|alloc_gdi_handle"` (sin salida). El trace termina con el
-proceso todavía activo, dibujando contenido real sobre otro DC (`Polygon`
-`Rectangle` `SelectObject` sobre `000000000D0100CD`, un HDC de ventana
-distinto) hasta el corte por `timeout` — sin ninguna excepción, `fault`,
-`crash` ni mensaje de corrupción en las 45265 líneas (`grep -in
-"exception|crash|segv|fault|corrupt" gdi.trace`, sin resultado).
+Same handle value (`0x3410055`) as in the §12.3 `gdb` run,
+deterministic in this build/environment, not a coincidence of this
+run. It is reused 43 times via `SelectObject` throughout the 45265
+lines of the trace (last appearance on line 39537, of 45265), and
+**zero** occurrences alongside `NtGdiDeleteObjectApp`/`free_gdi_handle`
+in the 3982 lines that do contain those two tokens anywhere in the
+trace, verified with `grep -c "free_gdi_handle\|DeleteDC" gdi.trace`
+(3982 lines, none with `3410055`) and `grep -n 3410055 gdi.trace | grep -iv
+"SelectObject\|alloc_gdi_handle"` (no output). The trace ends with the
+process still active, drawing real content onto another DC (`Polygon`
+`Rectangle` `SelectObject` onto `000000000D0100CD`, a different window
+HDC) until cut off by `timeout`, with no exception, `fault`,
+`crash`, or corruption message anywhere in the 45265 lines (`grep -in
+"exception|crash|segv|fault|corrupt" gdi.trace`, no result).
 
-**Conclusión: rama "stale" descartada para esta corrida concreta, no en
-general.** `vsci.hdcScratch` está vivo (nunca liberado) durante toda la
-ventana observada de 8s, incluyendo el uso real en `FSelectFont`/
-`C_LoadFcid` de §12.1/§12.3 — no es un handle colgante en este arranque.
-§10 queda ahora: **rama nulo cerrada (§12.3), rama stale cerrada para
-este entorno (aquí)** — la hipótesis del HDC en `vsci.hdcScratch` deja
-de ser candidata a explicar un crash que, de todos modos, este entorno
-nunca reproduce. No se puede generalizar a Fedora (donde sí reproduce
-§1) sin repetir esta misma captura allá — queda como parte del hito 2
-pendiente, no como algo que este resultado ya cubre.
+**Conclusion: "stale" branch ruled out for this particular run, not in
+general.** `vsci.hdcScratch` is alive (never freed) throughout the
+whole observed 8s window, including the real use in `FSelectFont`/
+`C_LoadFcid` from §12.1/§12.3, it is not a dangling handle in this
+startup. §10 now stands as: **null branch closed (§12.3), stale branch
+closed for this environment (here)**, the `vsci.hdcScratch` HDC
+hypothesis stops being a candidate to explain a crash that this
+environment never reproduces anyway. It cannot be generalized to Fedora
+(where §1 does reproduce) without repeating this same capture there, it
+remains part of milestone 2, pending, not something this result already
+covers.
 
 ---
 
-## Sesión hp-15 (EndeavourOS/Arch) — 2026-08-14: reproduce, y primer candidato con nombre y línea
+## hp-15 session (EndeavourOS/Arch), 2026-08-14: reproduces, and a first named-and-lined candidate
 
-**Entorno:** EndeavourOS (Arch, rolling), GCC 16.2.1, wine-staging 11.15, `gdb`
-17.2, `valgrind` 3.25.1. Build desde `HEAD` (`5fed452`), reconfigurado y
-reconstruido en esta sesión (`opus_original_engine` 0 errores, `WORD1.exe`/
-`WORD1.exe.so` enlazados). `Xvfb :99` dedicado (no el display real de la
-sesión de escritorio) — instalado (`xorg-server-xvfb`) para no interferir con
-el entorno gráfico en uso.
+**Environment:** EndeavourOS (Arch, rolling), GCC 16.2.1, wine-staging 11.15, `gdb`
+17.2, `valgrind` 3.25.1. Build from `HEAD` (`5fed452`), reconfigured and
+rebuilt in this session (`opus_original_engine` 0 errors, `WORD1.exe`/
+`WORD1.exe.so` linked). Dedicated `Xvfb :99` (not the desktop session's
+real display), installed (`xorg-server-xvfb`) so as not to interfere
+with the graphical environment in use.
 
-### 1. Reproduce — cuarta y quinta firma de corrupción
+### 1. It reproduces, a fourth and fifth corruption signature
 
-Cuatro corridas con `gdb -q --batch -ex run -ex "bt full" --args wine
-WORD1.exe.so`, mismo punto de arranque hasta el fallo
-(`DwmSetWindowAttribute` stub, igual que Fedora/Debian):
+Four runs with `gdb -q --batch -ex run -ex "bt full" --args wine
+WORD1.exe.so`, same startup point up to the failure
+(`DwmSetWindowAttribute` stub, same as Fedora/Debian):
 
-| Corrida | Mensaje glibc |
+| Run | glibc message |
 |---|---|
 | 1 | `free(): invalid pointer` |
-| 2 | `free(): invalid next size (normal)` (== firma #2 de Fedora, §1) |
+| 2 | `free(): invalid next size (normal)` (same as signature #2 from Fedora, §1) |
 | 3 | `free(): invalid next size (normal)` |
-| 4 (con debuginfod) | `double free or corruption (!prev)` |
+| 4 (with debuginfod) | `double free or corruption (!prev)` |
 
-Dos firmas nuevas (`invalid pointer`, `double free or corruption (!prev)`)
-que no aparecían en Fedora ni Debian — refuerza la lectura de §1: es
-corrupción de heap real y timing-dependiente, no un bug determinista de
-lógica. **hp-15 reproduce de forma consistente (4/4)**, a diferencia del VPS
-(Debian/GCC 14.2/wine 10.0, confirmado que no reproduce, `02-fedora-pending.md`)
-— GCC ≥15 parece ser la variable relevante, no la distro.
+Two new signatures (`invalid pointer`, `double free or corruption (!prev)`)
+that did not appear on Fedora or Debian, reinforcing the §1 reading: it
+is real, timing-dependent heap corruption, not a deterministic logic
+bug. **hp-15 reproduces consistently (4/4)**, unlike the VPS
+(Debian/GCC 14.2/wine 10.0, confirmed not to reproduce, `02-fedora-pending.md`),
+GCC ≥15 appears to be the relevant variable, not the distro.
 
-### 2. Hito 2 ejecutado por primera vez: `WINEDEBUG=+heap`
+### 2. Milestone 2 run for the first time: `WINEDEBUG=+heap`
 
-Nunca corrido antes en ningún entorno (§2 de `02-fedora-pending.md` lo
-dejaba como recomendación pendiente). Resultado: **888.073 líneas**,
-crash real en la línea 24273 — el resto son hilos que siguieron corriendo
-después del `abort()` de este hilo (no es que el proceso siguiera vivo; es
-mezcla de buffering entre el canal de trace de Wine y el `fprintf` directo
-de glibc a stderr — el orden de líneas post-crash no es cronológicamente
-confiable entre sí, pero sí lo es dentro de un mismo hilo).
+Never run before in any environment (§2 of `02-fedora-pending.md` left
+it as a pending recommendation). Result: **888,073 lines**, real crash
+on line 24273, the rest are threads that kept running after this
+thread's `abort()` (it is not that the process stayed alive; it is
+buffering mixing between Wine's trace channel and glibc's direct
+`fprintf` to stderr, the post-crash line order is not chronologically
+reliable across threads, but it is reliable within a single thread).
 
-**Hallazgo:** inmediatamente antes de la línea del crash **no hay ningún
-`RtlFreeHeap` logueado** — la corrupción se detecta en un `free()` que no
-pasa por el wrapper de heap de Wine que instrumenta `+heap`. Esto es
-consistente con lo que sigue (§3): el `free()` que aborta es el destructor
-de un `std::wstring` de C++ (glibc `malloc`/`free` directo vía
-`operator delete`), no un `HeapFree`/`GlobalFree` de la API Win32 que
-`WINEDEBUG=+heap` sí habría capturado.
+**Finding:** immediately before the crash line **there is no
+`RtlFreeHeap` logged**, the corruption is detected in a `free()` that
+does not go through Wine's heap wrapper that `+heap` instruments. This
+is consistent with what follows (§3): the `free()` that aborts is a
+C++ `std::wstring` destructor (direct glibc `malloc`/`free` via
+`operator delete`), not a Win32 API `HeapFree`/`GlobalFree` that
+`WINEDEBUG=+heap` would have captured.
 
-### 3. Frame #0 simbolizado — y algo más allá de frame #0
+### 3. Frame #0 symbolized, and something beyond frame #0
 
-`info proc mappings` + `x/3i $pc` en el punto del abort: `$pc` cae dentro de
-`/usr/lib/libc.so.6` (rango ejecutable `0x...c24000`-`0x...d9f000`) — es
-código interno de glibc (la ruta de `malloc_printerr`/`abort`/`raise`), como
-se esperaba. `bt` no desenrolla más allá de frame #0 — probado también con
-`debuginfod.archlinux.org` habilitado (`set debuginfod enabled on`, símbolos
-sí se descargaron a `~/.cache/debuginfod_client/`, 6 build-ids) y sigue sin
-desenrollar. **No es falta de símbolos — es imposibilidad de unwind por CFI/
-frame-pointers rotos en el código optimizado de glibc en este punto**, la
-misma familia de problema que ya bloqueaba `winedbg`/`dbghelp` en Fedora (§3
-original), confirmada ahora también con gdb vanilla + debuginfod en Arch.
+`info proc mappings` + `x/3i $pc` at the abort point: `$pc` falls
+inside `/usr/lib/libc.so.6` (executable range `0x...c24000`-`0x...d9f000`),
+it is internal glibc code (the `malloc_printerr`/`abort`/`raise` path),
+as expected. `bt` does not unwind beyond frame #0, also tried with
+`debuginfod.archlinux.org` enabled (`set debuginfod enabled on`, symbols
+were downloaded to `~/.cache/debuginfod_client/`, 6 build-ids) and it
+still does not unwind. **It is not a lack of symbols, it is the
+impossibility of unwinding due to broken CFI/frame pointers in glibc's
+optimized code at this point**, the same family of problem that already
+blocked `winedbg`/`dbghelp` on Fedora (§3 original), now also confirmed
+with vanilla gdb + debuginfod on Arch.
 
-**Rodeo que sí funcionó — escaneo manual de stack:** con el mapa de memoria
-ya capturado (`info proc mappings`) y un volcado crudo del stack
-(`x/400gx $rsp`), clasifiqué cada valor de 8 bytes contra los rangos
-ejecutables conocidos (libc, `ntdll.dll`, `user32.dll`, `win32u.dll`,
-`WORD1.exe.so`) con un script Python. Encontró una cadena de direcciones
-dentro de `WORD1.exe.so` — no es un unwind real (es memoria de stack cruda,
-puede incluir basura de llamadas ya retornadas), pero cruzada con
-`addr2line -e WORD1.exe.so -f -C` da nombres y líneas de código reales y
-consistentes entre sí:
+**Workaround that did work, manual stack scan:** with the memory map
+already captured (`info proc mappings`) and a raw stack dump
+(`x/400gx $rsp`), each 8-byte value was classified against the known
+executable ranges (libc, `ntdll.dll`, `user32.dll`, `win32u.dll`,
+`WORD1.exe.so`) with a Python script. It found a chain of addresses
+inside `WORD1.exe.so`, not a real unwind (it is raw stack memory,
+which can include garbage from already-returned calls), but cross-checked
+with `addr2line -e WORD1.exe.so -f -C` it gives real, mutually
+consistent names and lines:
 
 ```
 new_allocator<wchar_t>::deallocate           new_allocator.h:184
 basic_string<wchar_t>::_M_dispose            basic_string.h:299
 basic_string<wchar_t>::~basic_string         basic_string.h:920
-sync_combo(HWND, HWND, int&)                 opus_win95_chrome.cpp:890  <-- el for de la línea 890
+sync_combo(HWND, HWND, int&)                 opus_win95_chrome.cpp:890  <-- the for loop on line 890
 ComboEnumeration::~ComboEnumeration          opus_win95_chrome.cpp:814
 locate_source_combos(HWND, ToolbarState&)    opus_win95_chrome.cpp:849
 sync_mirrors(HWND, ToolbarState&)            opus_win95_chrome.cpp:924
@@ -1150,123 +1152,125 @@ toolbar_window_proc(HWND, UINT, WPARAM, LPARAM)  opus_win95_chrome.cpp:2557, 260
 Dispatch<2ul>(...)                           opus_asm_wproc.cpp:79
 ```
 
-Los tres primeros frames (deallocate → `_M_dispose` → `~basic_string`) son
-exactamente la ruta interna de "un `std::wstring` se destruye y su buffer se
-libera" — y el frame que lo posee es `sync_combo`, línea 890, que es el
-`for` de este bloque (`src/port/original/opus_win95_chrome.cpp:884-897`):
+The first three frames (deallocate → `_M_dispose` → `~basic_string`)
+are exactly the internal path of "a `std::wstring` is destroyed and its
+buffer is freed", and the frame that owns it is `sync_combo`, line 890,
+which is this block's `for` loop
+(`src/port/original/opus_win95_chrome.cpp:884-897`):
 
 ```cpp
 if (count >= 0 && count != copied_count) {
     std::wstring mirror_text;
     const int mirror_length = GetWindowTextLengthW(mirror);
     mirror_text.resize(static_cast<std::size_t>(mirror_length) + 1);
-    GetWindowTextW(mirror, &mirror_text[0], mirror_length + 1);   // línea 888
+    GetWindowTextW(mirror, &mirror_text[0], mirror_length + 1);   // line 888
     SendMessageW(mirror, CB_RESETCONTENT, 0, 0);
-    for (int index = 0; index < count; ++index) {                // línea 890
+    for (int index = 0; index < count; ++index) {                // line 890
         const std::wstring item = wide_from_ansi(combo_item(source, index));
         SendMessageW(mirror, CB_ADDSTRING, 0,
                      reinterpret_cast<LPARAM>(item.c_str()));
-    }                                                              // línea 894 — ~item() por iteración
+    }                                                              // line 894 -- ~item() per iteration
     SetWindowTextW(mirror, mirror_text.c_str());
     ...
 ```
 
-**Hipótesis concreta, no verificada con instrumentación adicional:**
-`mirror_text` (línea 885-888) se dimensiona con `GetWindowTextLengthW` y se
-escribe con `GetWindowTextW` sobre el mismo buffer. MSDN documenta
-explícitamente que `GetWindowTextLength{A,W}` puede devolver una longitud
-que no coincide con lo que la variante opuesta (`W` vs `A`) termina
-escribiendo, específicamente en mezclas ANSI/Unicode — exactamente el caso
-aquí, ya que el resto de `sync_combo`/`combo_item` usa `SendMessageA` sobre
-el mismo control. Si la reimplementación de Wine de este par de APIs
-escribe más `wchar_t` de los que `GetWindowTextLengthW` reportó, es un
-heap-buffer-overflow de tamaño acotado (unos pocos wchar_t) sobre el buffer
-de `mirror_text` — exactamente la clase de corrupción que produce
-`free(): invalid next size` / `double free` en el `free()` de una llamada
-posterior (no necesariamente la de `mirror_text` mismo — puede manifestarse
-en el chunk vecino, como en cualquier heap-overflow), consistente con que la
-firma varíe entre corridas (§1: depende de qué chunk linda con el buffer
-dañado).
+**Concrete hypothesis, not verified with further instrumentation:**
+`mirror_text` (lines 885-888) is sized with `GetWindowTextLengthW` and
+written with `GetWindowTextW` onto the same buffer. MSDN explicitly
+documents that `GetWindowTextLength{A,W}` can return a length that does
+not match what the opposite variant (`W` vs `A`) ends up writing,
+specifically in ANSI/Unicode mixes, exactly the case here, since the
+rest of `sync_combo`/`combo_item` uses `SendMessageA` on the same
+control. If Wine's reimplementation of this pair of APIs writes more
+`wchar_t` than `GetWindowTextLengthW` reported, it is a bounded
+heap-buffer-overflow (a few wchar_t) over the `mirror_text` buffer,
+exactly the class of corruption that produces `free(): invalid next size`
+/ `double free` on a later `free()` call (not necessarily on
+`mirror_text` itself, it can manifest on a neighboring chunk, as with any
+heap overflow), consistent with the signature varying between runs
+(§1: it depends on which chunk sits next to the damaged buffer).
 
-**No confirmado. No aplicado.** No se instrumentó `sync_combo` para verificar
-tamaño real escrito vs. reportado (siguiente paso obvio, no intentado en
-esta sesión) ni se descartó la otra candidata más débil del mismo bloque
-(`combo_item`/`wide_from_ansi`, revisadas y con aritmética de tamaño
-correcta a simple lectura — MultiByteToWideChar con `cchMultiByte=-1` ya
-incluye el terminador nulo en el conteo devuelto, sin off-by-one visible).
+**Not confirmed. Not applied.** `sync_combo` was not instrumented to
+verify the actual size written vs. reported (the obvious next step, not
+attempted this session), nor was the block's other, weaker candidate
+ruled out (`combo_item`/`wide_from_ansi`, reviewed and with correct size
+arithmetic on a plain reading, `MultiByteToWideChar` with
+`cchMultiByte=-1` already includes the null terminator in its returned
+count, no visible off-by-one).
 
-### 4. Hipótesis de §3 (`mirror_text`) — instrumentada y **refutada**
+### 4. Hypothesis from §3 (`mirror_text`), instrumented and **refuted**
 
-Instrumentación temporal aplicada a `sync_combo` (línea 886-888, revertida
-después, no commiteada): en vez de escribir directamente en
-`mirror_text[0]`, se escribió en un `std::vector<wchar_t>` sobre-reservado
-con 16 celdas canario (`0xCDCD`) más allá del límite `mirror_length + 1`
-pasado como `nMaxCount` a `GetWindowTextW`, comparando además su valor de
-retorno contra `mirror_length`.
+Temporary instrumentation applied to `sync_combo` (lines 886-888,
+reverted afterward, not committed): instead of writing directly into
+`mirror_text[0]`, it wrote into an over-reserved `std::vector<wchar_t>`
+with 16 canary cells (`0xCDCD`) beyond the `mirror_length + 1` limit
+passed as `nMaxCount` to `GetWindowTextW`, also comparing its return
+value against `mirror_length`.
 
 ```
 [sync_combo DIAG] mirror_length=5 copied=5 guard_cells_clobbered=0/16
 ```
 
-**5/5 corridas, mismo resultado exacto** (los tres combos —
-style/font/size— pasan por este mismo bloque instrumentado en cada
-corrida). `GetWindowTextW` devuelve exactamente lo pedido y **no toca
-ninguna celda canario** — el par `GetWindowTextLengthW`/`GetWindowTextW`
-sobre `mirror` se comporta correctamente en esta reimplementación de Wine.
-**Hipótesis refutada, no es la fuente de la corrupción.**
+**5/5 runs, the exact same result** (the three combos, style/font/size,
+all go through this same instrumented block on every run).
+`GetWindowTextW` returns exactly what was requested and **touches no
+canary cell**, the `GetWindowTextLengthW`/`GetWindowTextW` pair on
+`mirror` behaves correctly in this Wine reimplementation.
+**Hypothesis refuted, it is not the source of the corruption.**
 
-El crash **sigue ocurriendo** con la instrumentación puesta (1/5 corridas,
-`free(): invalid pointer`) — el bug es real y sigue vivo, solo que no es
-este overflow puntual. El resto de la cadena de stack de §3 (destructor de
-`std::wstring` dentro de `sync_combo`/`locate_source_combos`/
-`sync_mirrors`) sigue siendo la evidencia más sólida que hay; lo que se
-descarta es específicamente el mecanismo propuesto en §3, no la ubicación
-general.
+The crash **still occurs** with the instrumentation in place (1/5 runs,
+`free(): invalid pointer`), the bug is real and still alive, it just is
+not this particular overflow. The rest of the §3 stack chain
+(`std::wstring` destructor inside `sync_combo`/`locate_source_combos`/
+`sync_mirrors`) remains the strongest evidence available; what is
+ruled out is specifically the mechanism proposed in §3, not the general
+location.
 
-### 5. Dónde retomar
+### 5. Where to resume
 
-1. ~~**Candidata siguiente, no probada:** `combo_item()`/`wide_from_ansi()`
-   (línea ~798-857)~~ — **instrumentada y refutada, ver §6.**
-2. ~~**También sin probar:** el propio `ComboEnumeration`/
-   `collect_original_combos` (línea 814-828)~~ — **instrumentado y
-   refutado, ver §7 (buffer local) y §11 (destrucción del vector +
-   viaje por `LPARAM`, agotado a fondo).**
-3. Repetir el mismo escaneo de stack (`info proc mappings` + `x/400gx $rsp`
-   + `addr2line`) en el VPS/Debian una vez que se entienda por qué ahí no
-   reproduce — podría no ser "no reproduce el bug", sino "reproduce pero no
-   se manifiesta como abort visible" bajo GCC 14 (layout de heap distinto).
-   No verificado.
-4. La técnica de escaneo manual de stack (sin depender de `bt`/unwind roto)
-   y la de canario post-buffer (sin depender de ASan/valgrind, ambos ya
-   descartados en Fedora por chocar con `wine-preloader`, §7 de
-   `02-fedora-pending.md`) quedan como métodos reutilizables para
-   cualquier crash futuro sin DWARF/CFI confiable en este proyecto — no son
-   específicos de este bug.
+1. ~~**Next candidate, not tried:** `combo_item()`/`wide_from_ansi()`
+   (line ~798-857)~~ **instrumented and refuted, see §6.**
+2. ~~**Also untried:** `ComboEnumeration`/
+   `collect_original_combos` itself (line 814-828)~~ **instrumented and
+   refuted, see §7 (local buffer) and §11 (vector destruction +
+   the trip through `LPARAM`, exhausted).**
+3. Repeat the same stack scan (`info proc mappings` + `x/400gx $rsp`
+   + `addr2line`) on the VPS/Debian once it is understood why it does
+   not reproduce there; it might not be "the bug does not reproduce",
+   but "it reproduces yet does not manifest as a visible abort" under
+   GCC 14 (a different heap layout). Not verified.
+4. The manual stack-scan technique (not depending on broken `bt`/unwind)
+   and the post-buffer canary technique (not depending on ASan/valgrind,
+   both already ruled out on Fedora due to colliding with
+   `wine-preloader`, §7 of `02-fedora-pending.md`) remain reusable
+   methods for any future crash without reliable DWARF/CFI in this
+   project, they are not specific to this bug.
 
-### 6. `combo_item()`/`wide_from_ansi()` — instrumentados y **refutados** (mismo día, hp-15)
+### 6. `combo_item()`/`wide_from_ansi()`, instrumented and **refuted** (same day, hp-15)
 
-Segunda candidata de §5 (punto 1), el otro tramo de la misma cadena de
-stack de §3 (`combo_item` alimenta `wide_from_ansi`, cuyo resultado es el
-`item` que `sync_combo` pasa a `CB_ADDSTRING` en el `for` de la línea 890).
+Second candidate from §5 (point 1), the other stretch of the same §3
+stack chain (`combo_item` feeds `wide_from_ansi`, whose result is the
+`item` that `sync_combo` passes to `CB_ADDSTRING` in the `for` loop on
+line 890).
 
-Instrumentación temporal aplicada a ambas funciones
-(`src/port/original/opus_win95_chrome.cpp`, revertida después, no
-commiteada — diff confirmado limpio contra `HEAD` tras revertir):
+Temporary instrumentation applied to both functions
+(`src/port/original/opus_win95_chrome.cpp`, reverted afterward, not
+committed, diff confirmed clean against `HEAD` after reverting):
 
-- `combo_item()`: buffer de `length + 1` bytes sobre-reservado con 16
-  celdas canario `0xCD`, comparando el valor de retorno de
-  `CB_GETLBTEXT` (`copied`) contra `CB_GETLBTEXTLEN` (`length`).
-- `wide_from_ansi()`: buffer de `count` `wchar_t` sobre-reservado con 16
-  celdas canario `0xCDCD`, comparando el valor de retorno de la segunda
-  llamada a `MultiByteToWideChar` (`written`) contra la primera
+- `combo_item()`: a `length + 1`-byte buffer over-reserved with 16
+  `0xCD` canary cells, comparing `CB_GETLBTEXT`'s return value
+  (`copied`) against `CB_GETLBTEXTLEN` (`length`).
+- `wide_from_ansi()`: a buffer of `count` `wchar_t` over-reserved with 16
+  `0xCDCD` canary cells, comparing the return value of the second
+  call to `MultiByteToWideChar` (`written`) against the first
   (`count`).
 
-**5/5 corridas** (`gdb -q --batch -ex run -ex "bt full"`, `Xvfb :99`,
-build reconstruido desde `HEAD` con la instrumentación): salida de DIAG
-**idéntica byte a byte entre las 5 corridas** (mismo `md5sum`) — más
-determinista que la instrumentación de `mirror_text` en §4, que ya tuvo
-variación de firma en 1/5. Ejemplo (una corrida sincroniza un combo con 5
-entradas):
+**5/5 runs** (`gdb -q --batch -ex run -ex "bt full"`, `Xvfb :99`,
+build rebuilt from `HEAD` with the instrumentation): DIAG output
+**byte-identical across the 5 runs** (same `md5sum`), more
+deterministic than the `mirror_text` instrumentation in §4, which
+already showed 1/5 signature variation. Example (one run syncing a
+combo with 5 entries):
 
 ```
 [combo_item DIAG] index=0 length=12 copied=12 guard_cells_clobbered=0/16
@@ -1276,725 +1280,728 @@ entradas):
 ...
 ```
 
-`copied == length` y `written == count` en las 10 líneas DIAG de las 5
-corridas, **ninguna celda canario tocada nunca** (`guard_cells_clobbered=0/16`
-en el 100% de las invocaciones). El crash **persiste en las 5/5 corridas**,
-misma firma exacta en las cinco (`free(): invalid next size (normal)`,
-`SIGABRT`) — más consistente incluso que el baseline de §1 (que variaba
-entre firmas). **Hipótesis refutada**: ni `combo_item()` ni
-`wide_from_ansi()` escriben fuera de lo que reportan sus longitudes; el
-par `CB_GETLBTEXTLEN`/`CB_GETLBTEXT` y el patrón de doble llamada a
-`MultiByteToWideChar` se comportan correctamente en esta reimplementación
-de Wine, igual que ya se había confirmado para `GetWindowTextLengthW`/
-`GetWindowTextW` en §4.
+`copied == length` and `written == count` in the 10 DIAG lines across
+the 5 runs, **no canary cell ever touched** (`guard_cells_clobbered=0/16`
+in 100% of invocations). The crash **persists in 5/5 runs**, exact same
+signature all five times (`free(): invalid next size (normal)`,
+`SIGABRT`), even more consistent than the §1 baseline (which varied
+between signatures). **Hypothesis refuted:** neither `combo_item()` nor
+`wide_from_ansi()` write beyond what their lengths report; the
+`CB_GETLBTEXTLEN`/`CB_GETLBTEXT` pair and the double-call
+`MultiByteToWideChar` pattern behave correctly in this Wine
+reimplementation, just as already confirmed for `GetWindowTextLengthW`/
+`GetWindowTextW` in §4.
 
-**Lectura acumulada (§4 + este punto):** los tres bloques de
-lectura/escritura de tamaño explícito dentro de `sync_combo` y sus
-llamadas directas (`mirror_text`, `combo_item`, `wide_from_ansi`) quedan
-descartados como la fuente. La cadena de stack de §3 sigue siendo la
-evidencia más sólida disponible (el crash real es un `free()` de
-`std::wstring` en esa vecindad de código), pero el mecanismo concreto
-sigue sin aislarse. Punto 2 de §5 (`ComboEnumeration`/
-`collect_original_combos`, línea 814-828) sigue como pendiente — ver §7,
-también refutado.
+**Cumulative reading (§4 + this point):** the three explicit-size
+read/write blocks inside `sync_combo` and its direct calls
+(`mirror_text`, `combo_item`, `wide_from_ansi`) are ruled out as the
+source. The §3 stack chain remains the strongest evidence available
+(the real crash is a `free()` of a `std::wstring` in that code
+neighborhood), but the concrete mechanism is still not isolated. Point 2
+of §5 (`ComboEnumeration`/`collect_original_combos`, line 814-828)
+remains pending, see §7, also refuted.
 
-**Build restaurado:** `opus_original_engine` y `WORD1` reconstruidos
-después de revertir la instrumentación — el binario en `bin/` vuelve a
-corresponder exactamente al código de `HEAD`, no queda instrumentación
-residual.
+**Build restored:** `opus_original_engine` and `WORD1` rebuilt after
+reverting the instrumentation, the binary in `bin/` again matches
+`HEAD`'s code exactly, no residual instrumentation left.
 
-### 7. `ComboEnumeration`/`collect_original_combos` — instrumentado y **refutado** (mismo día, hp-15)
+### 7. `ComboEnumeration`/`collect_original_combos`, instrumented and **refuted** (same day, hp-15)
 
-Punto 2 de §5, el último candidato pendiente de la cadena de stack de §3.
-De las dos piezas de este bloque (`opus_win95_chrome.cpp:814-828`), solo
-una tiene la forma "API de Win32 llena un buffer de tamaño explícito" que
-el método de canario puede probar directamente: el `wchar_t
-class_name[64]` de `collect_original_combos`, llenado por
-`GetClassNameW(candidate, class_name, 64)`. La otra —
-`std::vector<HWND> combos` creciendo vía `push_back` en cada callback de
-`EnumChildWindows` — es gestión de memoria de C++ estándar, no una
-escritura de la API sobre un buffer nuestro con tamaño pasado
-explícitamente; no hay un límite ajeno que instrumentar del mismo modo
-(su propia gestión interna de capacidad no es de las que este proyecto
-haya visto fallar). Se instrumentó solo `class_name`.
+Point 2 of §5, the last pending candidate from the §3 stack chain. Of
+the two pieces in this block (`opus_win95_chrome.cpp:814-828`), only
+one has the shape "Win32 API fills a buffer of explicit size" that the
+canary method can directly test: the `wchar_t
+class_name[64]` in `collect_original_combos`, filled by
+`GetClassNameW(candidate, class_name, 64)`. The other, the
+`std::vector<HWND> combos` growing via `push_back` on each
+`EnumChildWindows` callback, is standard C++ memory management, not
+an API writing into our buffer with an explicit size; there is no
+external bound to instrument the same way (its own internal capacity
+management is not the kind this project has seen fail). Only
+`class_name` was instrumented.
 
-Instrumentación temporal (revertida después, no commiteada — diff
-confirmado limpio contra `HEAD`): buffer `wchar_t[64 + 16]`, 16 celdas
-canario `0xCDCD` más allá del límite de 64 pasado como `nMaxCount`,
-comparando el valor de retorno de `GetClassNameW` (`written`) y
-verificando las celdas canario tras la llamada. (Nota aparte: al quitar
-la cero-inicialización original del buffer para poder llenarlo con el
-patrón canario, hubo que añadir un `class_name[0] = L'\0'` explícito para
-el caso `written == 0` — `GetClassNameW` no garantiza terminar el buffer
-si falla, y el código original dependía de la cero-inicialización para
-ese caso. No afecta la detección de overflow, que ya se evalúa antes de
-esa rama.)
+Temporary instrumentation (reverted afterward, not committed, diff
+confirmed clean against `HEAD`): a `wchar_t[64 + 16]` buffer, 16
+`0xCDCD` canary cells beyond the 64 limit passed as `nMaxCount`,
+comparing `GetClassNameW`'s return value (`written`) and checking the
+canary cells after the call. (Side note: removing the buffer's original
+zero-initialization to fill it with the canary pattern required adding
+an explicit `class_name[0] = L'\0'` for the `written == 0` case,
+`GetClassNameW` does not guarantee terminating the buffer on failure,
+and the original code relied on zero-initialization for that case. It
+does not affect overflow detection, which is already evaluated before
+that branch.)
 
-**5/5 corridas**, mismo método (`gdb -q --batch -ex run -ex "bt full"`,
-`Xvfb :99`): salida de DIAG **idéntica byte a byte entre las 5 corridas**
-(mismo `md5sum`, igual que §6) — 20 líneas DIAG por corrida (cada llamada
-a `EnumChildWindows` recorre más ventanas candidatas que las que
-`combo_item` procesaba, de ahí el doble de invocaciones que en §6).
-Valores de `written` observados: `4, 6, 7, 8, 10, 13` — siempre muy por
-debajo del límite de 64. **`guard_cells_clobbered=0/16` en el 100% de las
-20×5=100 invocaciones.** El crash persiste en las 5/5 corridas, misma
-firma exacta (`free(): invalid next size (normal)`, `SIGABRT`).
-**Hipótesis refutada:** `GetClassNameW` respeta su `nMaxCount` en esta
-reimplementación de Wine, igual que ya se confirmó para los otros tres
-pares API de §4 y §6.
+**5/5 runs**, same method (`gdb -q --batch -ex run -ex "bt full"`,
+`Xvfb :99`): DIAG output **byte-identical across the 5 runs**
+(same `md5sum`, as in §6), 20 DIAG lines per run (each call to
+`EnumChildWindows` walks more candidate windows than what `combo_item`
+was processing, hence double the invocations compared to §6). Observed
+`written` values: `4, 6, 7, 8, 10, 13`, always well under the 64 limit.
+**`guard_cells_clobbered=0/16` in 100% of the 20×5=100 invocations.**
+The crash persists in 5/5 runs, exact same signature
+(`free(): invalid next size (normal)`, `SIGABRT`).
+**Hypothesis refuted:** `GetClassNameW` respects its `nMaxCount` in this
+Wine reimplementation, just as already confirmed for the other three API
+pairs in §4 and §6.
 
-**Lectura acumulada final (§4 + §6 + §7):** con este punto se agota la
-cadena de stack completa de §3 (`sync_combo` → `locate_source_combos` →
-`collect_original_combos`) en lo que respecta a escrituras de tamaño
-explícito sobre buffers propios — las cuatro API de Win32 involucradas
+**Final cumulative reading (§4 + §6 + §7):** with this point the whole
+§3 stack chain (`sync_combo` → `locate_source_combos` →
+`collect_original_combos`) is exhausted regarding explicit-size writes
+onto our own buffers, the four Win32 APIs involved
 (`GetWindowTextW`, `CB_GETLBTEXT`, `MultiByteToWideChar`,
-`GetClassNameW`) se comportan correctamente. Ninguna de las cuatro es la
-fuente. Quedan dos lecturas posibles, ninguna instrumentada aún:
+`GetClassNameW`) all behave correctly. None of the four is the
+source. Two possible readings remain, neither instrumented yet:
 
-1. La corrupción real no está en este bloque de código en absoluto — la
-   cadena de stack de §3 es memoria de stack cruda (no un unwind real, ver
-   §3), así que podría estar mostrando llamadas ya retornadas, no el
-   punto de origen. Sería necesario repetir el escaneo manual de stack en
-   una corrida fresca y verificar si la misma cadena aparece de forma
-   consistente, o si varía entre corridas (no verificado todavía).
-2. La corrupción está en la gestión propia de `std::vector<HWND> combos`
-   (crecimiento/realloc) o en algo fuera de este archivo que corrompe un
-   chunk vecino que luego se libera aquí — ninguna de las dos vías tiene
-   un método de canario directo aplicable; requeriría una herramienta
-   distinta (el checklist de `02-fedora-pending.md` §3, symbolizar
-   frame #0, sigue siendo la vía más prometedora sin explorar).
+1. The real corruption is not in this code block at all, the §3 stack
+   chain is raw stack memory (not a real unwind, see §3), so it could
+   be showing already-returned calls, not the origin point. It would be
+   necessary to repeat the manual stack scan on a fresh run and check
+   whether the same chain appears consistently, or varies between
+   runs (not verified yet).
+2. The corruption is in `std::vector<HWND> combos`'s own management
+   (growth/realloc) or in something outside this file that corrupts a
+   neighboring chunk that later gets freed here, neither has a direct
+   canary method applicable; it would require a different tool (the
+   `02-fedora-pending.md` §3 checklist, symbolizing frame #0, remains the
+   most promising unexplored avenue).
 
-**Build restaurado:** `opus_original_engine` y `WORD1` reconstruidos de
-nuevo después de revertir esta instrumentación también.
+**Build restored:** `opus_original_engine` and `WORD1` rebuilt again
+after reverting this instrumentation too.
 
-### 8. Comparación contra el entorno que no reproduce (`/vps`, Debian 13) — reabre y vuelve a cerrar `valgrind`, por un motivo distinto y más amplio que `wine-preloader`
+### 8. Comparison against the environment that does not reproduce (`/vps`, Debian 13), reopens and re-closes `valgrind`, for a reason different from and broader than `wine-preloader`
 
-Con la cadena de stack de §3 agotada (§4, §6, §7, las cuatro sin
-resultado), se probó el ángulo complementario: en vez de seguir buscando
-en Arch (donde el crash reproduce), comparar contra el entorno que
-**no** reproduce (Debian 13/GCC 14.2/wine-10.0, el VPS de
-`~/.ssh/config` alias `vps`) para acotar la variable de entorno, tal
-como quedaba pendiente en `02-fedora-pending.md` ("No se sabe
-todavía cuál de estas variables... es la que hace la diferencia").
+With the §3 stack chain exhausted (§4, §6, §7, all four without
+result), the complementary angle was tried: instead of continuing to
+search on Arch (where the crash reproduces), compare against the
+environment that **does not** reproduce (Debian 13/GCC 14.2/wine-10.0,
+the VPS at `~/.ssh/config` alias `vps`) to narrow down the environment
+variable, as was left pending in `02-fedora-pending.md` ("It is not yet
+known which of these variables... is the one that makes the
+difference").
 
-**Reconstrucción y reconfirmación del baseline.** Repo del VPS ya estaba
-al día con `ae8b0cb` (los commits de esta sesión, `d260424`/`ddd28dc`,
-son solo docs — sin diff de código, el build es equivalente).
-`opus_original_engine`/`WORD1` reconstruidos limpios en el VPS.
+**Rebuild and baseline reconfirmation.** The VPS repo was already up to
+date with `ae8b0cb` (this session's commits, `d260424`/`ddd28dc`, are
+docs only, no code diff, the build is equivalent).
+`opus_original_engine`/`WORD1` rebuilt clean on the VPS.
 
-**Nota de tooling nueva, específica del VPS:** `gdb -q --batch -ex run
---args wine WORD1.exe.so` falla ahí con `"/usr/bin/wine": not in
-executable format` — en este paquete Debian, `/usr/bin/wine` resuelve
-(vía `update-alternatives`) a `/usr/bin/wine-stable`, un **script de
-shell POSIX** que decide en tiempo de ejecución si usar `wine32` o
-`wine64` (`wine32` falta, cae a `wine64`). `gdb --args` necesita poder
-cargar el ejecutable como objeto BFD para el comando `run` implícito, y
-un script no es un objeto ELF — de ahí el error. **Fix:** invocar
-directamente `/usr/lib/wine/wine64` con `WINELOADER=/usr/lib/wine/wine64`
-exportado (que es lo que el script termina haciendo igual). No aplica en
-Arch, donde `/usr/bin/wine` es el binario real.
+**New tooling note, specific to the VPS:** `gdb -q --batch -ex run
+--args wine WORD1.exe.so` fails there with `"/usr/bin/wine": not in
+executable format`, in this Debian package, `/usr/bin/wine` resolves
+(via `update-alternatives`) to `/usr/bin/wine-stable`, a **POSIX shell
+script** that decides at runtime whether to use `wine32` or
+`wine64` (`wine32` is missing, so it falls back to `wine64`). `gdb --args`
+needs to be able to load the executable as a BFD object for the implicit
+`run` command, and a script is not an ELF object, hence the error.
+**Fix:** invoke `/usr/lib/wine/wine64` directly with
+`WINELOADER=/usr/lib/wine/wine64` exported (which is what the script
+ends up doing anyway). Does not apply on Arch, where `/usr/bin/wine` is
+the real binary.
 
-**Baseline reconfirmado, 5/5 corridas** (`gdb -q --batch -ex run -ex "bt
-full" --args /usr/lib/wine/wine64 WORD1.exe.so`, mismo `Xvfb :99` ya
-corriendo de una sesión anterior en el VPS): las cinco llegan al mismo
-punto de arranque (`fixme:dwmapi:DwmSetWindowAttribute ... stub`) y
-después **no crashean** — timeout a los 60s (`exit 124`), sin más
-salida. Coincide exactamente con lo ya documentado en §11.2, ahora
-reconfirmado sobre el `HEAD` actual (7 commits de migración de memoria
-después del build de §11.2).
+**Baseline reconfirmed, 5/5 runs** (`gdb -q --batch -ex run -ex "bt
+full" --args /usr/lib/wine/wine64 WORD1.exe.so`, the same `Xvfb :99`
+already running from an earlier VPS session): all five reach the same
+startup point (`fixme:dwmapi:DwmSetWindowAttribute ... stub`) and
+afterward **do not crash**, timeout at 60s (`exit 124`), no further
+output. Matches exactly what was already documented in §11.2, now
+reconfirmed on the current `HEAD` (7 memory-migration commits after the
+§11.2 build).
 
-**Aclaración importante sobre qué significa "no reproduce" aquí:** el
-proceso no queda trabado ni bloqueado en ese punto — llega a un estado
-de reposo genuino (bucle de mensajes de Windows esperando input de
-usuario, que bajo `Xvfb` sin interacción nunca llega). Es el
-comportamiento normal de una app GUI idle, no un fallo de arranque
-distinto. Confirma, de forma independiente, la lectura de §11.2 (no
-solo la repite): el código de arranque —incluyendo el bloque
-`sync_combo`/`locate_source_combos` que este documento lleva tres
-secciones instrumentando— se ejecuta completo y sin abortar en este
-entorno.
+**Important clarification on what "does not reproduce" means here:**
+the process does not get stuck or blocked at that point, it reaches a
+genuinely restful state (a Windows message loop waiting for user input
+that, under `Xvfb` with no interaction, never comes). It is the normal
+behavior of an idle GUI app, not a different kind of startup failure.
+It confirms, independently (not just repeats) the §11.2 reading: the
+startup code, including the `sync_combo`/`locate_source_combos` block
+this document has spent three sections instrumenting, runs to
+completion without aborting in this environment.
 
-**Hallazgo colateral: no hay `wine-preloader` en este paquete Debian.**
-`02-fedora-pending.md` §7 atribuye el bloqueo de ASan/valgrind
-específicamente a la reserva de espacio de direcciones de
-`wine-preloader` en Fedora. Buscar ese binario en el VPS
-(`/usr/lib/wine/`) no encuentra nada — y tampoco existe en Arch/hp-15
-(verificado también, mismo resultado). Esto abre la posibilidad de que
-el bloqueo de valgrind no sea universal, solo específico del empaquetado
-de Fedora — vale la pena reabrir la pregunta.
+**Side finding: there is no `wine-preloader` in this Debian package.**
+`02-fedora-pending.md` §7 attributes the ASan/valgrind block
+specifically to `wine-preloader`'s address-space reservation on
+Fedora. Searching for that binary on the VPS
+(`/usr/lib/wine/`) finds nothing, and it also does not exist on
+Arch/hp-15 (also verified, same result). This opens the possibility
+that the valgrind block is not universal, only specific to Fedora's
+packaging, worth reopening the question.
 
-**Valgrind en el VPS — corre limpio, 240s, cero errores.** Sin
-`wine-preloader` de por medio, `valgrind --error-exitcode=99` arranca
-sin problema, llega al mismo punto de arranque, y corre 240s en reposo
-(mismo estado idle de arriba) sin loguear ni un solo error de memoria.
-Inicialmente prometedor — pero ver el punto siguiente antes de leerlo
-como "el código está limpio ahí".
+**Valgrind on the VPS, runs clean, 240s, zero errors.** Without
+`wine-preloader` in the way, `valgrind --error-exitcode=99` starts
+without a problem, reaches the same startup point, and runs 240s at
+rest (the same idle state as above) without logging a single memory
+error. Initially promising, but see the next point before reading it as
+"the code is clean there".
 
-**Control directo en Arch (donde el crash sí ocurre) — valgrind no lo ve.**
-Para no sobre-interpretar el resultado limpio del VPS (¿es limpio porque
-no hay bug, o porque valgrind no está mirando lo que hay que mirar?), se
-corrió el mismo `valgrind --error-exitcode=99` directo contra el binario
-en Arch, donde el crash **sí** reproduce. Resultado: el crash **ocurre
-igual bajo valgrind** — el mismo `free(): invalid pointer` de glibc se
-imprime en la salida estándar, seguido del mismo intento roto de
-backtrace de `dbghelp` que ya se documentó en hp-15 §3 (`elf_search_auxv
-can't find symbol`, `dwarf2_get_cie wrong CIE pointer`) — pero **el log
-de valgrind no registra ningún error**, ni antes ni durante. Verificado
-con `-v` que la intercepción de `malloc`/`free` sí está activa (`REDIR:
+**Direct control on Arch (where the crash does occur), valgrind does
+not see it.** To avoid over-interpreting the VPS's clean result (is it
+clean because there is no bug, or because valgrind is not looking at
+what needs looking at?), the same `valgrind --error-exitcode=99` was run
+directly against the Arch binary, where the crash **does** reproduce.
+Result: the crash **occurs just the same under valgrind**, the same
+glibc `free(): invalid pointer` prints on standard output, followed by
+the same broken `dbghelp` backtrace attempt already documented in
+hp-15 §3 (`elf_search_auxv can't find symbol`, `dwarf2_get_cie wrong CIE
+pointer`), but **valgrind's log records no error at all**, neither
+before nor during. Verified with `-v` that `malloc`/`free`
+interception is indeed active (`REDIR:
 ... libc.so.6:malloc redirected...`, `REDIR: ... libc.so.6:free
-redirected...`, ambos logueados *antes* de que se cargue `ntdll.so`, así
-que cubren todo el código que se ejecuta después, incluyendo
-`WORD1.exe.so`). **No se investigó la causa exacta** de por qué
-memcheck no ve esta corrupción con la intercepción confirmadamente
-activa — hipótesis no verificadas: podría ser un `free()` que no pasa
-por el símbolo redirigido de `libc.so.6` por algún camino interno de
-Wine/Winelib, o el bug podría depender del layout/timing exacto del
-heap de glibc de un modo que la instrumentación de valgrind (mucho más
-lenta, con su propio allocator) simplemente no dispara.
+redirected...`, both logged *before* `ntdll.so` loads, so they cover
+all the code that runs afterward, including
+`WORD1.exe.so`). **The exact cause was not investigated** for why
+memcheck does not see this corruption with interception confirmedly
+active, unverified hypotheses: it could be a `free()` that does not go
+through `libc.so.6`'s redirected symbol via some internal Wine/Winelib
+path, or the bug could depend on the exact glibc heap layout/timing in
+a way that valgrind's instrumentation (much slower, with its own
+allocator) simply does not trigger.
 
-**Consecuencia: se retracta la lectura optimista del punto anterior.**
-El resultado limpio de 240s en el VPS **no es evidencia** de que el
-bloque `sync_combo`/`locate_source_combos` esté libre de bugs ahí —
-es evidencia de que valgrind no es una herramienta útil para esta
-corrupción específica, en ningún entorno probado hasta ahora, por un
-motivo más amplio que el bloqueo por `wine-preloader` ya documentado
-para Fedora. `valgrind` se re-cierra como vía, con esta razón nueva y
-más general — actualizado en `02-fedora-pending.md` §7.
+**Consequence: the optimistic reading of the previous point is
+retracted.** The clean 240s result on the VPS **is not evidence** that
+the `sync_combo`/`locate_source_combos` block is bug-free there, it is
+evidence that valgrind is not a useful tool for this specific
+corruption, in any environment tested so far, for a broader reason
+than the `wine-preloader` block already documented for Fedora.
+`valgrind` is re-closed as an avenue, with this new, broader reason,
+updated in `02-fedora-pending.md` §7.
 
-**Lo único que queda como resultado sólido de esta sección:** la
-reconfirmación independiente de que Debian/GCC 14.2/wine-10.0 no
-reproduce (§11.2 seguía vigente sobre el `HEAD` actual) y que llega
-limpiamente al mismo punto de arranque que Fedora/Arch antes de quedar
-en reposo normal. La pregunta de fondo —¿versión de Wine, de GCC, o
-alguna otra diferencia de entorno es la variable causante?— sigue
-abierta. No se intentó aislarla instalando un Wine más nuevo o un GCC
-≥15 en el VPS: ambos requieren cambios a nivel de sistema (repo de
-WineHQ + habilitar multiarch i386, o backports/sid para GCC) en una
-máquina compartida con otros servicios — se deja pendiente de decisión
-explícita antes de tocar paquetes del sistema ahí, no intentado en esta
-sesión.
+**The only thing that stands as a solid result from this section:** the
+independent reconfirmation that Debian/GCC 14.2/wine-10.0 does not
+reproduce (§11.2 still held on the current `HEAD`) and that it reaches
+the same startup point as Fedora/Arch cleanly before settling into
+normal rest. The underlying question, whether it is the Wine version,
+the GCC version, or some other environment difference that is the
+causal variable, remains open. No attempt was made to isolate it by
+installing a newer Wine or a GCC ≥15 on the VPS: both require
+system-level changes (the WineHQ repo + enabling i386 multiarch, or
+backports/sid for GCC) on a machine shared with other services, left
+pending an explicit decision before touching system packages there, not
+attempted in this session.
 
-**Procesos limpiados:** ninguno quedó residual ni en el VPS (`timeout`
-mató todo, verificado con `pgrep`) ni en local (verificado igual).
+**Processes cleaned up:** none left residual, either on the VPS
+(`timeout` killed everything, verified with `pgrep`) or locally
+(verified the same way).
 
-### 9. Symbolizar frame #0 — hecho, con precisión de línea; refuta la hipótesis "DLL de Wine" de `02-fedora-pending.md` §3
+### 9. Symbolizing frame #0, done, with line-level precision; refutes the "Wine DLL" hypothesis from `02-fedora-pending.md` §3
 
-Pendiente arrastrado desde Fedora (§5/§7 de este documento, y §3 de
-`02-fedora-pending.md`), donde la dirección de frame #0
-(`0x00006FFFFFC1B75F`) no caía dentro de `WORD1` y se hipotetizaba sin
-confirmar que fuera `user32`/`gdi32`/`ntdll`. hp-15 §3 ya había acotado
-la región a `libc.so.6` por inspección de `$pc` a ojo; esta sesión lo
-lleva a símbolo y línea exactos.
+A pending item carried over from Fedora (§5/§7 of this document, and §3
+of `02-fedora-pending.md`), where frame #0's address
+(`0x00006FFFFFC1B75F`) did not fall inside `WORD1` and it was
+hypothesized, without confirmation, to be `user32`/`gdi32`/`ntdll`.
+hp-15 §3 had already narrowed the region to `libc.so.6` by eyeballing
+`$pc`; this session takes it to an exact symbol and line.
 
-**Método:** `gdb -q --batch -ex "set debuginfod enabled on" -ex run -ex
+**Method:** `gdb -q --batch -ex "set debuginfod enabled on" -ex run -ex
 "print/x \$pc" -ex "info proc mappings" --args wine WORD1.exe.so`,
-identificar la fila de `info proc mappings` que contiene `$pc` (base de
-`libc.so.6` = inicio del mapeo `r-xp` menos su offset de archivo),
-restar la base a `$pc` para obtener el offset dentro del archivo, y
-`addr2line -e <debuginfo cacheado por debuginfod> -f -C -p <offset>` —
-el `debuginfo` completo (no solo símbolos dinámicos) ya estaba en
-`~/.cache/debuginfod_client/` de la verificación de hp-15 §3, indexado
-por build-id (`503200d7fda94a5dc6058d7e0694e5d1dcb2e372`, confirmado con
-`readelf -n`). `nm -D` sobre el `.so` del sistema (sin debug info) da un
-resultado engañoso (`pthread_key_delete`, el símbolo dinámico exportado
-más cercano) — no usar esa vía sin el `debuginfo` real.
+identify the row of `info proc mappings` that contains `$pc` (`libc.so.6`'s
+base is the start of the `r-xp` mapping minus its file offset), subtract
+the base from `$pc` to get the offset within the file, and
+`addr2line -e <debuginfo cached by debuginfod> -f -C -p <offset>`, the
+full `debuginfo` (not just dynamic symbols) was already in
+`~/.cache/debuginfod_client/` from the hp-15 §3 verification, indexed by
+build-id (`503200d7fda94a5dc6058d7e0694e5d1dcb2e372`, confirmed with
+`readelf -n`). `nm -D` on the system `.so` (without debug info) gives a
+misleading result (`pthread_key_delete`, the nearest exported dynamic
+symbol), do not use that path without the real `debuginfo`.
 
-**Resultado, 3/3 corridas, dos firmas distintas** (`free(): invalid
-pointer`, `free(): invalid next size (normal)`): **`$pc` idéntico en las
-tres** (`0x00007ffff7c9a17c`), resuelto a
-`__pthread_kill_implementation` en `nptl/pthread_kill.c:44`. Es la cola
-genérica de `abort() → raise() → pthread_kill()` — la misma para
-cualquier abort de glibc sin importar qué chequeo de heap lo disparó,
-consistente con que las cuatro firmas de §1/hp-15-§1 compartan este
-mismo frame #0.
+**Result, 3/3 runs, two distinct signatures** (`free(): invalid
+pointer`, `free(): invalid next size (normal)`): **`$pc` identical
+across all three** (`0x00007ffff7c9a17c`), resolved to
+`__pthread_kill_implementation` in `nptl/pthread_kill.c:44`. This is
+the generic `abort() → raise() → pthread_kill()` tail, the same for
+any glibc abort regardless of which heap check triggered it,
+consistent with the four signatures from §1/hp-15-§1 all sharing this
+same frame #0.
 
-**Conclusión:** frame #0 **no es una DLL de Wine** — la hipótesis de
-`02-fedora-pending.md` §3 (basada en una dirección de un build viejo
-de Fedora que ya no aplica, `WORD1+0x1FD57C`) queda refutada. Es, como
-ya sugería hp-15 §3 de forma más gruesa, código interno de glibc — y al
-ser la maquinaria genérica de entrega de señal, **no aporta información
-sobre el origen de la corrupción por sí solo**: cualquier `free()`/`
-malloc()` corrupto termina exactamente aquí. El punto útil de la cadena
-sigue siendo más arriba (`malloc_printerr`/`_int_free`, y de ahí al
-llamador real en código de `WORD1`) — ahí es donde el escaneo manual de
-stack de hp-15 §3 (no un unwind real, pero cruzado con `addr2line` sobre
-`WORD1.exe.so`) ya había encontrado la cadena `sync_combo`/
-`locate_source_combos`, agotada en §4/§6/§7 de este documento sin
-resultado.
+**Conclusion:** frame #0 **is not a Wine DLL**, the
+`02-fedora-pending.md` §3 hypothesis (based on an address from an old
+Fedora build that no longer applies, `WORD1+0x1FD57C`) is refuted. It
+is, as hp-15 §3 already suggested more coarsely, internal glibc code,
+and being the generic signal-delivery machinery, **it does not by
+itself carry any information about the origin of the corruption**: any
+corrupt `free()`/`malloc()` ends up exactly here. The useful point in
+the chain remains further up (`malloc_printerr`/`_int_free`, and from
+there to the real caller in `WORD1` code), which is where hp-15 §3's
+manual stack scan (not a real unwind, but cross-referenced with
+`addr2line` against `WORD1.exe.so`) had already found the
+`sync_combo`/`locate_source_combos` chain, exhausted in §4/§6/§7 of
+this document without result.
 
-**Ítem de `02-fedora-pending.md` §3 cerrado** con este resultado —
-no queda pendiente de reintentar en Fedora, la dirección/símbolo es
-consistente entre entornos (misma clase de dirección genérica de
-glibc), solo cambia numéricamente por ASLR/versión de glibc, no en
-naturaleza.
+**`02-fedora-pending.md` §3 item closed** with this result, no longer
+pending a retry on Fedora, the address/symbol is consistent across
+environments (the same generic class of glibc address), only changing
+numerically due to ASLR/glibc version, not in nature.
 
-### 10. `C_FormatLineDxa` instrumentado — resultado negativo limpio: **no se llega a ejecutar** antes del crash de este startup
+### 10. `C_FormatLineDxa` instrumented, clean negative result: it **is not executed** before this startup's crash
 
-Retoma el candidato original de §7 ("revisar `C_FormatLineDxa` y su
-vecindario a mano"), que quedó leído pero nunca instrumentado en §9/§10
-(sesión de Fedora, antes de que hp-15 desviara el foco a
-`sync_combo`/toolbar). `src/Opus/wordtech/format.c` es árbol restringido
-(`CLAUDE.md`) — autorización explícita confirmada con el usuario antes
-de editar, sin pasar por el trámite de issue dado que la instrucción fue
-directa.
+Resumes the original §7 candidate ("review `C_FormatLineDxa` and its
+neighborhood by hand"), which had been read but never instrumented in
+§9/§10 (the Fedora session, before hp-15 shifted the focus to
+`sync_combo`/toolbar). `src/Opus/wordtech/format.c` is a restricted
+tree (`CLAUDE.md`), explicit authorization confirmed with the user
+before editing, without going through the issue process since the
+instruction was direct.
 
-**Instrumentación temporal (revertida después, no commiteada — diff
-confirmado limpio contra `HEAD`):**
+**Temporary instrumentation (reverted afterward, not committed, diff
+confirmed clean against `HEAD`):**
 
-1. Log de entrada en cada llamada (contador + `ww`/`doc`/`cp`/`dxa`),
-   antes de cualquier `return` temprano.
-2. Log en cada uno de los dos `return` tempranos de la función (guard de
-   reentrancia `vrf.fInFormatLine`, línea ~540; cache-hit "Just did this
-   one", línea ~591) y en el punto donde el código sigue de largo hacia
-   la ejecución completa.
-3. Canario de verdad (no de celdas, sino contra la asignación real del
-   heap) en el único punto de la función que escribe en el buffer
-   compartido `vhgrpchr` **sin chequeo de rango** — el comentario del
-   propio código lo dice explícitamente: `/* Note: no need to check for
-   sufficient space */` (línea ~2601, el terminador `chrmEnd` de fin de
-   línea). Se comparó `bchrBreak + cbCHR` (lo que el código está por
-   escribir) contra `CbOfH(vhgrpchr)` (tamaño real asignado al handle,
-   vía `OpusCbOfH` — no `vbchrMax`, que es solo la cuenta que lleva el
-   propio código y podría estar desincronizada de la realidad bajo un
-   bug de tamaño LP64 como el ya confirmado en `bitapp.h:29`).
+1. An entry log on every call (a counter + `ww`/`doc`/`cp`/`dxa`),
+   before any early `return`.
+2. A log at each of the function's two early `return`s (the
+   re-entrancy guard `vrf.fInFormatLine`, line ~540; the cache-hit
+   "Just did this one", line ~591) and at the point where the code
+   proceeds into full execution.
+3. A real canary (not of cells, but against the actual heap
+   allocation) at the only point in the function that writes into the
+   shared `vhgrpchr` buffer **without a range check**, the code's own
+   comment says so explicitly: `/* Note: no need to check for
+   sufficient space */` (line ~2601, the end-of-line `chrmEnd`
+   terminator). Compared `bchrBreak + cbCHR` (what the code is about to
+   write) against `CbOfH(vhgrpchr)` (the handle's real allocated size,
+   via `OpusCbOfH`, not `vbchrMax`, which is only the count the code
+   itself keeps and could be out of sync with reality under an
+   LP64-size bug like the one already confirmed in
+   `bitapp.h:29`).
 
-**Resultado, 5/5 corridas (dos tandas, la primera solo con el canario
-del punto 3, la segunda añadiendo también el log de entrada/salida del
-punto 1-2): cero líneas DIAG en las diez corridas combinadas.** El
-crash ocurre con la firma y el punto de arranque de siempre
-(`DwmSetWindowAttribute` stub → `free()`/`SIGABRT`), confirmando que el
-pipeline de captura funciona (se ve todo el resto de la salida de Wine
-normalmente) — la ausencia de DIAG no es un problema de instrumentación.
+**Result, 5/5 runs (two batches, the first with only the point-3
+canary, the second also adding the entry/exit log from points 1-2):
+zero DIAG lines across the ten combined runs.** The crash occurs with
+the usual signature and startup point
+(`DwmSetWindowAttribute` stub → `free()`/`SIGABRT`), confirming that the
+capture pipeline works (the rest of Wine's output is visible normally),
+the absence of DIAG is not an instrumentation problem.
 
-**Conclusión: `C_FormatLineDxa` nunca se llama** durante este arranque
-concreto (documento en blanco recién abierto, sin tipeo ni interacción)
-— ni siquiera entra a evaluar el guard de reentrancia, que es la primera
-línea ejecutable de la función. Coherente con que no hay texto que
-paginar todavía: el crash ocurre enteramente durante la construcción de
-la ventana/toolbar (la cadena `sync_combo`/`locate_source_combos` de §3,
-agotada en §4/§6/§7), antes de que el documento en blanco necesite su
-primer pase de formateo de línea.
+**Conclusion: `C_FormatLineDxa` is never called** during this specific
+startup (a freshly opened blank document, no typing or interaction),
+it does not even reach the re-entrancy guard evaluation, which is the
+function's first executable line. Consistent with there being no text
+to paginate yet: the crash occurs entirely during window/toolbar
+construction (the §3 `sync_combo`/`locate_source_combos` chain,
+exhausted in §4/§6/§7), before the blank document needs its first
+line-formatting pass.
 
-**Esto no descarta bugs reales dentro de `C_FormatLineDxa`** — solo
-descarta que sea la causa de *este* crash de arranque específico. Sigue
-siendo candidata legítima para cualquier crash que involucre paginación
-real (con texto tipeado), camino que `opus_word1_ui_test --typing`/
-`--font-typing` (`02-fedora-pending.md` §5, nunca ejecutado) sí
-alcanzaría — pero es un bug distinto, con un repro distinto, no el que
-este documento viene rastreando desde §1.
+**This does not rule out real bugs inside `C_FormatLineDxa`**, it only
+rules out that it is the cause of *this* specific startup crash. It
+remains a legitimate candidate for any crash involving real pagination
+(with typed text), a path that `opus_word1_ui_test --typing`/
+`--font-typing` (`02-fedora-pending.md` §5, never run) would actually
+reach, but it is a different bug, with a different repro, not the one
+this document has been tracking since §1.
 
-**Build restaurado** después de revertir ambas tandas de instrumentación.
+**Build restored** after reverting both batches of instrumentation.
 
-### 11. `~ComboEnumeration` revisitado — destrucción del `std::vector<HWND>` confirmada limpia; también refutado el viaje por `LPARAM`
+### 11. `~ComboEnumeration` revisited, `std::vector<HWND>` destruction confirmed clean; the trip through `LPARAM` also refuted
 
-Punto 2 de §5 (`ComboEnumeration`/`collect_original_combos`), retomado
-más a fondo que en §7: ahí solo se había instrumentado el buffer de
-`GetClassNameW` dentro de `collect_original_combos` (refutado). Esta
-vez el objetivo es la destrucción del propio `std::vector<HWND> combos`
-— el frame `ComboEnumeration::~ComboEnumeration` aparece literal en la
-cadena de stack de §3 — y, por separado, el viaje del puntero
-`&enumeration` a través de `LPARAM` en `EnumChildWindows` (precedente de
-bug de clase LP64 nunca antes probado para este puntero específico,
+Point 2 of §5 (`ComboEnumeration`/`collect_original_combos`), taken
+further than in §7, where only the `GetClassNameW` buffer inside
+`collect_original_combos` had been instrumented (refuted). This time
+the target is the destruction of `std::vector<HWND> combos` itself,
+the `ComboEnumeration::~ComboEnumeration` frame appears literally in
+the §3 stack chain, and, separately, the trip of the `&enumeration`
+pointer through `LPARAM` in `EnumChildWindows` (an LP64-class bug
+precedent never before tested for this specific pointer,
 `bitapp.h:29`).
 
-**Instrumentación temporal** (`opus_win95_chrome.cpp`, revertida
-después, diff confirmado limpio):
+**Temporary instrumentation** (`opus_win95_chrome.cpp`, reverted
+afterward, diff confirmed clean):
 
-1. Log de `&enumeration` (como puntero y como `LPARAM`) justo antes de
-   `EnumChildWindows`, y log de `parameter` recibido en
-   `collect_original_combos` — para comparar ambos valores.
-2. Reemplazo de la destrucción implícita del vector (al salir de
-   `locate_source_combos`) por `std::vector<HWND>().swap(enumeration.combos)`
-   explícito e instrumentado — el idiom swap-with-empty fuerza el
-   `delete[]` real en un punto que controlamos, con log inmediatamente
-   antes y después.
+1. Logging `&enumeration` (as a pointer and as `LPARAM`) right before
+   `EnumChildWindows`, and logging the `parameter` received in
+   `collect_original_combos`, to compare both values.
+2. Replacing the vector's implicit destruction (on exiting
+   `locate_source_combos`) with an explicit, instrumented
+   `std::vector<HWND>().swap(enumeration.combos)`, the swap-with-empty
+   idiom forces a real `delete[]` at a point we control, with logging
+   immediately before and after.
 
-**Resultado, 5/5 corridas:**
+**Result, 5/5 runs:**
 
-- **`locate_source_combos` se llama dos veces por corrida** (nunca antes
-  documentado): la primera con `enumeration.combos` vacío (0 combos
-  encontrados — la enumeración de hijos de ventana corre antes de que el
-  toolbar esté completamente poblado), la segunda con 3 (`style`/`font`/
-  `size`, coherente con lo ya visto en §4/§6). Ambas veces, el `parameter`
-  recibido en `collect_original_combos` **coincide exactamente** con el
-  `&enumeration` original logueado antes de la llamada — sin truncar ni
-  corromperse, en las 38 invocaciones por corrida combinadas de las dos
-  rondas. **Hipótesis del viaje por `LPARAM` refutada.**
-- **La destrucción forzada del vector completa sin abortar las dos veces,
-  en las 5/5 corridas**, sin importar la firma de crash de esa corrida
-  (`free(): invalid pointer` / `free(): invalid next size`) — el log
-  `after combos dtor, ok` imprime siempre. **`~ComboEnumeration` no es
-  donde ocurre el abort.**
-- **Ninguna línea DIAG aparece después del mensaje de crash** en ninguna
-  corrida — confirma que el abort ocurre *después* de que ambas llamadas
-  a `locate_source_combos` (con sus destrucciones) ya terminaron
-  limpiamente, en código más adelante de la cadena de stack de §3
-  (`sync_mirrors`/`toolbar_window_proc`) que **ninguna de las sesiones
-  hp-15 ha instrumentado todavía**.
+- **`locate_source_combos` is called twice per run** (never before
+  documented): the first with `enumeration.combos` empty (0 combos
+  found, the child-window enumeration runs before the toolbar is fully
+  populated), the second with 3 (`style`/`font`/`size`, consistent with
+  what was already seen in §4/§6). Both times, the `parameter` received
+  in `collect_original_combos` **matches exactly** the original
+  `&enumeration` logged before the call, no truncation or corruption,
+  across the 38 combined invocations per run over the two rounds.
+  **The `LPARAM` trip hypothesis is refuted.**
+- **The forced vector destruction completes without aborting both
+  times, in 5/5 runs**, regardless of that run's crash signature
+  (`free(): invalid pointer` / `free(): invalid next size`), the
+  `after combos dtor, ok` log always prints. **`~ComboEnumeration` is
+  not where the abort occurs.**
+- **No DIAG line ever appears after the crash message** in any run,
+  confirming the abort occurs *after* both calls to
+  `locate_source_combos` (with their destructions) have already
+  finished cleanly, in code further along the §3 stack chain
+  (`sync_mirrors`/`toolbar_window_proc`) that **none of the hp-15
+  sessions has instrumented yet.**
 
-**Conclusión:** con esto se cierra por completo el punto 2 de §5, esta
-vez a fondo (no solo el buffer local de §7, también la destrucción del
-recurso compartido y el mecanismo de paso de puntero). La cadena
-completa de §3 dentro de `sync_combo`/`locate_source_combos`
+**Conclusion:** this closes point 2 of §5 completely, this time
+thoroughly (not just the local buffer of §7, also the shared resource's
+destruction and the pointer-passing mechanism). The full §3 chain
+inside `sync_combo`/`locate_source_combos`
 (`mirror_text`, `combo_item`, `wide_from_ansi`, `GetClassNameW`,
-`LPARAM`, `~ComboEnumeration`) queda agotada sin encontrar la causa. El
-dato nuevo más útil de esta sesión es el **acotamiento temporal**: el
-abort ocurre estrictamente después de la segunda llamada a
-`locate_source_combos`, no dentro de ella — la siguiente candidata
-natural es instrumentar `sync_mirrors`/`toolbar_window_proc` en sí (el
-código que llama a `locate_source_combos` y que sigue ejecutándose
-después), no volver a los mismos cinco puntos ya refutados.
+`LPARAM`, `~ComboEnumeration`) is exhausted without finding the cause.
+The most useful new data point from this session is the **time
+bracketing**: the abort occurs strictly after the second call to
+`locate_source_combos`, not inside it, the natural next candidate is
+instrumenting `sync_mirrors`/`toolbar_window_proc` itself (the code
+that calls `locate_source_combos` and that keeps running afterward),
+not going back to the same five already-refuted points.
 
-**Build restaurado** después de revertir esta instrumentación también.
+**Build restored** after reverting this instrumentation too.
 
-### 12. `sync_combo`/`sync_mirrors` retomado — hallazgo mayor: el crash ocurre *dentro* del loop `CB_ADDSTRING`, en un índice distinto cada corrida, sobre datos válidos
+### 12. `sync_combo`/`sync_mirrors` revisited, major finding: the crash occurs *inside* the `CB_ADDSTRING` loop, at a different index each run, on valid data
 
-Sigue la pista concreta que dejó §11 (el abort ocurre después de que
-`locate_source_combos` termina limpio dos veces). El punto 1 de §5
-(`combo_item()`/`wide_from_ansi()`) se había dado por agotado en §6,
-pero ahí solo se probó el par dentro del `for` de población (línea
-~890-892). Esta sesión encontró un **tercer** par longitud/texto dentro
-de `sync_combo`, nunca antes tocado: `GetWindowTextLengthA(source)`/
-`GetWindowTextA(source, ...)` en la rama `else` de
-`!combo_or_child_has_focus(mirror)` (línea ~903-905) — instrumentado
-igual que los anteriores (canario de 16 celdas). **Cero líneas DIAG en
-5/5 corridas** — esa rama nunca se alcanza antes del crash.
+Follows the concrete lead left by §11 (the abort occurs after
+`locate_source_combos` finishes cleanly twice). Point 1 of §5
+(`combo_item()`/`wide_from_ansi()`) had been considered exhausted in
+§6, but only the pair inside the population `for` loop (line ~890-892)
+had been tested there. This session found a **third** length/text pair
+inside `sync_combo`, never touched before: `GetWindowTextLengthA(source)`/
+`GetWindowTextA(source, ...)` in the `else` branch of
+`!combo_or_child_has_focus(mirror)` (line ~903-905), instrumented the
+same way as the previous ones (a 16-cell canary). **Zero DIAG lines in
+5/5 runs**, that branch is never reached before the crash.
 
-**Instrumentación de seguimiento** (traza de ramas en `sync_combo`, sin
-canario) reveló por qué, y de paso el hallazgo real de esta sesión:
+**Follow-up instrumentation** (branch tracing in `sync_combo`, no
+canary) revealed why, and along the way, this session's real finding:
 
-- `sync_combo` se llama **repetidas veces** antes del crash: primero
-  varias veces con `source == nullptr` (los tres combos, antes de que
-  `locate_source_combos` los resuelva — coherente con §11), luego una
-  vez más con `source` ya resuelto (`0x100c0`/`0x200e4`/`0x300cc` en las
-  tres corridas). En ese punto, **`SendMessageA(source, CB_GETCOUNT, 0,
-  0)` devuelve `count=1395`**, idéntico en 3/3 corridas — un número muy
-  por encima de lo esperado para un combo de fuente/estilo/tamaño de un
-  procesador de texto de 1989.
-- Con `count=1395` el `for` de población (línea 890-894, ya recorrido
-  en §6 pero solo hasta `index=4`) se instrumentó de nuevo con traza por
-  iteración. **Los primeros ~16-20 valores de longitud de `combo_item`
-  son idénticos a los ya vistos en §4/§6** (12, 12, 5, 19, 24, 20, 4, 9,
-  7, 11, 8, 20, 11, 21, 17, 16, ...) — son nombres de fuente/estilo
-  reales, no basura ni memoria sin inicializar. **El crash ocurre
-  *dentro* de este loop, en un índice distinto cada corrida: 5, 14, y
-  15** en tres corridas consecutivas con el mismo build — mientras se
-  procesan datos válidos, no cerca del límite de 1395 ni en zona de
-  índices fuera de rango.
+- `sync_combo` is called **repeatedly** before the crash: first several
+  times with `source == nullptr` (the three combos, before
+  `locate_source_combos` resolves them, consistent with §11), then once
+  more with `source` already resolved (`0x100c0`/`0x200e4`/`0x300cc` in
+  the three runs). At that point, **`SendMessageA(source, CB_GETCOUNT, 0,
+  0)` returns `count=1395`**, identical in 3/3 runs, a number far above
+  what one would expect for a font/style/size combo of a 1989 word
+  processor.
+- With `count=1395` the population `for` loop (lines 890-894, already
+  walked in §6 but only up to `index=4`) was instrumented again with
+  per-iteration tracing. **The first ~16-20 length values from
+  `combo_item` are identical to those already seen in §4/§6** (12, 12,
+  5, 19, 24, 20, 4, 9, 7, 11, 8, 20, 11, 21, 17, 16, ...), they are real
+  font/style names, not garbage or uninitialized memory. **The crash
+  occurs *inside* this loop, at a different index each run: 5, 14, and
+  15** across three consecutive runs with the same build, while
+  processing valid data, neither near the 1395 limit nor in an
+  out-of-range index zone.
 
-**Lectura — cambia el diagnóstico de fondo:** cada escritura que este
-proyecto controla directamente y puede instrumentar (`mirror_text`,
-`combo_item`, `wide_from_ansi`, `GetClassNameW`, el tercer par de
-`sync_combo`, el viaje por `LPARAM`, la destrucción de
-`ComboEnumeration`) ha salido limpia, repetidas veces, en sesiones
-distintas. Y sin embargo el crash persiste, **en un punto variable
-dentro de un loop que hace la misma llamada Win32 (`CB_ADDSTRING`)
-repetidamente sobre datos que en sí mismos son válidos.** Esa
-combinación — mismo dato, mismo código, punto de fallo que se mueve
-entre corridas, mientras cada verificación local de bordes sale limpia
-— es la firma característica de **corrupción de heap acumulada dentro
-de la implementación de Wine del control ComboBox** (la ruta interna
-que `CB_ADDSTRING`/`CB_RESETCONTENT` ejercitan en `user32`/`comctl32`
-bajo wine-staging 11.15), no un bug en el código de `Opus`/`port` que
-esta investigación pueda seguir instrumentando con canarios locales.
-**No confirmado con una herramienta que mire directamente el heap de
-Wine** (los intentos con `+heap` y `valgrind` de §2/§8 no vieron nada,
-pero por razones ya documentadas como no concluyentes para esta clase
-de bug) — es una inferencia por eliminación, no una prueba directa.
+**Reading, changes the underlying diagnosis:** every write this project
+directly controls and can instrument (`mirror_text`, `combo_item`,
+`wide_from_ansi`, `GetClassNameW`, the third pair in `sync_combo`, the
+`LPARAM` trip, `ComboEnumeration`'s destruction) has come out clean,
+repeatedly, across separate sessions. And yet the crash persists, **at
+a variable point inside a loop that makes the same Win32 call
+(`CB_ADDSTRING`) repeatedly over data that is itself valid.** That
+combination, same data, same code, a failure point that moves between
+runs, while every local boundary check comes out clean, is the
+characteristic signature of **accumulated heap corruption inside
+Wine's implementation of the ComboBox control** (the internal path that
+`CB_ADDSTRING`/`CB_RESETCONTENT` exercise in `user32`/`comctl32` under
+wine-staging 11.15), not a bug in `Opus`/`port` code that this
+investigation can keep instrumenting with local canaries. **Not
+confirmed with a tool that looks directly at Wine's heap** (the
+`+heap` and `valgrind` attempts from §2/§8 saw nothing, but for reasons
+already documented as inconclusive for this class of bug), it is an
+inference by elimination, not direct proof.
 
-**Pregunta abierta, no perseguida esta sesión:** ¿de dónde sale
-`count=1395`? Podría ser un reflejo real (aunque inusualmente alto) del
-número de fuentes que Wine enumera en este sistema vía fontconfig, o
-podría ser en sí mismo un síntoma de que el combo `source` original ya
-estaba con su lista interna dañada por un ciclo anterior de
-`CB_RESETCONTENT`/`CB_ADDSTRING` sobre el *mismo* handle en otro punto
-del arranque — no se comparó contra el conteo real de fuentes instaladas
-en este sistema, ni se revisó si `source` (el combo original de Word,
-no el mirror) recibe su propia carga de `CB_ADDSTRING` en otro lugar
-del código antes de este punto.
+**Open question, not pursued this session:** where does `count=1395`
+come from? It could be a real (if unusually high) reflection of the
+number of fonts Wine enumerates on this system via fontconfig, or it
+could itself be a symptom that the original `source` combo already had
+its internal list damaged by an earlier `CB_RESETCONTENT`/`CB_ADDSTRING`
+cycle on the *same* handle at another point in startup, it was not
+compared against the real count of fonts installed on this system, nor
+was it checked whether `source` (the original Word combo, not the
+mirror) receives its own `CB_ADDSTRING` load elsewhere in the code
+before this point.
 
-**Consecuencia práctica para la siguiente sesión:** seguir
-instrumentando código de `Opus`/`port` con canarios locales ya no es la
-vía más prometedora — los ocho candidatos de esa clase (§4, §6, §7, §11,
-y el tercer par de esta sección) salieron limpios. Las vías que quedan,
-en orden de lo más al menos directo:
+**Practical consequence for the next session:** continuing to
+instrument `Opus`/`port` code with local canaries is no longer the most
+promising avenue, the eight candidates of that class (§4, §6, §7, §11,
+and the third pair in this section) all came out clean. The remaining
+avenues, in order from most to least direct:
 
-1. Acotar si `count=1395` es plausible (contar fuentes reales del
-   sistema, `fc-list | wc -l` o equivalente) — barato, no intentado.
-2. Repetir el mismo experimento con un `source` distinto o forzando
-   `count` a un valor pequeño (parche temporal de diagnóstico, revertir
-   después) para ver si el crash desaparece — confirmaría o refutaría
-   que el volumen del loop es la variable relevante, no el contenido.
-3. Instrumentar directamente alrededor de la llamada a `CB_ADDSTRING`
-   con una verificación de heap acotada (no todo el proceso, solo el
-   entorno inmediato de esa llamada) — algo que ni `+heap` ni `valgrind`
-   lograron dar en esta investigación al mirar el proceso completo.
-4. Considerar la hipótesis de un bug real de Wine (`wine-staging
-   11.15`/GCC 16 en la ruta de `COMBOBOX_InsertString` o similar) y
-   probar con otra versión de Wine en este mismo entorno Arch — no
-   intentado, requeriría instalar un Wine distinto (cambio de sistema, a
-   confirmar con el usuario antes de tocarlo, como ya se dejó pendiente
-   para el VPS en §8).
+1. Assess whether `count=1395` is plausible (count real system fonts,
+   `fc-list | wc -l` or equivalent), cheap, not tried.
+2. Repeat the same experiment with a different `source` or forcing
+   `count` to a small value (a temporary diagnostic patch, revert
+   afterward) to see whether the crash disappears, would confirm or
+   refute that the loop's volume is the relevant variable, not its
+   content.
+3. Instrument directly around the `CB_ADDSTRING` call with a bounded
+   heap consistency check (not the whole process, only the immediate
+   surroundings of that call), something neither `+heap` nor `valgrind`
+   managed to give in this investigation when looking at the whole
+   process.
+4. Consider the hypothesis of a real Wine bug (`wine-staging
+   11.15`/GCC 16 in the `COMBOBOX_InsertString` path or similar) and
+   try another Wine version in this same Arch environment, not tried,
+   would require installing a different Wine (a system change, to be
+   confirmed with the user before touching it, as already left pending
+   for the VPS in §8).
 
-**Build restaurado** después de revertir toda la instrumentación de esta
-sección (tres tandas: canario del tercer par, traza de ramas, traza de
-loop).
+**Build restored** after reverting all instrumentation from this
+section (three batches: the third pair's canary, branch tracing, loop
+tracing).
 
-**Seguimiento — punto 1 de la lista de arriba, respondido:** en este
-mismo entorno (hp-15, EndeavourOS), `fc-list | wc -l` da **2553** caras
-de fuente instaladas, `fc-list : family | sort -u | wc -l` da **1965**
-nombres de familia únicos. `count=1395` cae **dentro** de ese rango
-(menor que ambos totales) — no es descabellado como reflejo de una
-enumeración real de fuentes, a diferencia de lo que sería un valor
-claramente imposible (negativo, `INT_MAX`, etc.). No cierra la pregunta
-del todo: `fc-match "Courier New"` resuelve por sustitución
-(`Liberation Mono`) pero `fc-list | grep -ic courier` da **0** — "Courier
-New" (el nombre que `combo_contains` busca para clasificar el combo como
-`source_font`, y que efectivamente aparece como dato real en el `for` de
-§12) no es un nombre de familia instalado literal en este sistema, así
-que el combo no está enumerando `fc-list` en crudo 1:1 — es la
-enumeración GDI de Wine (`EnumFontFamilies` o equivalente), que puede
-generar una entrada por cada combinación fuente×charset/script y por
-tanto un total mayor o distinto al de `fc-list`. **Orden de magnitud
-plausible, procedencia exacta sin confirmar.**
+**Follow-up, point 1 from the list above, answered:** in this same
+environment (hp-15, EndeavourOS), `fc-list | wc -l` gives **2553**
+installed font faces, `fc-list : family | sort -u | wc -l` gives
+**1965** unique family names. `count=1395` falls **within** that range
+(less than both totals), not far-fetched as a reflection of a real
+font enumeration, unlike what would be a clearly impossible value
+(negative, `INT_MAX`, etc.). It does not fully close the question:
+`fc-match "Courier New"` resolves by substitution
+(`Liberation Mono`) but `fc-list | grep -ic courier` gives **0**,
+"Courier New" (the name `combo_contains` looks for to classify the
+combo as `source_font`, and which does appear as real data in the §12
+`for` loop) is not a literal installed family name on this system, so
+the combo is not enumerating raw `fc-list` 1:1, it is Wine's GDI
+enumeration (`EnumFontFamilies` or equivalent), which can generate one
+entry per font×charset/script combination and therefore a total larger
+or different from `fc-list`'s. **Plausible order of magnitude, exact
+provenance unconfirmed.**
 
-**Seguimiento — punto 2 de la lista de §12, respondido: refutado.**
-Experimento de control: `count` interceptado justo después de
-`SendMessageA(source, CB_GETCOUNT, 0, 0)` y forzado a `20` cuando supera
-ese valor (`opus_win95_chrome.cpp`, instrumentación temporal revertida
-después, diff confirmado limpio), dejando el resto de `sync_combo`
-intacto — el loop de población corre de verdad, solo que 20 veces en
-vez de 1395.
+**Follow-up, point 2 from the §12 list, answered: refuted.**
+Control experiment: `count` intercepted right after
+`SendMessageA(source, CB_GETCOUNT, 0, 0)` and forced to `20` when it
+exceeds that value (`opus_win95_chrome.cpp`, temporary instrumentation
+reverted afterward, diff confirmed clean), leaving the rest of
+`sync_combo` intact, the population loop really runs, just 20 times
+instead of 1395.
 
-**5/5 corridas, el cap se aplicó** (log `capping count from 1395 to 20`
-presente en las cinco) **y el crash ocurrió exactamente igual las cinco
-veces**, mismas firmas de siempre (`free(): invalid next size`,
+**5/5 runs, the cap was applied** (the log `capping count from 1395 to
+20` present in all five) **and the crash occurred exactly the same all
+five times**, the usual signatures (`free(): invalid next size`,
 `free(): invalid pointer`, `malloc(): unaligned tcache chunk detected`).
-**El volumen del loop no es la variable relevante** — con 20 iteraciones
-en vez de 1395 el resultado es idéntico. Esto **descarta directamente**
-la lectura de §12 de "corrupción acumulada dentro de la implementación
-de Wine del ComboBox por volumen de llamadas repetidas a
-`CB_ADDSTRING`" — si fuera una cuestión de volumen/desgaste acumulado,
-capar a 20 debería haber cambiado algo (aunque sea la firma o la
-frecuencia), y no cambió nada en absoluto.
+**The loop's volume is not the relevant variable**, with 20 iterations
+instead of 1395 the result is identical. This **directly rules out**
+the §12 reading of "corruption accumulated inside Wine's ComboBox
+implementation from the volume of repeated `CB_ADDSTRING` calls",
+if it were a matter of volume/accumulated wear, capping to 20 should
+have changed something (even just the signature or the frequency), and
+it changed absolutely nothing.
 
-**Lectura corregida:** la corrupción no depende de *cuántas* veces se
-llama a `CB_ADDSTRING` en este loop — es consistente con que ya esté
-presente **antes** de llegar aquí (el `free()` que aborta se dispara en
-la primera oportunidad que tiene de encontrar la corrupción, sea esa
-oportunidad la iteración 1 o la 1395 da igual), no con que este loop
-específico la *cause* por acumulación. Esto reabre con más fuerza la
-lectura alternativa que §5 (punto 3) y §12 ya dejaban abierta sin
-perseguir: el origen real está en otro lado, y todo lo que esta
-investigación viene instrumentando dentro de `sync_combo`/
-`locate_source_combos`/`collect_original_combos` (ocho candidatos
-refutados en total) puede ser enteramente inocente — el `free()` que
-vemos abortar ahí es solo el primer punto de contacto con un heap ya
-dañado por algo que corre **antes** en el arranque, no dentro de esta
-cadena de funciones en absoluto.
+**Corrected reading:** the corruption does not depend on *how many*
+times `CB_ADDSTRING` is called in this loop, it is consistent with it
+already being present **before** reaching this point (the `free()`
+that aborts fires at the first opportunity it gets to find the
+corruption, whether that opportunity is iteration 1 or 1395 makes no
+difference), not with this specific loop *causing* it by accumulation.
+This reopens with more force the alternative reading that §5 (point 3)
+and §12 already left open without pursuing: the real origin is
+elsewhere, and everything this investigation has been instrumenting
+inside `sync_combo`/`locate_source_combos`/`collect_original_combos`
+(eight refuted candidates in total) may be entirely innocent, the
+`free()` we see abort there is only the first point of contact with a
+heap already damaged by something that runs **before** in startup, not
+within this chain of functions at all.
 
-**Consecuencia práctica:** parar de instrumentar código dentro de la
-cadena `sync_combo`/`locate_source_combos` — con este resultado, seguir
-ahí ya no tiene sustento. La vía que queda con más apoyo es acotar hacia
-atrás: qué corre *antes* de la primera llamada a `sync_mirrors` en el
-arranque (creación de ventanas/controles del toolbar, `WM_CREATE` de
-`toolbar_window_proc`, o más atrás aún) — no perseguido todavía.
+**Practical consequence:** stop instrumenting code within the
+`sync_combo`/`locate_source_combos` chain, with this result, continuing
+there no longer has support. The avenue with the most support left is
+to narrow backward: what runs *before* the first call to
+`sync_mirrors` in startup (creation of toolbar windows/controls,
+`WM_CREATE` of `toolbar_window_proc`, or even further back), not
+pursued yet.
 
-**Build restaurado** después de revertir esta instrumentación.
+**Build restored** after reverting this instrumentation.
 
-### 13. Qué corre antes de `sync_mirrors` — bisección de `WM_CREATE`: **el propio `WM_CREATE`, incluida su primera llamada a `sync_mirrors`, sale limpio**
+### 13. What runs before `sync_mirrors`, bisecting `WM_CREATE`: **`WM_CREATE` itself, including its first call to `sync_mirrors`, comes out clean**
 
-Retoma directamente el punto pendiente de §12 ("acotar hacia atrás qué
-corre antes de la primera llamada a `sync_mirrors`"). `sync_mirrors` se
-llama desde dos sitios en `toolbar_window_proc`: una vez dentro de
-`WM_CREATE` (línea 2590, incondicional, al crear el toolbar), y otra vez
-dentro de `WM_TIMER` (línea 2602, cada 350 ms vía `SetTimer(window,
-kSyncTimer, 350, nullptr)`, puesto al final del propio `WM_CREATE`).
-Hasta esta sesión no estaba claro cuál de las dos llamadas es la que
-llega a la iteración con `count=1395` de §12 — ambas rutas pasan por el
-mismo `sync_mirrors`.
+Directly resumes the pending item from §12 ("narrow backward what runs
+before the first call to `sync_mirrors`"). `sync_mirrors` is called
+from two places in `toolbar_window_proc`: once inside `WM_CREATE`
+(line 2590, unconditional, when the toolbar is created), and again
+inside `WM_TIMER` (line 2602, every 350 ms via `SetTimer(window,
+kSyncTimer, 350, nullptr)`, set at the end of `WM_CREATE` itself). Until
+this session it was not clear which of the two calls reaches the
+`count=1395` iteration from §12, both routes go through the same
+`sync_mirrors`.
 
-**Instrumentación temporal** (`opus_win95_chrome.cpp`, revertida
-después, diff confirmado limpio): un checkpoint `fprintf` después de
-cada paso significativo del cuerpo de `WM_CREATE` — asignación de
-`ToolbarState`, `LoadImageW` del sprite, `CreateFontIndirectW`, cada uno
-de los cuatro `create_combo`/`create_zoom_combo`, los `SetWindowTextW`
-iniciales, los `WM_SETFONT`, `position_combos`, y por último la llamada
-a `sync_mirrors` en sí (antes y después).
+**Temporary instrumentation** (`opus_win95_chrome.cpp`, reverted
+afterward, diff confirmed clean): an `fprintf` checkpoint after each
+significant step of `WM_CREATE`'s body, `ToolbarState` allocation, the
+sprite's `LoadImageW`, `CreateFontIndirectW`, each of the four
+`create_combo`/`create_zoom_combo` calls, the initial
+`SetWindowTextW`s, the `WM_SETFONT`s, `position_combos`, and finally
+the call to `sync_mirrors` itself (before and after).
 
-**Resultado, 5/5 corridas: la secuencia completa de checkpoints
-imprime siempre, incluido `sync_mirrors returned ok` como última línea
-antes del crash.** Es decir: **todo el cuerpo de `WM_CREATE` —
-asignación de estado, carga de sprite, creación de fuente, creación de
-los cuatro combos, textos iniciales, aplicación de fuente,
-posicionamiento, y la primera llamada completa a `sync_mirrors` —
-termina sin ningún problema en las cinco corridas.** El crash ocurre
-**después** de que `WM_CREATE` retorna `0`.
+**Result, 5/5 runs: the full checkpoint sequence always prints,
+including `sync_mirrors returned ok` as the last line before the
+crash.** That is: **the whole body of `WM_CREATE`, state allocation,
+sprite loading, font creation, creating the four combos, initial text,
+applying the font, positioning, and the first full call to
+`sync_mirrors`, finishes with no problem in all five runs.** The crash
+occurs **after** `WM_CREATE` returns `0`.
 
-**Reconciliación con §12 — no es una contradicción, es una
-localización más precisa:** en la primera llamada a `sync_mirrors`
-(dentro de `WM_CREATE`), `locate_source_combos` todavía no encuentra
-ningún combo real (§11: "primera llamada... vacía") — las tres llamadas
-a `sync_combo` dentro de esa primera pasada hacen `early-return` de
-inmediato (`source == nullptr`) y no llegan ni cerca del loop de
-`CB_ADDSTRING`. La iteración con `count=1395` que crashea en §12
-**tiene que ser la de la segunda llamada a `sync_mirrors`, disparada por
-`WM_TIMER` 350 ms después** — es la única otra ruta que existe hacia
-`sync_combo`, y es coherente con que `locate_source_combos` sí encuentre
-los tres combos reales en su segunda invocación (también documentado en
-§11).
+**Reconciling with §12, not a contradiction, a more precise
+localization:** on the first call to `sync_mirrors` (inside
+`WM_CREATE`), `locate_source_combos` still finds no real combos
+(§11: "the first call... empty"), the three `sync_combo` calls within
+that first pass do an immediate `early-return` (`source == nullptr`)
+and never get close to the `CB_ADDSTRING` loop. The iteration with
+`count=1395` that crashes in §12 **has to be the one from the second
+call to `sync_mirrors`, triggered by `WM_TIMER` 350 ms later**, it is
+the only other route into `sync_combo`, consistent with
+`locate_source_combos` finding the three real combos on its second
+invocation (also documented in §11).
 
-**Consecuencia:** la ventana de interés ya no es "todo lo que corre
-antes de `sync_mirrors`" en abstracto — es específicamente **lo que
-ocurre entre que `WM_CREATE` retorna (toolbar recién creado, ventana
-visible) y que el temporizador de 350 ms dispara la segunda llamada a
-`sync_mirrors`**. En ese intervalo el bucle de mensajes de Wine sigue
-bombeando: pueden estar creándose otras ventanas (el pane del documento,
-otros controles), procesándose `WM_PAINT`/`WM_SIZE`, o corriendo
-cualquier otro código de arranque de `WORD1` en paralelo — nada de eso
-se ha instrumentado todavía. Combinado con el resultado de §12 (el
-volumen del loop de `sync_combo` no es la variable relevante), la
-lectura más consistente con toda la evidencia acumulada sigue siendo:
-la corrupción no se origina dentro de la cadena `toolbar_window_proc`→
+**Consequence:** the window of interest is no longer "everything that
+runs before `sync_mirrors`" in the abstract, it is specifically **what
+happens between `WM_CREATE` returning (the toolbar just created, the
+window visible) and the 350 ms timer firing the second call to
+`sync_mirrors`**. During that interval Wine's message loop keeps
+pumping: other windows may be being created (the document pane, other
+controls), `WM_PAINT`/`WM_SIZE` being processed, or any other `WORD1`
+startup code running in parallel, none of it instrumented yet.
+Combined with the §12 result (the `sync_combo` loop's volume is not the
+relevant variable), the reading most consistent with all the evidence
+gathered remains: the corruption does not originate inside the
+`toolbar_window_proc`→
 `sync_mirrors`→`sync_combo`→`locate_source_combos`→
-`collect_original_combos` en absoluto (nueve candidatos refutados ahí
-entre todas las sesiones) — se origina en otro código que corre en
-paralelo durante ese intervalo de 350 ms, y el primer `free()` de
-`sync_combo` es solo el primer punto de contacto con el daño.
+`collect_original_combos` chain at all (nine candidates refuted there
+across all sessions), it originates in other code running in parallel
+during that 350 ms interval, and `sync_combo`'s first `free()` is only
+the first point of contact with the damage.
 
-**No perseguido esta sesión:** instrumentar el propio `WM_TIMER` (log
-antes/después de su llamada a `sync_mirrors`, para confirmar
-directamente que es esa la que crashea y no una tercera invocación no
-contemplada) y/o instrumentar qué otras ventanas/paneles se crean o qué
-mensajes se procesan en el intervalo de 350 ms entre `WM_CREATE` y el
-primer `WM_TIMER`.
+**Not pursued this session:** instrumenting `WM_TIMER` itself (a log
+before/after its call to `sync_mirrors`, to directly confirm it is that
+call that crashes and not some third, unaccounted-for invocation)
+and/or instrumenting what other windows/panes get created or what
+messages get processed in the 350 ms interval between `WM_CREATE` and
+the first `WM_TIMER`.
 
-**Build restaurado** después de revertir esta instrumentación.
+**Build restored** after reverting this instrumentation.
 
-### 14. `WM_TIMER` instrumentado — confirmado: crashea en el `tick#1`, en la propia llamada a `sync_mirrors`, antes de llegar a nada más
+### 14. `WM_TIMER` instrumented, confirmed: it crashes on `tick#1`, inside the `sync_mirrors` call itself, before reaching anything else
 
-Cierra directamente la pregunta que dejó abierta §13. Instrumentación
-temporal (`opus_win95_chrome.cpp`, revertida después, diff confirmado
-limpio): checkpoints en cada paso del cuerpo de `WM_TIMER` — contador de
-ticks, valores de `suppress_sync_until`/`GetTickCount64()`, antes/después
-de `sync_mirrors`, antes/después de `subclass_all_document_panes`, y de
-las tres ramas condicionales (refresco de regla, arranque de vista de
-página, pintado de regla horizontal).
+Directly closes the question §13 left open. Temporary instrumentation
+(`opus_win95_chrome.cpp`, reverted afterward, diff confirmed clean):
+checkpoints at every step of `WM_TIMER`'s body, tick counter,
+`suppress_sync_until`/`GetTickCount64()` values, before/after
+`sync_mirrors`, before/after `subclass_all_document_panes`, and the
+three conditional branches (ruler refresh, page-view startup, ruler
+horizontal paint).
 
-**Resultado, 5/5 corridas: el crash ocurre en el primerísimo `tick#1`**
-(`suppress_sync_until=0`, así que la condición nunca suprime nada),
-**inmediatamente después de "calling sync_mirrors" y antes de
-"sync_mirrors returned ok"** — es decir, dentro de esa llamada, nunca
-llega a retornar. **Ninguna de las cinco corridas alcanza
-`subclass_all_document_panes` ni ninguna de las ramas posteriores** —
-el crash ocurre antes de que el código tenga oportunidad de ejecutarlas.
+**Result, 5/5 runs: the crash occurs on the very first `tick#1`**
+(`suppress_sync_until=0`, so the condition never suppresses anything),
+**immediately after "calling sync_mirrors" and before
+"sync_mirrors returned ok"**, that is, inside that call, it never gets
+to return. **None of the five runs reach
+`subclass_all_document_panes` or any of the later branches**, the
+crash occurs before the code gets a chance to execute them.
 
-**Confirma sin ambigüedad la hipótesis de §13:** es la segunda llamada a
-`sync_mirrors` (la de `WM_TIMER`, no la de `WM_CREATE`) la que llega al
-`count=1395` de §12 y crashea — no hay una tercera ruta ni nada más
-dentro del propio `WM_TIMER` involucrado. `subclass_all_document_panes`
-y el resto del cuerpo de `WM_TIMER` quedan **descartados como
-candidatos** por esta misma razón: nunca se ejecutan antes del crash en
-ninguna corrida.
+**Unambiguously confirms the §13 hypothesis:** it is the second call to
+`sync_mirrors` (the one from `WM_TIMER`, not from `WM_CREATE`) that
+reaches the `count=1395` from §12 and crashes, there is no third route
+or anything else inside `WM_TIMER` itself involved.
+`subclass_all_document_panes` and the rest of `WM_TIMER`'s body are
+**ruled out as candidates** for this same reason: they never execute
+before the crash in any run.
 
-**Consecuencia — precisa la ventana de búsqueda que quedaba abierta:**
-como `WM_TIMER` llama a `sync_mirrors` como su primer paso, nada del
-propio manejador de `WM_TIMER` corre "en paralelo" antes del crash. La
-ventana de interés real vuelve a ser, como en §13, **el intervalo de
-~350 ms entre que `WM_CREATE` retorna y que este primer `WM_TIMER`
-llega** — código que corre por fuera de `toolbar_window_proc` por
-completo (bombeo de mensajes de Wine, creación de otras ventanas/panes,
-u otro código de arranque de `WORD1`), no instrumentado todavía por
-esta investigación. Con esto, los diez candidatos dentro de la cadena
+**Consequence, sharpens the search window that remained open:** since
+`WM_TIMER` calls `sync_mirrors` as its first step, nothing in
+`WM_TIMER`'s own handler runs "in parallel" before the crash. The real
+window of interest goes back to being, as in §13, **the ~350 ms
+interval between `WM_CREATE` returning and this first `WM_TIMER`
+arriving**, code that runs entirely outside `toolbar_window_proc`
+(Wine's message pump, creation of other windows/panes, or other
+`WORD1` startup code), not instrumented yet by this investigation. With
+this, the ten candidates inside the
 `toolbar_window_proc`/`sync_mirrors`/`sync_combo`/
-`locate_source_combos`/`collect_original_combos` quedan agotados sin
-excepción — cualquier paso siguiente que quiera seguir la pista del
-heap corrupto necesita mirar fuera de esta cadena de funciones.
+`locate_source_combos`/`collect_original_combos` chain are exhausted
+without exception, any next step chasing the corrupt-heap lead needs to
+look outside this chain of functions.
 
-**Build restaurado** después de revertir esta instrumentación.
+**Build restored** after reverting this instrumentation.
 
-### 15. Backtrace real de la llamada que crashea — no es el `WM_TIMER` de 350 ms: es una llamada síncrona desde `FCreateMw`; corrige §14
+### 15. Real backtrace of the crashing call, it is not the 350 ms `WM_TIMER`: it is a synchronous call from `FCreateMw`; corrects §14
 
-Retoma el punto pendiente de §14 ("instrumentar qué otras ventanas/paneles
-se crean o qué mensajes se procesan en el intervalo de 350 ms"). Antes de
-instrumentar ese intervalo se intentó primero la vía más directa —
-breakpoint en la propia `sync_mirrors` con `gdb` para capturar el
-backtrace real en el momento de la llamada que crashea — y esa vía reveló
-que la premisa de §13/§14 (que hay dos llamadas separadas por ~350 ms
-gobernadas por `SetTimer`) es incorrecta.
+Resumes the pending item from §14 ("instrument what other
+windows/panes get created or what messages get processed in the 350 ms
+interval"). Before instrumenting that interval, the more direct
+avenue was tried first, a breakpoint on `sync_mirrors` itself with
+`gdb` to capture the real backtrace at the moment of the crashing call,
+and that avenue revealed that the premise of §13/§14 (that there are
+two calls separated by ~350 ms governed by `SetTimer`) is incorrect.
 
-**Bloqueador nuevo, no visto en sesiones anteriores: los breakpoints por
-archivo:línea dejaron de resolver en esta sesión.** `break
-opus_win95_chrome.cpp:916` (`sync_mirrors`) y `break
-opus_win95_chrome.cpp:2829` (`OpusCreateWin95Chrome`, `extern "C"`, no en
-namespace anónimo — descarta la hipótesis de que fuera un problema de
-visibilidad de símbolo) quedan `<PENDING>` para siempre en 5 corridas
-distintas bajo `gdb -x script --args wine WORD1.exe.so` (`set breakpoint
-pending on`), incluso con las dos combinadas en el mismo script. `info
-sharedlibrary` en el momento exacto del `SIGABRT` reporta **"No shared
-libraries loaded at this time"** — ni siquiera `libc.so.6` aparece
-registrado, con el proceso corriendo código real. Reproducido también con
-un comando trivial no relacionado (`break main` sobre `wine cmd /c "echo
-hi"`): mismo resultado, `<PENDING>` eterno, cero shared libraries. Es una
-regresión genérica de integración `gdb`↔`wine` en esta sesión concreta —
-no específica de `WORD1.exe.so` ni de namespaces anónimos —, que contradice
-directamente lo que §12.1/§12.2 documentaron funcionando en un entorno
-descrito como el mismo (EndeavourOS, wine-staging 11.15, `gdb` 17.2). No
-se investigó la causa de la regresión (podría ser una actualización de
-paquete entre sesiones). Adicionalmente, `gdb -p <PID>` sobre un proceso
-ya lanzado falla con `ptrace: Operación no permitida` —
-`/proc/sys/kernel/yama/ptrace_scope` vale `1` en este entorno, bloqueo de
-Yama independiente del anterior; no se tocó (requeriría privilegios y
-autorización explícita, fuera de alcance).
+**New blocker, not seen in previous sessions: file:line breakpoints
+stopped resolving in this session.** `break
+opus_win95_chrome.cpp:916` (`sync_mirrors`) and `break
+opus_win95_chrome.cpp:2829` (`OpusCreateWin95Chrome`, `extern "C"`, not
+in an anonymous namespace, ruling out the hypothesis that it was a
+symbol-visibility problem) stay `<PENDING>` forever across 5 separate
+runs under `gdb -x script --args wine WORD1.exe.so` (`set breakpoint
+pending on`), even with both combined in the same script. `info
+sharedlibrary` at the exact moment of `SIGABRT` reports **"No shared
+libraries loaded at this time"**, not even `libc.so.6` appears
+registered, with the process running real code. Also reproduced with a
+trivial unrelated command (`break main` on `wine cmd /c "echo
+hi"`): same result, eternal `<PENDING>`, zero shared libraries. It is a
+generic `gdb`↔wine integration regression in this specific session, not
+specific to `WORD1.exe.so` or to anonymous namespaces, which directly
+contradicts what §12.1/§12.2 documented working in an environment
+described as the same one (EndeavourOS, wine-staging 11.15, `gdb`
+17.2). The cause of the regression was not investigated (it could be a
+package update between sessions). Additionally, `gdb -p <PID>` on an
+already-launched process fails with `ptrace: Operation not permitted`,
+`/proc/sys/kernel/yama/ptrace_scope` is `1` in this environment, a Yama
+block independent of the previous one; not touched (would require
+privileges and explicit authorization, out of scope).
 
-**Técnica alternativa usada — sin gdb, sin tocar `src/Opus/`:**
-instrumentación temporal en `opus_win95_chrome.cpp` (namespace anónimo, en
-`src/port/`, sin restricción) con `backtrace()` de `<execinfo.h>` (glibc,
-disponible porque este archivo compila como C++ nativo bajo `winegcc`, no
-tiene nada específico de MSVC) en tres puntos: antes de la llamada a
-`sync_mirrors` dentro de `WM_CREATE` (línea 2590), antes de la llamada
-dentro de `WM_TIMER` (línea 2602), y — la que resultó decisiva — al
-principio de `OpusSyncWin95Toolbar()` (línea 2802), que hace
-`SendMessageW(vhwndWin95Toolbar, WM_TIMER, kSyncTimer, 0)` de forma
-**síncrona y directa**, sin pasar por ninguna cola de mensajes ni por
-`SetTimer`. Cada captura imprime también `GetTickCount64()` y la dirección
-de la propia función de diagnóstico (`&ChromeTraceDiag`) como referencia
-para poder restar el ASLR de cada corrida y resolver las direcciones
-crudas contra el binario estático con `addr2line -e WORD1.exe.so -f -C`
-(la misma técnica de §3, aplicada ahora de forma proactiva en vez de sobre
-un core ya corrupto). Instrumentación revertida después
-(`git checkout -- src/port/original/opus_win95_chrome.cpp`, diff limpio
-confirmado) y build restaurado.
+**Alternative technique used, no gdb, no touching `src/Opus/`:**
+temporary instrumentation in `opus_win95_chrome.cpp` (anonymous
+namespace, in `src/port/`, no restriction) with glibc's
+`backtrace()` from `<execinfo.h>` (available because this file compiles
+as native C++ under `winegcc`, nothing MSVC-specific) at three points:
+before the call to `sync_mirrors` inside `WM_CREATE` (line 2590), before
+the call inside `WM_TIMER` (line 2602), and, the one that turned out to
+be decisive, at the start of `OpusSyncWin95Toolbar()` (line 2802),
+which does `SendMessageW(vhwndWin95Toolbar, WM_TIMER, kSyncTimer, 0)`
+**synchronously and directly**, without going through any message
+queue or through `SetTimer`. Each capture also prints
+`GetTickCount64()` and the address of the diagnostic function itself
+(`&ChromeTraceDiag`) as a reference to be able to subtract each run's
+ASLR and resolve the raw addresses against the static binary with
+`addr2line -e WORD1.exe.so -f -C` (the same technique as §3, now
+applied proactively instead of against an already-corrupted core).
+Instrumentation reverted afterward
+(`git checkout -- src/port/original/opus_win95_chrome.cpp`, clean diff
+confirmed) and build restored.
 
-**Resultado, 3/3 corridas, mismo patrón exacto:**
+**Result, 3/3 runs, the exact same pattern:**
 
 ```
 [CHROME TRACE] WM_CREATE before sync_mirrors                           tick=T
 [CHROME TRACE] OpusSyncWin95Toolbar direct call (init2.c) before ...   tick=T+~260..282ms
-[CHROME TRACE] WM_TIMER before sync_mirrors                            tick=T+~260..282ms   <-- MISMO tick, al milisegundo
-free(): invalid pointer   (o double free or corruption (!prev))
+[CHROME TRACE] WM_TIMER before sync_mirrors                            tick=T+~260..282ms   <-- SAME tick, to the millisecond
+free(): invalid pointer   (or double free or corruption (!prev))
 ```
 
-El marcador puesto dentro de `OpusSyncWin95Toolbar` y el marcador puesto
-dentro del `case WM_TIMER` de `toolbar_window_proc` imprimen **el mismo
-`GetTickCount64()` exacto** las 3 veces — no hay forma de que sean dos
-eventos distintos separados por trabajo real; es la misma llamada vista
-desde dos puntos de instrumentación. Además el intervalo real medido
-(~260-282 ms) es **menor que los 350 ms** del `SetTimer` — un `WM_TIMER`
-genuino de cola nunca dispara antes del intervalo pedido, lo que ya era
-indicio de que no era ese el mecanismo. El `SetTimer(window, kSyncTimer,
-350, ...)` sigue vivo y armado, pero **el proceso muere antes de que
-tenga oportunidad de disparar ni una sola vez** — el "tick#1" que §14
-identificó y atribuyó al timer real nunca fue el timer real.
+The marker placed inside `OpusSyncWin95Toolbar` and the marker placed
+inside the `case WM_TIMER` of `toolbar_window_proc` print **the exact
+same `GetTickCount64()`** all 3 times, there is no way these are two
+distinct events separated by real work; it is the same call seen from
+two instrumentation points. Also, the measured real interval
+(~260-282 ms) is **less than the 350 ms** of the `SetTimer`, a genuine
+queued `WM_TIMER` never fires before the requested interval, which was
+already a sign that this was not the mechanism. The
+`SetTimer(window, kSyncTimer, 350, ...)` remains alive and armed, but
+**the process dies before it ever gets a chance to fire even once**,
+the "tick#1" that §14 identified and attributed to the real timer was
+never the real timer.
 
-**La captura dentro de `OpusSyncWin95Toolbar` desenrolla 13 frames**
-completos (a diferencia de las capturas en `WM_CREATE`/`WM_TIMER`, que se
-cortan en 3 — el mismo límite de unwind por CFI roto en la frontera
-ABI Unix/PE de Wine que ya bloqueaba a `gdb` en §3; aquí no aplica porque
-`OpusSyncWin95Toolbar` se alcanza por una llamada a función C directa, sin
-cruzar esa frontera hasta el frame final). Resuelta con `addr2line` contra
-el offset real de cada corrida (base = dirección en vivo de
-`ChromeTraceDiag` menos su dirección estática, `nm -C WORD1.exe.so`):
+**The capture inside `OpusSyncWin95Toolbar` unwinds 13 full frames**
+(unlike the captures in `WM_CREATE`/`WM_TIMER`, which cut off at 3, the
+same broken-CFI unwind limit at the Wine Unix/PE ABI boundary that
+already blocked `gdb` in §3; here it does not apply because
+`OpusSyncWin95Toolbar` is reached through a direct C function call,
+without crossing that boundary until the final frame). Resolved with
+`addr2line` against each run's real offset (base = `ChromeTraceDiag`'s
+live address minus its static address, `nm -C WORD1.exe.so`):
 
 ```
 __wine_spec_exe_wentry
@@ -2002,515 +2009,523 @@ wmain
 wWinMain                    opus_original_startup_probe.cpp:512
 OpusOriginalWinMain         wproc.c:516
 FInitWinInfo                wproc.c:775
-FInitPart2                  init2.c:659        (ElNewFile(stType, fFalse) — documento nuevo sin título)
+FInitPart2                  init2.c:659        (ElNewFile(stType, fFalse) -- a new, untitled document)
 ElNewFile                   open.c:1353
-FCreateMw                   open.c:595         (creando la ventana del documento — TODAVÍA NO shown)
-EndStartup1                 open.c:591         (llamada directa, no vía el wrapper EndStartup() de init2.c:703)
+FCreateMw                   open.c:595         (creating the document window -- NOT YET shown)
+EndStartup1                 open.c:591         (direct call, not via the init2.c:703 EndStartup() wrapper)
 DisplayRibbonInit           init2.c:817
 OpusSyncWin95Toolbar        opus_win95_chrome.cpp:2803
-ChromeTraceDiag             (sonda de esta sesión)
+ChromeTraceDiag              (this session's probe)
 ```
 
-**Localización exacta del sitio de llamada, confirmada leyendo
-`open.c:584-600`:** dentro de `FCreateMw`, bajo el comentario `/* BEGIN
-VISUAL DISPLAY OF WINDOW */`, hay dos llamadas separadas —
-`EndStartup1()` en la línea 591 (si `vhwndStartup != NULL`) y
-`EndStartup2()` en la línea 639 — con la creación/exhibición real de la
-ventana del documento **entre medio** (`ShowWindow(hwndMw, ...)` en la
-línea 600 es *posterior* a `EndStartup1()`). Es decir: `sync_mirrors`
-crashea mientras `FCreateMw` todavía está construyendo la primera ventana
-de documento del arranque — **antes de que esa ventana llegue a mostrarse
-en pantalla** —, disparado por el efecto colateral de
-`EndStartup1()`→`DisplayRibbonInit()`→`OpusSyncWin95Toolbar()` que existe
-específicamente para ocultar la ribbon clásica y sincronizar la toolbar
-Win95 en cuanto termina el splash de arranque.
+**Exact call-site location, confirmed by reading
+`open.c:584-600`:** inside `FCreateMw`, under the comment `/* BEGIN
+VISUAL DISPLAY OF WINDOW */`, there are two separate calls,
+`EndStartup1()` on line 591 (if `vhwndStartup != NULL`) and
+`EndStartup2()` on line 639, with the document window's real
+creation/display **in between** (`ShowWindow(hwndMw, ...)` on line 600
+is *after* `EndStartup1()`). That is: `sync_mirrors` crashes while
+`FCreateMw` is still constructing the startup's first document window,
+**before that window ever gets shown on screen**, triggered by the
+side effect of
+`EndStartup1()`→`DisplayRibbonInit()`→`OpusSyncWin95Toolbar()`, which
+exists specifically to hide the classic ribbon and sync the Win95
+toolbar as soon as the startup splash ends.
 
-**Corrección concreta sobre §13/§14:** no hay una "segunda llamada a
-`sync_mirrors` vía `WM_TIMER` 350 ms después" — hay una **única llamada
-adicional síncrona**, disparada por `SendMessageW` (no por el temporizador
-real), que llega recursivamente por una ruta de llamadas de función C
-normal (`FInitPart2`→`ElNewFile`→`FCreateMw`→`EndStartup1`→
-`DisplayRibbonInit`→`OpusSyncWin95Toolbar`), completamente dentro de
-`FInitPart2` y sin pasar nunca por `GetMessage`/`DispatchMessage` de tope.
-La lectura de §13 ("la ventana de interés es el intervalo de ~350 ms en
-que el bombeo de mensajes de Wine sigue corriendo") queda refutada: no
-hay bombeo de mensajes de por medio en absoluto entre las dos llamadas a
-`sync_mirrors` que sí ocurren (la de `WM_CREATE`, vacía, y esta), es una
-única rama de ejecución síncrona del propio hilo principal.
+**Concrete correction to §13/§14:** there is no "second call to
+`sync_mirrors` via `WM_TIMER` 350 ms later", there is a **single
+extra synchronous call**, triggered by `SendMessageW` (not by the real
+timer), that arrives recursively through a normal C function-call
+route (`FInitPart2`→`ElNewFile`→`FCreateMw`→`EndStartup1`→
+`DisplayRibbonInit`→`OpusSyncWin95Toolbar`), entirely inside
+`FInitPart2` and never going through the top-level
+`GetMessage`/`DispatchMessage`. The §13 reading ("the window of
+interest is the ~350 ms interval during which Wine's message pump keeps
+running") is refuted: there is no message pumping in between at all
+between the two calls to `sync_mirrors` that do occur (the empty one
+from `WM_CREATE`, and this one), it is a single synchronous branch of
+execution on the main thread itself.
 
-**Consecuencia — foco preciso para la próxima sesión:** el candidato ya
-no es "código no identificado corriendo en paralelo" — es la construcción
-de la primera ventana de documento en sí. `FCreateMw` (`open.c`, entre la
-Scribble `'D'`/`'E'` de la línea 566 y el punto de la línea 591) construye
-estado (documento, `ww` activo, `hmwd`, controles) que **todavía no está
-terminado** cuando `EndStartup1` dispara `sync_mirrors`/`sync_combo` sobre
-los combos de la toolbar — y `locate_source_combos` sí encuentra combos
-reales en este punto (a diferencia de la primera llamada, vacía, dentro
-de `WM_CREATE` — §13), lo que sugiere que los controles "fuente" que la
-toolbar espejea ya existen para entonces pero el documento/ventana que los
-respalda puede no estarlo. Siguiente paso obvio, no intentado esta sesión:
-instrumentar qué controles concretos son `state->source_style` /
-`source_font` / `source_size` en el momento del crash (ya se sabe que
-`locate_source_combos` los encuentra — §12; falta identificar *cuáles*
-`HWND` son y si pertenecen a la ventana de documento a medio construir) y/o
-revisar qué mutación de heap ocurre en el tramo de `FCreateMw` entre la
-línea 566 y la 591 que podría dejar una estructura compartida en estado
-inconsistente para el `free()` posterior dentro de `sync_combo`.
+**Consequence, precise focus for the next session:** the candidate is
+no longer "unidentified code running in parallel", it is the
+construction of the first document window itself. `FCreateMw`
+(`open.c`, between the Scribble `'D'`/`'E'` at line 566 and the point at
+line 591) builds state (document, active `ww`, `hmwd`, controls) that
+is **not yet finished** when `EndStartup1` triggers
+`sync_mirrors`/`sync_combo` over the toolbar's combos, and
+`locate_source_combos` does find real combos at this point (unlike the
+first, empty call inside `WM_CREATE`, §13), suggesting that the "font"
+controls the toolbar mirrors already exist by then, but the
+document/window backing them may not. The obvious next step, not
+attempted this session: instrument which concrete controls
+`state->source_style` / `source_font` / `source_size` are at the moment
+of the crash (it is already known that `locate_source_combos` finds
+them, §12; still missing is identifying *which* `HWND`s they are and
+whether they belong to the half-built document window) and/or review
+what heap mutation occurs in the `FCreateMw` stretch between lines 566
+and 591 that could leave a shared structure in an inconsistent state
+for the later `free()` inside `sync_combo`.
 
-**No perseguido esta sesión:** diagnosticar la regresión de `gdb`
-documentada arriba (bloquea seguir usando breakpoints interactivos hasta
-resolverse); confirmar si la llamada `EndStartup1()`/`DisplayRibbonInit()`
-de `open.c:591` es *siempre* la que crashea o si en alguna corrida el
-`SetTimer` real llega a disparar primero (no observado en 3/3, pero
-tampoco es imposible dado que el margen es de solo ~70-90 ms).
+**Not pursued this session:** diagnosing the `gdb` regression
+documented above (it blocks continuing to use interactive breakpoints
+until resolved); confirming whether the
+`EndStartup1()`/`DisplayRibbonInit()` call at `open.c:591` is *always*
+the one that crashes or whether on some run the real `SetTimer` gets to
+fire first (not observed in 3/3, but not impossible either given that
+the margin is only ~70-90 ms).
 
-### 16. Identidad concreta de los HWND source_style/source_font/source_size — el crash es siempre en `sync_combo(font)`, y `source_style` nunca llega a intentarse
+### 16. Concrete identity of the source_style/source_font/source_size HWNDs, the crash is always in `sync_combo(font)`, and `source_style` is never even attempted
 
-Retoma el "siguiente paso obvio" que cerraba §15: instrumentar qué HWNDs
-concretos resuelven `state.source_style`/`source_font`/`source_size` en el
-momento del crash, y si pertenecen a la ventana de documento que `FCreateMw`
-todavía está construyendo.
+Resumes the "obvious next step" that closed §15: instrument which
+concrete HWNDs resolve `state.source_style`/`source_font`/`source_size`
+at the moment of the crash, and whether they belong to the document
+window `FCreateMw` is still constructing.
 
-**Técnica:** misma familia que §15 — instrumentación temporal en
-`opus_win95_chrome.cpp` (namespace anónimo, `src/port/`, revertida al
-terminar, build limpio confirmado antes y después). Esta vez con
-`fprintf(stderr, ...)` + `fflush` (no `backtrace()`) en tres puntos:
-`ChromeDumpHwndOwnership(label, hwnd)` — nueva función helper que vuelca
-`HWND`, `IsWindow`, `IsWindowVisible`, `GetClassNameW`, `GetWindowTextW`,
-`GetWindowRect` y sube la cadena de `GetParent` hasta la raíz (máx. 8
-niveles) — llamada desde dentro de `locate_source_combos` (para cada
-candidato encontrado y para el resultado final de cada uno de los tres
-roles) y desde dentro de `sync_mirrors` (justo antes de cada una de las tres
-llamadas a `sync_combo`); y una segunda ronda con instrumentación adicional
-directamente dentro de `sync_combo` — vuelca el `mirror`, imprime
-`count`/`copied_count`, y añade una línea por cada iteración del bucle
-`CB_ADDSTRING` con el índice y el string ANSI real a punto de copiarse.
+**Technique:** same family as §15, temporary instrumentation in
+`opus_win95_chrome.cpp` (anonymous namespace, `src/port/`, reverted at
+the end, clean build confirmed before and after). This time with
+`fprintf(stderr, ...)` + `fflush` (not `backtrace()`) at three points:
+`ChromeDumpHwndOwnership(label, hwnd)`, a new helper function that
+dumps `HWND`, `IsWindow`, `IsWindowVisible`, `GetClassNameW`,
+`GetWindowTextW`, `GetWindowRect`, and climbs the `GetParent` chain up
+to the root (max 8 levels), called from inside `locate_source_combos`
+(for each candidate found and for each of the three roles' final
+result) and from inside `sync_mirrors` (right before each of the three
+calls to `sync_combo`); and a second round with additional
+instrumentation directly inside `sync_combo`, dumping the `mirror`,
+printing `count`/`copied_count`, and adding a line per iteration of the
+`CB_ADDSTRING` loop with the index and the real ANSI string about to be
+copied.
 
-**Gotcha nuevo, no documentado antes en este archivo:** `wchar_t` bajo
-winelib se compila a 2 bytes (`-fshort-wchar`, para calzar con `WCHAR` de
-Win32), pero el CRT de este `.cpp` es el glibc nativo del sistema, cuyo
-`printf`/`fprintf` con `%ls` asume `wchar_t` de 4 bytes. Volcar un buffer
-`WCHAR` directamente con `%ls` produce basura (caracteres de cuadro
-ilegibles) — no es corrupción de datos, es un desalineamiento de ancho de
-tipo en el propio volcado. **Solución:** convertir con `WideCharToMultiByte`
-a ANSI antes de imprimir con `%s` (mismo patrón que la función
-`ansi_from_wide` que ya existe en este archivo, solo que aplicado en un
-helper local porque `ChromeDumpHwndOwnership` se sitúa antes en el archivo
-que `ansi_from_wide`). Cualquier instrumentación futura en código winelib
-que imprima texto ancho debe pasar por esta conversión.
+**New gotcha, not documented before in this file:** `wchar_t` under
+winelib compiles to 2 bytes (`-fshort-wchar`, to match Win32's `WCHAR`),
+but this `.cpp`'s CRT is the system's native glibc, whose
+`printf`/`fprintf` with `%ls` assumes a 4-byte `wchar_t`. Dumping a
+`WCHAR` buffer directly with `%ls` produces garbage (illegible box
+characters), it is not data corruption, it is a type-width
+mismatch in the dump itself. **Solution:** convert with
+`WideCharToMultiByte` to ANSI before printing with `%s` (the same
+pattern as the `ansi_from_wide` function already existing in this file,
+just applied in a local helper because `ChromeDumpHwndOwnership` sits
+earlier in the file than `ansi_from_wide`). Any future instrumentation
+in winelib code that prints wide text must go through this conversion.
 
-**Resultado, 4/4 corridas (`locate_source_combos`) + 3/3 corridas detalladas
-(`sync_combo`), patrón idéntico:**
+**Result, 4/4 runs (`locate_source_combos`) + 3/3 detailed runs
+(`sync_combo`), identical pattern:**
 
-En la primera llamada a `sync_mirrors` (dentro de `WM_CREATE` del propio
-toolbar) `locate_source_combos` encuentra **0 candidatos** — consistente con
-§13 — y los tres roles quedan `null`; los tres `sync_combo` no hacen nada
-(guard `source == nullptr`).
+On the first call to `sync_mirrors` (inside the toolbar's own
+`WM_CREATE`) `locate_source_combos` finds **0 candidates**, consistent
+with §13, and the three roles stay `null`; the three `sync_combo` calls
+do nothing (the `source == nullptr` guard).
 
-En la segunda llamada (la síncrona identificada en §15, vía
+On the second call (the synchronous one identified in §15, via
 `FCreateMw`→`EndStartup1`→`DisplayRibbonInit`→`OpusSyncWin95Toolbar`),
-`locate_source_combos` encuentra siempre exactamente **3 candidatos** con
-clase `ComboBox`, con esta identidad estable entre corridas (solo cambian
-los valores exactos de `HWND`, no la estructura):
+`locate_source_combos` always finds exactly **3 candidates** of class
+`ComboBox`, with this identity stable across runs (only the exact
+`HWND` values change, not the structure):
 
-| Candidato | rect | visible | cadena de padres | clasificado como |
+| Candidate | rect | visible | parent chain | classified as |
 |---|---|---|---|---|
-| A | (52,50,204,71) | sí | `OpusSdmDialog` → `OpusApp("Microsoft Word")` | `source_font` (contiene "Courier New" y "Arial") |
-| B | (254,50,310,71) | sí | `OpusSdmDialog` → `OpusApp` | `source_size` (contiene "24" y "72") |
-| C | (6196,113,6348,134) | **no** | `OpusSdmDialog` → `OpusMwd` → `OpusDesk` → `OpusApp` | **ninguno** — `source_style` queda `null` |
+| A | (52,50,204,71) | yes | `OpusSdmDialog` → `OpusApp("Microsoft Word")` | `source_font` (contains "Courier New" and "Arial") |
+| B | (254,50,310,71) | yes | `OpusSdmDialog` → `OpusApp` | `source_size` (contains "24" and "72") |
+| C | (6196,113,6348,134) | **no** | `OpusSdmDialog` → `OpusMwd` → `OpusDesk` → `OpusApp` | **none**, `source_style` stays `null` |
 
-**A y B son controles legítimos y ya poblados** de la ribbon clásica
-(`OpusSdmDialog`, un diálogo hijo directo de `OpusApp`) — nada que ver con
-la ventana de documento a medio construir. La hipótesis de cierre de §15
-("los `source_*` podrían pertenecer a la ventana de documento todavía sin
-terminar") **no se confirma para A/B**.
+**A and B are legitimate, already-populated controls** from the
+classic ribbon (`OpusSdmDialog`, a dialog directly under `OpusApp`),
+nothing to do with the half-built document window. The closing §15
+hypothesis ("the `source_*` might belong to the still-unfinished
+document window") **is not confirmed for A/B**.
 
-**C sí encaja con esa hipótesis** — está fuera de pantalla
-(`rect.left = 6196`, un valor de posicionamiento típico de "todavía no
-colocada"), invisible, y cuelga de una cadena de clases distinta y más
-profunda (`OpusMwd`/`OpusDesk`) que no aparece en A/B — casi con certeza es
-un control propio de la ventana de documento (`hwndMw`/`ww`) que `FCreateMw`
-está construyendo en ese instante. Pero **C nunca se clasifica como
-`source_style`** en ninguna de las 4 corridas — el `else if` de
-`locate_source_combos` exige `combo_contains(combo, "Normal")` o
-`CB_GETCOUNT > 0`, y C no cumple ninguna de las dos en este punto exacto
-(consistente con ser un combo recién creado, sin ítems todavía). Por tanto
-`state.source_style` queda `null` las 4 veces, y el primer `sync_combo`
-(estilo) es un no-op seguro. **C es un testigo de que la ventana de
-documento está a medio construir, pero no es la causa del crash.**
+**C does fit that hypothesis**, it is off-screen
+(`rect.left = 6196`, a typical "not yet positioned" value), invisible,
+and hangs off a distinct, deeper class chain (`OpusMwd`/`OpusDesk`)
+that does not appear on A/B, it is almost certainly a control of the
+document window (`hwndMw`/`ww`) that `FCreateMw` is constructing at
+that instant. But **C is never classified as `source_style`** in any of
+the 4 runs, `locate_source_combos`'s `else if` requires
+`combo_contains(combo, "Normal")` or `CB_GETCOUNT > 0`, and C meets
+neither at this exact point (consistent with being a freshly created
+combo, with no items yet). So `state.source_style` stays `null` all 4
+times, and the first `sync_combo` (style) is a safe no-op. **C is a
+witness that the document window is half-built, but not the cause of
+the crash.**
 
-**El crash es siempre dentro de `sync_combo(mirror=state.font_combo,
-source=state.source_font)`** — nunca en estilo (no-op, arriba) ni llega a
-alcanzar tamaño (el flujo muere en fuente antes). El `mirror`
-(`state.font_combo`) se confirma válido, visible, hijo de
-`OpusWin95Toolbar`/`OpusApp`, y ya con texto `"Arial"` (fijado en su propio
-`WM_CREATE`) — no es un handle obsoleto ni reciclado. El `source`
-(candidato A) reporta **`count=1395`**, coincidiendo exactamente con el
-hallazgo independiente de una sesión anterior (`fc-list` en este mismo
-entorno, commit `7185ce1`) — confirma que A es la fuente real de fuentes
-del sistema vía `fc-list`, y que ese hallazgo y este apuntan al mismo
-control.
+**The crash is always inside `sync_combo(mirror=state.font_combo,
+source=state.source_font)`**, never in style (no-op, above) nor does
+it ever reach size (the flow dies at font first). The `mirror`
+(`state.font_combo`) is confirmed valid, visible, a child of
+`OpusWin95Toolbar`/`OpusApp`, and already has the text `"Arial"` (set
+in its own `WM_CREATE`), not a stale or reused handle. The `source`
+(candidate A) reports **`count=1395`**, matching exactly the
+independent finding from an earlier session (`fc-list` on this same
+environment, commit `7185ce1`), confirming A is the real system-font
+source via `fc-list`, and that both findings point to the same control.
 
-**El índice del bucle `CB_ADDSTRING` donde crashea, con datos reales
-impresos por iteración:** las 3 corridas detalladas mueren en la vecindad
-de **idx=14/1395 ("DejaVu Sans Light")** o **idx=15/1395 ("DejaVu Sans
-Mono")** — nunca antes, nunca después, en 3/3. El mensaje de glibc varía
-entre corridas (`free(): invalid pointer`, `free(): invalid next size
-(normal)`, `double free or corruption (!prev)`) — los tres son detectores
-distintos del mismo tipo de daño (metadata de heap corrupta), no evidencia
-de tres bugs distintos.
+**The `CB_ADDSTRING` loop index where it crashes, with real per-iteration
+data:** the 3 detailed runs die in the neighborhood of
+**idx=14/1395 ("DejaVu Sans Light")** or **idx=15/1395 ("DejaVu Sans
+Mono")**, never before, never after, in 3/3. The glibc message varies
+between runs (`free(): invalid pointer`, `free(): invalid next size
+(normal)`, `double free or corruption (!prev)`), the three are
+distinct detectors of the same kind of damage (corrupt heap metadata),
+not evidence of three distinct bugs.
 
-**Lectura de esta franja estrecha (14-15 de 1395), no perseguida más allá de
-anotarla:** un índice que varía por ±1 entre corridas pero se mantiene en
-una banda tan angosta —en vez de disperso a lo largo de las 1395
-iteraciones, o fijo siempre en 0— es la firma típica de una corrupción de
-heap **detectada tarde**: el `free()`/`malloc()` que realmente escribe fuera
-de límites puede haber ocurrido bastante antes (incluso fuera de
-`sync_combo`, quizás en la propia `locate_source_combos` recorriendo 1395
-`combo_contains`/`CB_FINDSTRINGEXACT`, o en código anterior en la cadena
-`FCreateMw`→...→`OpusSyncWin95Toolbar`), dejando un chunk con metadata
-inconsistente; el bucle de `CB_ADDSTRING`/`combo_item`/`wide_from_ansi` de
-`sync_combo` simplemente hace suficiente churn de allocate/free como para
-que, tras el mismo número aproximado de operaciones cada vez, el
-allocator reutilice o intente consolidar ese chunk ya dañado y el
-detector de glibc dispare. Esto **no descarta** que el bug esté en
-`sync_combo` mismo, pero sí abre una hipótesis concreta que la próxima
-sesión no ha probado: usar un detector que atrape la escritura real en el
-momento en que ocurre (`valgrind` — ya disponible en este entorno, versión
-3.25.1 según sesiones previas — o `MALLOC_CHECK_=3`/`mallopt` con chequeo
-más agresivo) en vez de esperar a que glibc lo detecte tarde por
-casualidad de índice.
+**Reading of this narrow band (14-15 of 1395), not pursued beyond
+noting it:** an index that varies by ±1 between runs but stays within
+such a narrow band, rather than scattered across the 1395 iterations,
+or always fixed at 0, is the typical signature of heap corruption
+**detected late**: the `free()`/`malloc()` that actually writes out of
+bounds may have occurred well before (even outside `sync_combo`,
+perhaps inside `locate_source_combos` itself walking 1395
+`combo_contains`/`CB_FINDSTRINGEXACT`, or in earlier code in the
+`FCreateMw`→...→`OpusSyncWin95Toolbar` chain), leaving a chunk with
+inconsistent metadata; the `CB_ADDSTRING`/`combo_item`/`wide_from_ansi`
+loop in `sync_combo` simply does enough allocate/free churn that, after
+roughly the same number of operations each time, the allocator reuses
+or tries to consolidate that already-damaged chunk and glibc's detector
+fires. This **does not rule out** that the bug is in `sync_combo`
+itself, but it does open a concrete hypothesis the next session has not
+tried: use a detector that catches the real write at the moment it
+happens (`valgrind`, already available in this environment, version
+3.25.1 per previous sessions, or `MALLOC_CHECK_=3`/`mallopt` with more
+aggressive checking) instead of waiting for glibc to detect it late by
+chance of index.
 
-**Consecuencia — foco para la próxima sesión:** (1) correr bajo `valgrind`
-(no intentado en ninguna sesión de esta serie hasta ahora pese a estar
-disponible) para localizar la escritura real fuera de límites, en vez de
-seguir leyendo el punto de detección tardía de glibc; (2) si valgrind no es
-viable por la superposición Winelib/Wine (posible, dado el historial de
-fricciones de herramientas en este proyecto — ver el bloqueo de `gdb` en
-§15), instrumentar con la misma técnica de esta sección el tramo
-`locate_source_combos` en sí (1395 `combo_contains` llaman a
-`SendMessageA(..., CB_FINDSTRINGEXACT, ...)` sobre el mismo combo de 1395
-ítems, dos veces por candidato — volumen de trabajo comparable al bucle que
-sí se instrumentó) para descartar que la corrupción ya haya ocurrido ahí,
-antes de que `sync_combo` la "descubra"; (3) confirmar la identidad de C
-(candidato descartado, `OpusMwd`/`OpusDesk`) contra el código de `FCreateMw`
-en `open.c` — se sospecha que es el combo de estilos de la ventana de
-documento nueva, pero no se confirmó contra el código fuente esta sesión.
+**Consequence, focus for the next session:** (1) run under `valgrind`
+(not tried in any session of this series so far despite being
+available) to localize the real out-of-bounds write, instead of
+continuing to read glibc's late detection point; (2) if valgrind is not
+viable due to the Winelib/Wine overlap (possible, given this project's
+history of tooling friction, see the `gdb` block in §15), instrument
+`locate_source_combos` itself with the same technique from this
+section (its 1395 `combo_contains` calls invoke
+`SendMessageA(..., CB_FINDSTRINGEXACT, ...)` on the same 1395-item
+combo, twice per candidate, comparable work volume to the loop that
+was instrumented) to rule out that the corruption had already occurred
+there, before `sync_combo` "discovers" it; (3) confirm C's identity
+(the discarded candidate, `OpusMwd`/`OpusDesk`) against `FCreateMw`'s
+code in `open.c`, suspected to be the style combo of the new document
+window, but not confirmed against source this session.
 
-**No perseguido esta sesión:** correr bajo `valgrind` (mencionado arriba
-como plan, no ejecutado); confirmar C contra `open.c`; determinar si la
-franja 14-15 se mantiene bajo un juego de fuentes del sistema distinto
-(dependería de qué haya entre `fc-list` y estas posiciones, así que no es
-necesariamente estable entre máquinas).
+**Not pursued this session:** running under `valgrind` (mentioned above
+as a plan, not executed); confirming C against `open.c`; determining
+whether the 14-15 band holds under a different system font set (would
+depend on what lies between `fc-list` and these positions, so it is not
+necessarily stable across machines).
 
-### 17. `valgrind` — tres intentos, ninguno alcanza el crash; conclusión: no viable en este entorno sin más trabajo de infraestructura
+### 17. `valgrind`, three attempts, none reach the crash; conclusion: not viable in this environment without more infrastructure work
 
-Retoma el plan que cerraba §16: correr bajo `valgrind` (3.25.1, ya disponible
-en este entorno) para atrapar la escritura real fuera de límites en vez de
-seguir leyendo la detección tardía de glibc.
+Resumes the plan that closed §16: run under `valgrind` (3.25.1, already
+available in this environment) to catch the real out-of-bounds write
+instead of continuing to read glibc's late detection.
 
-**Intento 1 — sin mitigaciones, `--track-origins=yes`, timeout 240s:**
+**Attempt 1, no mitigations, `--track-origins=yes`, 240s timeout:**
 `valgrind --tool=memcheck --track-origins=yes --trace-children=yes
---error-exitcode=99 wine WORD1.exe.so`. Resultado: **timeout, no llega a
-crashear.** El log más grande (proceso `WORD1.exe.so` real, distinguible por
-`Command:` en el log) muestra que en 240s reales solo avanzó hasta
-`NtQueryDirectoryFile`/registro (arranque de `wineboot`/`explorer`), sin
-llegar siquiera a crear la ventana de la aplicación. La carga de
-`libnvidia-glcore`/`libGLX_nvidia`/`libEGL_nvidia` (el driver propietario de
-la GPU de este equipo — ver `CLAUDE.md`, GTX 1050 Max-Q) bajo instrumentación
-genera **93.442 allocs / 49.463 frees** solo en sus constructores de carga,
-dominando el tiempo disponible. Los 6 "Invalid write/read" que sí aparecieron
-apuntan todos a `Address 0x... is on thread 1's stack`, originados en
-`__wine_syscall_dispatcher` — el trampolín de cambio de stack Unix↔PE de Wine
-en su despachador de syscalls, un falso positivo de `valgrind` frente a Wine
-**ampliamente documentado** (Wine cambia el puntero de pila a mano al cruzar
-esa frontera; `valgrind` no lo entiende y lo marca como acceso inválido).
-No hay archivo de supresiones de Wine instalado en este sistema
-(`find / -iname "*wine*.supp"` → nada; el paquete `wine-staging` de este
-Arch no lo incluye) para filtrar este ruido.
+--error-exitcode=99 wine WORD1.exe.so`. Result: **timeout, never gets
+to crash.** The largest log (the real `WORD1.exe.so` process,
+distinguishable by `Command:` in the log) shows that in 240 real
+seconds it only got as far as `NtQueryDirectoryFile`/registry access
+(`wineboot`/`explorer` startup), without even getting to create the
+application window. Loading
+`libnvidia-glcore`/`libGLX_nvidia`/`libEGL_nvidia` (this machine's
+proprietary GPU driver, see `CLAUDE.md`, GTX 1050 Max-Q) under
+instrumentation generates **93,442 allocs / 49,463 frees** just in its
+load-time constructors, dominating the available time. The 6 "Invalid
+write/read" that did appear all point to
+`Address 0x... is on thread 1's stack`, originating in
+`__wine_syscall_dispatcher`, Wine's Unix↔PE stack-switching trampoline
+in its syscall dispatcher, a **well-documented** false positive of
+`valgrind` against Wine (Wine manually switches the stack pointer when
+crossing that boundary; `valgrind` does not understand it and flags it
+as an invalid access). There is no Wine suppressions file installed on
+this system (`find / -iname "*wine*.supp"` gives nothing; this Arch's
+`wine-staging` package does not include one) to filter out this noise.
 
-**Intento 2 — forzando el vendor EGL a mesa para evitar la carga del blob
-nvidia:** `__EGL_VENDOR_LIBRARY_FILENAMES=.../50_mesa.json
-LIBGL_ALWAYS_SOFTWARE=1`, `--leak-check=no` (menos overhead), timeout 1100s
-en background. Resultado: **mucho más rápido** — en ~2 minutos reales llegó
-hasta código real de creación de ventana/menú (`NtUserCreateWindowEx`,
-`calc_menu_bar_size`, `DrawTextW` — muy por delante de donde llegó el intento
-1) — pero murió con un fallo **distinto y ajeno al bug perseguido**:
-`nodrv_CreateWindow` — *"Application tried to create a window, but no driver
-could be loaded"* / *"The explorer process failed to start"* — seguido del
-propio manejo de error de Opus, `Win32 error 1400` en `init2.c:324`. Forzar
-el vendor EGL a mesa rompió la carga de `winex11.drv` antes de que Word
-llegara a la ventana de documento — un problema de entorno nuevo, inducido
-por la propia mitigación, no relacionado con `sync_combo`.
+**Attempt 2, forcing the EGL vendor to mesa to avoid loading the nvidia
+blob:** `__EGL_VENDOR_LIBRARY_FILENAMES=.../50_mesa.json
+LIBGL_ALWAYS_SOFTWARE=1`, `--leak-check=no` (less overhead), 1100s
+timeout in background. Result: **much faster**, in ~2 real minutes it
+reached real window/menu-creation code (`NtUserCreateWindowEx`,
+`calc_menu_bar_size`, `DrawTextW`, far past where attempt 1 got to), but
+died with a **different failure, unrelated to the bug being chased**:
+`nodrv_CreateWindow`, *"Application tried to create a window, but no
+driver could be loaded"* / *"The explorer process failed to start"*,
+followed by Opus's own error handling, `Win32 error 1400` in
+`init2.c:324`. Forcing the EGL vendor to mesa broke `winex11.drv`'s
+loading before Word could reach the document window, a new environment
+problem, induced by the mitigation itself, unrelated to `sync_combo`.
 
-**Intento 3 — solo `LIBGL_ALWAYS_SOFTWARE=1`, sin forzar el vendor EGL
-(para aislar si el problema del intento 2 era el override de vendor o
-otra cosa):** mismo resultado — **el mismo `nodrv_CreateWindow`**, esta vez
-en menos de 90s reales (no timeout; el proceso murió solo, con un código de
-salida 137 sin explicación clara — no hay evidencia de OOM en `dmesg`/dmesg
-del kernel, memoria disponible de sobra según `free -h`). Que el fallo se
-repita **sin** el override de vendor EGL refuta que ese override fuera la
-causa; el sospechoso más plausible es que el intento 1, al morir por
-`timeout` (`SIGTERM`) a mitad de la inicialización de `wineboot`/`explorer`,
-dejó el `WINEPREFIX` compartido en un estado a medio escribir (registro,
-locks, estado de `explorer.exe`) que los intentos 2 y 3 heredaron —
-**no verificado**, solo la explicación más consistente con la evidencia
-disponible.
+**Attempt 3, only `LIBGL_ALWAYS_SOFTWARE=1`, without forcing the EGL
+vendor (to isolate whether attempt 2's problem was the vendor override
+or something else):** same result, **the same `nodrv_CreateWindow`**,
+this time in under 90 real seconds (not a timeout; the process died on
+its own, exit code 137 with no clear explanation, no evidence of OOM in
+`dmesg`/kernel dmesg, plenty of available memory per `free -h`). The
+failure repeating **without** the EGL vendor override rules that
+override out as the cause; the most plausible suspect is that attempt
+1, dying by `timeout` (`SIGTERM`) midway through
+`wineboot`/`explorer` initialization, left the shared `WINEPREFIX` in a
+half-written state (registry, locks, `explorer.exe` state) that
+attempts 2 and 3 inherited, **not verified**, only the explanation most
+consistent with the available evidence.
 
-**Conclusión de esta sesión: `valgrind` no es viable aquí sin trabajo de
-infraestructura adicional, no intentado.** Tres corridas, cero alcanzaron el
-punto de crash real (`sync_combo`/`CB_ADDSTRING`). Los únicos "Invalid
-write/read" observados son el falso positivo conocido de
-`__wine_syscall_dispatcher`. Para que este camino sea viable haría falta,
-como mínimo: (1) un `WINEPREFIX` dedicado y desechable para corridas de
-`valgrind` (para que un intento matado a mitad de camino no envenene el
-siguiente); (2) el archivo de supresiones oficial de Wine
-(`tools/valgrind/wine.supp` en el árbol fuente de Wine — no viene empaquetado
-en este Arch, habría que extraerlo del código fuente de wine-staging 11.15 o
-construirlo a mano) para eliminar el ruido de `__wine_syscall_dispatcher`;
-(3) entender por qué evitar el blob nvidia rompe la carga del driver de
-ventana — no se investigó si es el propio `LIBGL_ALWAYS_SOFTWARE`, el
-`WINEPREFIX` contaminado, o alguna otra interacción.
+**Conclusion of this session: `valgrind` is not viable here without
+additional infrastructure work, not attempted.** Three runs, zero
+reached the real crash point (`sync_combo`/`CB_ADDSTRING`). The only
+"Invalid write/read" observed are the known
+`__wine_syscall_dispatcher` false positive. For this avenue to be
+viable it would need, at minimum: (1) a dedicated, disposable
+`WINEPREFIX` for `valgrind` runs (so a run killed midway does not
+poison the next one); (2) Wine's official suppressions file
+(`tools/valgrind/wine.supp` in Wine's source tree, not packaged in this
+Arch install, would need to be extracted from wine-staging 11.15's
+source or built by hand) to eliminate the
+`__wine_syscall_dispatcher` noise; (3) understanding why avoiding the
+nvidia blob breaks the window-driver's loading, not investigated
+whether it is `LIBGL_ALWAYS_SOFTWARE` itself, the contaminated
+`WINEPREFIX`, or some other interaction.
 
-**Recomendación para la próxima sesión, dado el costo ya incurrido:** no
-insistir con `valgrind` como primer paso. La técnica de instrumentación
-manual de §15/§16 (`fprintf`/`backtrace()` + `addr2line`, sin `gdb`, sin
-`valgrind`) ya localizó el bug con precisión razonable (`sync_combo`,
-bucle `CB_ADDSTRING`, franja de índice 14-15 de 1395) en corridas nativas de
-menos de un segundo. Más rendimiento por el mismo esfuerzo probablemente
-venga de (a) auditar a mano el código de `sync_combo`/`combo_item` y lo que
-hace Wine internamente en su implementación *builtin* de `COMBOBOX`/listbox
-alrededor de `CB_ADDSTRING`/`CB_RESETCONTENT` en ese rango de operaciones, o
-(b) si se retoma `valgrind`, hacerlo solo después de resolver (1) y (2)
-arriba, no como exploración rápida.
+**Recommendation for the next session, given the cost already
+incurred:** do not keep insisting with `valgrind` as a first step. The
+manual instrumentation technique from §15/§16 (`fprintf`/`backtrace()`
++ `addr2line`, no `gdb`, no `valgrind`) already localized the bug with
+reasonable precision (`sync_combo`, `CB_ADDSTRING` loop, index band
+14-15 of 1395) in native runs under a second. More return on the same
+effort likely comes from (a) auditing by hand the
+`sync_combo`/`combo_item` code and what Wine does internally in its
+*builtin* `COMBOBOX`/listbox implementation around
+`CB_ADDSTRING`/`CB_RESETCONTENT` in that operation range, or (b) if
+`valgrind` is revisited, doing so only after resolving (1) and (2)
+above, not as a quick exploration.
 
-**No perseguido esta sesión:** crear un `WINEPREFIX` dedicado para
-`valgrind` (cambio de infraestructura más grande, no intentado sin acordarlo
-antes); extraer/generar el archivo de supresiones de Wine; diagnosticar el
-código de salida 137 del intento 3; probar `AddressSanitizer` como
-alternativa más liviana a `valgrind` (mencionado como idea, no evaluado —
-incierto si winegcc/Wine toleran bien el modelo de shadow memory de ASan).
+**Not pursued this session:** creating a dedicated `WINEPREFIX` for
+`valgrind` (a larger infrastructure change, not attempted without
+agreeing on it first); extracting/generating Wine's suppressions file;
+diagnosing attempt 3's exit code 137; trying `AddressSanitizer` as a
+lighter-weight alternative to `valgrind` (mentioned as an idea, not
+evaluated, uncertain whether winegcc/Wine tolerate ASan's shadow-memory
+model well).
 
-### 18. `valgrind` — infraestructura completa construida, conclusión definitiva: incompatible con este `winex11.drv` en este entorno, no es un problema de tuning
+### 18. `valgrind`, complete infrastructure built, definitive conclusion: incompatible with this `winex11.drv` in this environment, not a tuning problem
 
-Instrucción explícita: "apply whatever is necessary to make valgrind
-available and continue". Se construyó la infraestructura que faltaba y se
-hicieron 2 intentos más (4 y 5) con ella, más una corrida de control nativa
-que aísla la causa real.
+Explicit instruction: "apply whatever is necessary to make valgrind
+available and continue". The missing infrastructure was built and 2
+more attempts (4 and 5) were made with it, plus a native control run
+that isolates the real cause.
 
-**Infraestructura construida:**
-- **`WINEPREFIX` desechable, pre-calentado fuera de `valgrind`:** `wineboot
-  --init` corrido nativamente (sin `valgrind`) en un prefijo nuevo, luego
-  snapshot vía `tar` a un `.tar.gz` "pristine" restaurable en segundos. Esto
-  elimina de la corrida bajo `valgrind` toda la fase lenta de arranque
-  (`wineboot`/registro/`explorer`) que dominaba el intento 1 de §17.
-- **Archivo de supresiones real de Wine:** no viene empaquetado en este Arch
-  (confirmado, §17); obtenido de
+**Infrastructure built:**
+- **Disposable `WINEPREFIX`, pre-warmed outside `valgrind`:** `wineboot
+  --init` run natively (without `valgrind`) in a fresh prefix, then
+  snapshotted via `tar` into a restorable "pristine" `.tar.gz`,
+  restorable within seconds. This removes from the `valgrind` run the
+  entire slow `wineboot`/registry/`explorer` startup phase that
+  dominated attempt 1 in §17.
+- **Wine's real suppressions file:** not packaged on this Arch
+  (confirmed, §17); obtained from
   [`austin987/wine-valgrind-scripts`](https://github.com/austin987/wine-valgrind-scripts)
-  (mantenedor de Wine, colección de supresiones basada en los scripts
-  originales de Dan Kegel) — `valgrind-suppressions-external` (ruido de
-  drivers nvidia/mesa, glibc, etc.) + `valgrind-suppressions-ignore`
-  (comportamiento intencional de Wine), combinados en un solo archivo.
-- **`--vex-iropt-register-updates=allregs-at-mem-access`:** el flag que el
-  propio `vg-wrapper.sh` de esa colección usa para correr Wine bajo
-  `valgrind` — atenúa falsos positivos por el modelo de actualización de
-  registros de VEX (el motor de instrumentación de `valgrind`) frente a los
-  cambios de contexto manuales de Wine.
-- **Supresión propia adicional**, escrita a mano a partir de la evidencia
-  directa de las 3 corridas de §17 (no del archivo externo, que probablemente
-  es anterior a este nombre de función): 5 entradas `Memcheck:Addr{1,2,4,8,16}`
-  con `fun:__wine_syscall_dispatcher` — el trampolín exacto que producía
-  el 100% de los falsos positivos observados hasta ahora.
+  (a Wine maintainer, a collection of suppressions based on Dan Kegel's
+  original scripts), `valgrind-suppressions-external` (nvidia/mesa
+  driver noise, glibc, etc.) + `valgrind-suppressions-ignore`
+  (Wine's intentional behavior), combined into a single file.
+- **`--vex-iropt-register-updates=allregs-at-mem-access`:** the flag
+  that collection's own `vg-wrapper.sh` uses to run Wine under
+  `valgrind`, dampens false positives from VEX's (`valgrind`'s
+  instrumentation engine) register-update model against Wine's manual
+  context switches.
+- **An additional suppression written by hand**, based directly on the
+  evidence from the 3 §17 runs (not from the external file, which
+  predates this function name): 5 `Memcheck:Addr{1,2,4,8,16}` entries
+  with `fun:__wine_syscall_dispatcher`, the exact trampoline that
+  produced 100% of the false positives observed so far.
 
-**Intento 4** (prefijo pre-calentado nuevo, `LIBGL_ALWAYS_SOFTWARE=1`, toda
-la infraestructura anterior): **mismo `nodrv_CreateWindow` que en los
-intentos 2/3 de §17**, esta vez con un prefijo genuinamente nunca tocado por
-`valgrind` antes — **refuta la hipótesis de §17** de que un `WINEPREFIX`
-contaminado por el intento 1 (matado a mitad de arranque) fuera la causa.
+**Attempt 4** (a freshly pre-warmed prefix, `LIBGL_ALWAYS_SOFTWARE=1`,
+all the infrastructure above): **the same `nodrv_CreateWindow` as in
+attempts 2/3 from §17**, this time with a prefix genuinely never
+touched by `valgrind` before, **refutes the §17 hypothesis** that a
+`WINEPREFIX` contaminated by attempt 1 (killed midway through startup)
+was the cause.
 
-**Intento 5** (mismo prefijo pristine restaurado de nuevo, **sin ningún
-override de GL/EGL** esta vez — para aislar si el propio
-`LIBGL_ALWAYS_SOFTWARE`/override de vendor era la causa real —, Xvfb
-reiniciado con `+iglx` por si el rechazo de contextos GLX indirectos por
-defecto en Xvfb importaba): **el mismo `nodrv_CreateWindow` otra vez**, en
-menos de 3 minutos reales. Esto descarta tanto el override de vendor EGL
-como `LIBGL_ALWAYS_SOFTWARE` como causa — ninguno de los dos estaba presente
-esta vez.
+**Attempt 5** (the same pristine prefix restored again, **with no GL/EGL
+override at all** this time, to isolate whether the GL/EGL
+vendor override itself was the real cause, Xvfb restarted with
+`+iglx` in case Xvfb's default rejection of indirect GLX contexts
+mattered): **the same `nodrv_CreateWindow` again**, in under 3 real
+minutes. This rules out both the EGL vendor override and
+`LIBGL_ALWAYS_SOFTWARE` as the cause, neither was present this time.
 
-**Corrida de control decisiva:** el mismo prefijo pristine restaurado una
-vez más, mismo Xvfb (`+iglx`), pero **sin `valgrind`** — `wine
-WORD1.exe.so` directo. Resultado: **llega limpio al crash real conocido**
-(`elf_search_auxv can't find symbol in module` — el manejador de crash de
-Wine intentando symbolizar tras el `SIGABRT` de `sync_combo`, la misma firma
-de §15/§16). Es decir: **con exactamente el mismo prefijo y el mismo Xvfb,
-quitar `valgrind` es lo único que hace falta para que la creación de ventana
-funcione.**
+**Decisive control run:** the same pristine prefix restored once more,
+same Xvfb (`+iglx`), but **without `valgrind`**, `wine
+WORD1.exe.so` directly. Result: **it reaches the real, known crash
+cleanly** (`elf_search_auxv can't find symbol in module`, Wine's crash
+handler trying to symbolize after `sync_combo`'s `SIGABRT`, the same
+signature as §15/§16). That is: **with the exact same prefix and the
+same Xvfb, removing `valgrind` is the only thing needed for window
+creation to work.**
 
-**Conclusión definitiva de esta serie de intentos (5 en total entre §17 y
-este apartado): no es un problema de configuración, supresiones, prefijo ni
-variables de entorno de GL — `valgrind` en sí mismo rompe la carga de
-`winex11.drv` en la combinación wine-staging 11.15 / Xvfb / `valgrind`
-3.25.1 de este entorno.** La causa raíz exacta no se investigó más allá de
-aislar que es `valgrind` el factor (no se probó, por ejemplo, si es
-específicamente la extensión `MIT-SHM` de X11 — un punto de fricción
-conocido e independiente entre `valgrind` y memoria compartida de X, y una
-hipótesis razonable dado que `winex11.drv` típicamente usa `XShm` al
-inicializar — ni si un servidor X real en vez de `Xvfb` cambia el
-resultado).
+**Definitive conclusion of this series of attempts (5 total between
+§17 and this section): it is not a configuration, suppressions, prefix,
+or GL environment-variable problem, `valgrind` itself breaks
+`winex11.drv`'s loading in this environment's combination of
+wine-staging 11.15 / Xvfb / `valgrind` 3.25.1.** The exact root cause
+was not investigated beyond isolating that `valgrind` is the factor
+(not tested, for example, whether it is specifically X11's `MIT-SHM`
+extension, a known and independent friction point between `valgrind`
+and X shared memory, and a reasonable hypothesis since `winex11.drv`
+typically uses `XShm` on initialization, nor whether a real X server
+instead of `Xvfb` changes the result).
 
-**Esto cierra el camino de `valgrind` para esta investigación, con
-evidencia sólida en vez de una sospecha.** La recomendación de §17 se
-mantiene, ahora con más peso: seguir con la instrumentación manual nativa de
-§15/§16 (ya localizó el bug en `sync_combo`/`CB_ADDSTRING`, franja de índice
-14-15 de 1395, en corridas de menos de un segundo, sin ninguna fricción de
-herramientas). Si en el futuro se quiere retomar `valgrind`, el punto de
-partida ya no es "arréglalo" sino una pregunta más específica y acotada:
-¿por qué exactamente rompe `winex11.drv` — `XShm`, el modelo de hilos de
-Wine, u otra cosa? — antes de invertir más tiempo.
+**This closes the `valgrind` avenue for this investigation, with solid
+evidence rather than a suspicion.** The §17 recommendation stands, now
+with more weight: continue with §15/§16's native manual instrumentation
+(already localized the bug in `sync_combo`/`CB_ADDSTRING`, index band
+14-15 of 1395, in sub-second native runs, with no tooling friction). If
+`valgrind` is ever revisited, the starting point is no longer "fix it"
+but a more specific, bounded question: why exactly does it break
+`winex11.drv`, `XShm`, Wine's threading model, or something else,
+before investing more time.
 
-**No perseguido esta sesión:** aislar `MIT-SHM` como causa (probar
-`Xvfb ... -extension MIT-SHM` o equivalente); probar contra un servidor X
-real; AddressSanitizer como alternativa (sigue sin evaluar, mencionado en
-§17).
+**Not pursued this session:** isolating `MIT-SHM` as the cause (trying
+`Xvfb ... -extension MIT-SHM` or equivalent); testing against a real X
+server; AddressSanitizer as an alternative (still not evaluated,
+mentioned in §17).
 
-### 19. Auditoría de `sync_combo` contra el `COMBOBOX`/`LISTBOX` *builtin* real de Wine — limpia; el candidato más activo sigue siendo el propio código del port
+### 19. Auditing `sync_combo` against Wine's real *builtin* `COMBOBOX`/`LISTBOX`, clean; the most active candidate remains the port's own code
 
-Con `valgrind` cerrado (§18), retoma la recomendación de esa misma sección:
-auditar `sync_combo`/`combo_item` línea por línea contra la implementación
-real de Wine, en vez de seguir peleando con herramientas dinámicas. Fuente
-obtenida de `wine-mirror/wine` (mirror de GitHub del árbol oficial,
-`gitlab.winehq.org` está detrás de un anti-bot que bloquea *fetches*
-automatizados) — `dlls/user32/combo.c` y `dlls/user32/listbox.c`, rama
-`master`. No es la versión exacta de wine-staging 11.15 línea por línea,
-pero esta parte del código (control *builtin* clásico, sin cambios de
-diseño en años) es estable entre versiones para los fines de esta
-auditoría — no se buscó el tag exacto.
+With `valgrind` closed (§18), resumes that section's recommendation:
+audit `sync_combo`/`combo_item` line by line against Wine's real
+implementation, instead of continuing to fight with dynamic tools.
+Source obtained from `wine-mirror/wine` (a GitHub mirror of the
+official tree, `gitlab.winehq.org` sits behind an anti-bot that blocks
+automated fetches), `dlls/user32/combo.c` and `dlls/user32/listbox.c`,
+`master` branch. It is not the exact wine-staging 11.15 version line by
+line, but this part of the code (the classic *builtin* control, no
+design changes in years) is stable across versions for the purposes of
+this audit, the exact tag was not sought.
 
-**Hallazgo 1 — el par `CB_GETLBTEXTLEN`/`CB_GETLBTEXT` (ANSI) es
-internamente consistente; no hay desajuste de tamaño.** `combo.c` delega
-ambos directamente a `LB_GETTEXTLEN`/`LB_GETTEXT` sobre el `hWndLBox`
-interno (el combo es un envoltorio delgado sobre un `LISTBOX` oculto).
-En `listbox.c`, `LISTBOX_GetText` (`listbox.c:863`):
-- Modo *sólo longitud* (`buffer == NULL`, para `CB_GETLBTEXTLEN`):
-  `WideCharToMultiByte(CP_ACP, 0, str, len, NULL, 0, ...)` con `len =
-  lstrlenW(str)` — **excluye** el terminador nulo.
-- Modo *escritura real* (`CB_GETLBTEXT`): `WideCharToMultiByte(CP_ACP, 0,
-  str, -1, buffer, 0x7FFFFFFF, ...)` — convierte la cadena **completa
-  incluyendo el nulo** (`-1` = cadena terminada en nulo) hacia un tamaño de
-  destino que Wine trata como "confía en que el llamador lo dimensionó
-  bien" (**no** hay *bounds-check* contra un tamaño real del buffer — así
-  es el contrato real de Win32 para `LB_GETTEXT`, no es un descuido de
-  Wine). El nulo terminador ocupa exactamente 1 byte en cualquier code
-  page — la matemática `bytes_escritos = bytes_reportados_por_LEN + 1` es
-  una invariante, no una coincidencia.
+**Finding 1, the `CB_GETLBTEXTLEN`/`CB_GETLBTEXT` (ANSI) pair is
+internally consistent; there is no size mismatch.** `combo.c` delegates
+both directly to `LB_GETTEXTLEN`/`LB_GETTEXT` on the internal
+`hWndLBox` (the combo is a thin wrapper over a hidden `LISTBOX`).
+In `listbox.c`, `LISTBOX_GetText` (`listbox.c:863`):
+- Length-only mode (`buffer == NULL`, for `CB_GETLBTEXTLEN`):
+  `WideCharToMultiByte(CP_ACP, 0, str, len, NULL, 0, ...)` with `len =
+  lstrlenW(str)`, **excludes** the null terminator.
+- Real-write mode (`CB_GETLBTEXT`): `WideCharToMultiByte(CP_ACP, 0,
+  str, -1, buffer, 0x7FFFFFFF, ...)`, converts the **whole string,
+  including the null** (`-1` = null-terminated string) into a
+  destination size Wine treats as "trust the caller to have sized it
+  correctly" (there is **no** bounds check against a real buffer size,
+  that is the real Win32 contract for `LB_GETTEXT`, not an oversight
+  of Wine). The null terminator occupies exactly 1 byte in any code
+  page, the arithmetic `bytes_written = bytes_reported_by_LEN + 1` is
+  an invariant, not a coincidence.
 
-`combo_item` (`opus_win95_chrome.cpp`) dimensiona su `std::vector<char>` a
-`length + 1` usando exactamente el valor de `CB_GETLBTEXTLEN` — coincide
-exacto con lo que `CB_GETLBTEXT` va a escribir. **Sin desbordamiento aquí.**
+`combo_item` (`opus_win95_chrome.cpp`) sizes its `std::vector<char>` to
+`length + 1` using exactly `CB_GETLBTEXTLEN`'s value, matching exactly
+what `CB_GETLBTEXT` is going to write. **No overflow here.**
 
-**Hallazgo 2 — `CB_ADDSTRING` copia la cadena a su propio storage; no hay
-transferencia de ownership hacia nuestro buffer.** `LISTBOX_InsertString`
+**Finding 2, `CB_ADDSTRING` copies the string into its own storage; no
+ownership transfer to our buffer.** `LISTBOX_InsertString`
 (`listbox.c:1692`): `HeapAlloc(GetProcessHeap(), 0, (lstrlenW(str)+1) *
-sizeof(WCHAR))` seguido de `lstrcpyW(new_str, str)` — Wine **copia** el
-contenido de `str` (nuestro `item.c_str()`, un `std::wstring` temporal de
-`sync_combo`) hacia una asignación propia (`new_str`), y solo `new_str` se
-guarda en `descr->u.items[index].str`. No retiene puntero alguno hacia
-nuestro `std::wstring`; nuestro `item` puede destruirse (y se destruye, al
-final de cada iteración del `for`) sin dejar un puntero colgante en el
-lado de Wine. **Sin *use-after-free* por este camino.**
+sizeof(WCHAR))` followed by `lstrcpyW(new_str, str)`, Wine **copies**
+`str`'s content (our `item.c_str()`, a temporary `std::wstring` from
+`sync_combo`) into its own allocation (`new_str`), and only `new_str`
+is stored in `descr->u.items[index].str`. It retains no pointer at all
+into our `std::wstring`; our `item` can be destroyed (and is, at the
+end of each `for` iteration) without leaving a dangling pointer on
+Wine's side. **No use-after-free through this path.**
 
-**Hallazgo 3 — descartado con evidencia concreta: el crecimiento del array
-interno de ítems (`resize_storage`) no está en juego.** `listbox.c:151`:
-el array `descr->u.items` crece de a bloques de `LB_ARRAY_GRANULARITY = 16`
-vía `realloc()` plano (coincide con que sea `realloc`/`free` de glibc, no
-`HeapAlloc`/`HeapFree` de Wine — ver Hallazgo 4). `LISTBOX_InsertItem`
-(`listbox.c:1626`) llama `resize_storage(descr, nb_items + 1)` en *cada*
-inserción, pero esa función solo reasigna si `items_size` necesita crecer
-— la primera inserción (`nb_items` 0→1) ya reserva de golpe **16 huecos**
-(`(1 + 15) & ~15 = 16`), así que los ítems 0 a 15 (dieciséis inserciones)
-cursan **sin ningún `realloc()` adicional**. El segundo `realloc()` recién
-ocurriría insertando el ítem 17 (índice 16) — y **ninguna de las corridas
-de esta serie llegó nunca a ese punto**: el crash cae siempre en índice 14
-o 15 (§16), es decir con `nb_items` entre 15 y 16, **antes** de que el
-segundo `realloc()` del array tenga oportunidad de ejecutarse. Esto
-descarta positivamente el crecimiento del array de ítems del combo espejo
-como mecanismo del crash — no es que no se haya mirado, es que la
-evidencia (índice máximo observado) excluye que ese código llegue a
-correr de nuevo antes de que el proceso muera.
+**Finding 3, ruled out with concrete evidence: growth of the internal
+item array (`resize_storage`) is not in play.** `listbox.c:151`: the
+`descr->u.items` array grows in blocks of `LB_ARRAY_GRANULARITY = 16`
+via plain `realloc()` (consistent with it being glibc's `realloc`/`free`,
+not Wine's `HeapAlloc`/`HeapFree`, see Finding 4). `LISTBOX_InsertItem`
+(`listbox.c:1626`) calls `resize_storage(descr, nb_items + 1)` on
+*every* insertion, but that function only reallocates if `items_size`
+needs to grow, the first insertion (`nb_items` 0→1) already reserves
+**16 slots** at once (`(1 + 15) & ~15 = 16`), so items 0 through 15
+(sixteen insertions) go through **without any additional `realloc()`**.
+The second `realloc()` would only happen when inserting item 17
+(index 16), and **none of this series' runs ever reached that point**:
+the crash always falls at index 14 or 15 (§16), that is, with
+`nb_items` between 15 and 16, **before** the array's second
+`realloc()` gets a chance to run. This positively rules out the mirror
+combo's item-array growth as the crash mechanism, not because it was
+not looked at, but because the evidence (the maximum observed index)
+excludes that code running again before the process dies.
 
-**Hallazgo 4 — nota arquitectónica, no resuelta: dos familias de
-asignador conviviendo en la ruta caliente.** El array de ítems
-(`resize_storage`) usa `realloc()`/`free()` planos de glibc — coincide
-directamente con la firma de los mensajes de crash observados
-(`free(): invalid pointer`, exactamente vocabulario de glibc). Las
-cadenas individuales de cada ítem (`new_str` de `LISTBOX_InsertString`,
-liberadas en `LISTBOX_DeleteItem` vía `HeapFree(GetProcessHeap(),...)`)
-usan el heap propio de Wine (`ntdll`/`RtlAllocateHeap`), que es
-arquitectónicamente un asignador *distinto* del `malloc` de glibc —
-mezclar punteros entre ambas familias (`free()` sobre algo de
-`HeapAlloc`, o `HeapFree()` sobre algo de `malloc`) produciría exactamente
-esta clase de corrupción. **No se encontró tal mezcla** en el código
-alcanzado por el uso real de `sync_combo`/`combo_item` (Hallazgos 1-2) ni
-en el código propio del port (`wide_from_ansi`, `ansi_from_wide`,
-`combo_item` — revisados, cada uno dimensiona su buffer con la misma
-llamada de consulta de longitud antes de escribir, sin desajuste). Se
-deja constancia de la arquitectura de dos asignadores como dato relevante
-para cualquier hipótesis futura, no como hallazgo positivo de bug.
+**Finding 4, architectural note, not resolved: two allocator families
+coexisting on the hot path.** The item array (`resize_storage`) uses
+plain glibc `realloc()`/`free()`, matching directly the observed crash
+messages' signature (`free(): invalid pointer`, exactly glibc
+vocabulary). Each item's individual strings (`new_str` from
+`LISTBOX_InsertString`, freed in `LISTBOX_DeleteItem` via
+`HeapFree(GetProcessHeap(),...)`) use Wine's own heap
+(`ntdll`/`RtlAllocateHeap`), architecturally a *different* allocator
+from glibc's `malloc`, mixing pointers between the two families
+(`free()` on something from `HeapAlloc`, or `HeapFree()` on something
+from `malloc`) would produce exactly this class of corruption. **No
+such mix was found** in the code reached by `sync_combo`/`combo_item`'s
+real usage (Findings 1-2) or in the port's own code (`wide_from_ansi`,
+`ansi_from_wide`, `combo_item`, reviewed, each sizes its buffer with
+the same length-query call before writing, no mismatch). Noted as a
+relevant architectural fact for any future hypothesis, not as a
+positive bug finding.
 
-**Chequeo adicional, barato, sin fricción de herramientas:** `MALLOC_CHECK_=3`
-(activa verificación de consistencia de glibc en cada `malloc`/`free`/
-`realloc`, sin tocar `ptrace` ni el despachador de syscalls de Wine — por
-tanto sin el bloqueo de §18) sobre 3 corridas nativas: **mismo mensaje,
-mismo punto de crash, sin cambio.** No es concluyente por sí solo (un
-*chunk* corrompido mucho antes y no vuelto a tocar hasta este punto daría
-el mismo resultado con o sin `MALLOC_CHECK_`, porque la verificación solo
-ocurre cuando el *chunk* específico se toca), pero es consistente con —no
-contradice— que la escritura real y su detección estén cerca en el tiempo
-de ejecución, en vez de muy separadas.
+**Additional, cheap, no-tooling-friction check:** `MALLOC_CHECK_=3`
+(enables glibc consistency checking on every `malloc`/`free`/
+`realloc`, without touching `ptrace` or Wine's syscall dispatcher,
+therefore without the §18 block) over 3 native runs: **same message,
+same crash point, no change.** Not conclusive on its own (a chunk
+corrupted well before and not touched again until this point would give
+the same result with or without `MALLOC_CHECK_`, because the check only
+runs when that specific chunk is touched), but it is consistent with,
+not contradicting, the real write and its detection being close in
+execution time, rather than far apart.
 
-**Conclusión de la auditoría: el código *builtin* de Wine alcanzado por
-`sync_combo` está limpio para los patrones de bug más probables**
-(desajuste de longitud ANSI/Unicode, *use-after-free* por transferencia de
-ownership indebida, reentrada del crecimiento del array). No se encontró
-una línea de Wine que explique la corrupción. Esto **redirige el foco**
-hacia: (a) el propio código del port en el tramo aún no auditado a este
-nivel de detalle — `locate_source_combos`'s 1395×2 llamadas a
-`combo_contains`/`CB_FINDSTRINGEXACT` sobre el combo de 1395 fuentes,
-mencionado como pendiente en §16 y todavía no revisado línea por línea
-contra el `LISTBOX_FindString`/`LISTBOX_FindStringPos` real de Wine; o
-(b) que la causa esté genuinamente fuera de esta ruta de código por
-completo (alguna mutación de heap durante la construcción de
-`FCreateMw`, ya señalada como sospechosa en §15).
+**Audit conclusion: Wine's *builtin* code reached by `sync_combo` is
+clean** for the most likely bug patterns (ANSI/Unicode length
+mismatch, use-after-free from improper ownership transfer, item-array
+growth reentrancy). No line of Wine was found to explain the
+corruption. This **redirects the focus** toward: (a) the port's own
+code in the stretch not yet audited at this level of detail,
+`locate_source_combos`'s 1395×2 calls to
+`combo_contains`/`CB_FINDSTRINGEXACT` on the 1395-font combo, flagged
+as pending in §16 and not yet reviewed line by line against Wine's real
+`LISTBOX_FindString`/`LISTBOX_FindStringPos`; or (b) that the cause is
+genuinely outside this code path entirely (some heap mutation during
+`FCreateMw`'s construction, already flagged as suspicious in §15).
 
-**No perseguido esta sesión:** auditar `LISTBOX_FindString`/
-`CB_FINDSTRINGEXACT` contra `locate_source_combos` con el mismo nivel de
-detalle que aquí; confirmar experimentalmente si `HeapAlloc`/`HeapFree`
-de Wine en este build concreto (winelib, syscall-based `ntdll`) delegan
-en última instancia a `malloc`/`free` de glibc o gestionan un arena
-completamente separada (determinaría si el Hallazgo 4 es una vía de bug
-real o un callejón sin salida arquitectónico).
+**Not pursued this session:** auditing `LISTBOX_FindString`/
+`CB_FINDSTRINGEXACT` against `locate_source_combos` at the same level
+of detail as here; experimentally confirming whether Wine's
+`HeapAlloc`/`HeapFree` in this specific build (winelib, syscall-based
+`ntdll`) ultimately delegate to glibc's `malloc`/`free` or manage a
+completely separate arena (would determine whether Finding 4 is a real
+bug avenue or an architectural dead end).
 
-### 20. Auditoría de `locate_source_combos` contra `CB_FINDSTRINGEXACT` real de Wine — también limpio
+### 20. Auditing `locate_source_combos` against Wine's real `CB_FINDSTRINGEXACT`, also clean
 
-Cierra el pendiente explícito que dejó §19: auditar `combo_contains`
-(usado por `locate_source_combos` hasta 2 veces por candidato, hasta 1395
-ítems por combo) contra la implementación real de `CB_FINDSTRINGEXACT`.
-Mismo par de fuentes que §19 (`combo.c`/`listbox.c` de `wine-mirror/wine`,
-rama `master`).
+Closes the explicit pending item §19 left open: auditing
+`combo_contains` (used by `locate_source_combos` up to 2 times per
+candidate, up to 1395 items per combo) against the real
+`CB_FINDSTRINGEXACT` implementation. Same pair of sources as §19
+(`combo.c`/`listbox.c` from `wine-mirror/wine`, `master` branch).
 
-**A diferencia de `CB_GETLBTEXT` (§19), `CB_FINDSTRINGEXACT` es una
-consulta de solo lectura — no hay contrato de tamaño de buffer que
-romper.** `combo_contains` envía la cadena de búsqueda (nuestro `const
-char* value`, de solo lectura) y recibe de vuelta un índice o `CB_ERR`;
-nunca recibe datos escritos hacia un buffer nuestro. Eso ya reduce
-estructuralmente la superficie de bug frente al caso de §19.
+**Unlike `CB_GETLBTEXT` (§19), `CB_FINDSTRINGEXACT` is a read-only
+query, there is no buffer-size contract to break.** `combo_contains`
+sends the search string (our `const char* value`, read-only) and
+receives back an index or `CB_ERR`; it never receives data written
+into a buffer of ours. That already structurally reduces the bug
+surface compared to §19's case.
 
-**Recorrido real:** `combo.c` reenvía `CB_FINDSTRINGEXACT` a
-`LB_FINDSTRINGEXACT` sobre el `hWndLBox` interno (igual patrón que todo lo
-demás). En `listbox.c:2913`, el handler de `LB_FINDSTRINGEXACT` hace la
-conversión ANSI→Unicode de la cadena de búsqueda **enteramente dentro de
-sí mismo**, con tamaño calculado correctamente en cada paso — sin el
-truco de tamaño-de-destino-sin-límite que sí aparece en `CB_GETLBTEXT`:
+**Real path:** `combo.c` forwards `CB_FINDSTRINGEXACT` to
+`LB_FINDSTRINGEXACT` on the internal `hWndLBox` (the same pattern as
+everything else). In `listbox.c:2913`, the `LB_FINDSTRINGEXACT` handler
+does the ANSI→Unicode conversion of the search string **entirely
+within itself**, with size correctly computed at each step, without
+the unbounded-destination-size trick that does appear in
+`CB_GETLBTEXT`:
 
 ```c
 LPSTR textA = (LPSTR)lParam;
@@ -2522,399 +2537,402 @@ if(!unicode && HAS_STRINGS(descr))
     HeapFree(GetProcessHeap(), 0, textW);
 ```
 
-Consulta de tamaño (`NULL, 0`) → `HeapAlloc` del tamaño exacto devuelto →
-conversión real hacia ese mismo tamaño → `HeapFree` al final del mismo
-bloque, sin persistir estado entre llamadas. `LISTBOX_FindString`
-(`listbox.c:1022`, rama `exact`) hace un barrido lineal
-`LISTBOX_lstrcmpiW`/`CompareStringW` ítem por ítem — sin mutar el combo,
-sin tocar el array de ítems, sin crecerlo. Las hasta 1395×2 llamadas por
-candidato en `locate_source_combos` son, cada una, una ida y vuelta
-autocontenida que no deja ningún estado ni asignación viva más allá de su
-propio retorno.
+Size query (`NULL, 0`) → `HeapAlloc` of the exact returned size →
+real conversion into that same size → `HeapFree` at the end of the same
+block, no state persists between calls. `LISTBOX_FindString`
+(`listbox.c:1022`, `exact` branch) does a linear
+`LISTBOX_lstrcmpiW`/`CompareStringW` sweep item by item, without
+mutating the combo, without touching the item array, without growing
+it. The up to 1395×2 calls per candidate in `locate_source_combos` are,
+each, a self-contained round trip that leaves no state or live
+allocation beyond its own return.
 
-**Conclusión: también limpio.** Con `sync_combo` (§19) y ahora
-`locate_source_combos`/`combo_contains` auditados línea por línea contra
-el código real de Wine y sin encontrar un patrón de bug explicable en
-ninguno de los dos, la ruta completa de espejado de la toolbar (todo lo
-que `sync_mirrors` ejecuta) queda descartada como origen local del bug.
-El candidato que queda en pie, sin auditar todavía a este nivel de
-detalle, es el que señaló §15 desde el principio: qué construye/deja a
-medio construir `FCreateMw` (`open.c`, entre las líneas 566 y 591) antes
-de que `EndStartup1`→`DisplayRibbonInit`→`OpusSyncWin95Toolbar` dispare
-esta cadena — o, alternativamente, que la corrupción real ya esté escrita
-antes de llegar aquí por completo y este código sea sólo el primer lugar
-que la "descubre" al tocar el heap.
+**Conclusion: also clean.** With `sync_combo` (§19) and now
+`locate_source_combos`/`combo_contains` audited line by line against
+Wine's real code and no explainable bug pattern found in either, the
+entire toolbar-mirroring path (everything `sync_mirrors` executes) is
+ruled out as a local origin for the bug. The remaining candidate, not
+yet audited at this level of detail, is the one §15 flagged from the
+start: what `FCreateMw` (`open.c`, between lines 566 and 591) builds or
+leaves half-built before
+`EndStartup1`→`DisplayRibbonInit`→`OpusSyncWin95Toolbar` triggers this
+chain, or, alternatively, that the real corruption is already written
+before reaching here at all and this code is only the first place that
+"discovers" it by touching the heap.
 
-**No perseguido esta sesión:** auditar el tramo de `FCreateMw` en
-`open.c:566-591` línea por línea (está en `src/Opus/`, restringido —
-requiere autorización explícita antes de tocarlo, y esta auditoría fue de
-solo lectura contra fuente externa de Wine, no contra `src/Opus/`).
+**Not pursued this session:** auditing the `FCreateMw` stretch in
+`open.c:566-591` line by line (it is in `src/Opus/`, restricted,
+requires explicit authorization before touching it, and this audit was
+read-only against external Wine source, not against `src/Opus/`).
 
-### 21. Verificación en el contenedor Debian 13 local — el crash no reproduce; confirma que §8 (VPS) no era un caso aislado
+### 21. Verification in the local Debian 13 container, the crash does not reproduce; confirms §8 (VPS) was not an isolated case
 
-Instrucción explícita: usar el contenedor `debian13` local (hp-15, ver
-`CLAUDE.md`) para investigar el "known gap" que esa misma documentación
-dejaba abierto — `WORD1.exe.so` lanzado ahí se quedaba con un único hilo
-bloqueado leyendo su propio pipe interno (`fd 9`) 45+ segundos, sin llegar
-ni al crash de Arch ni al reposo documentado en §8 para el VPS — y cerrarlo
-con `gdb`, el siguiente paso que había quedado anotado sin ejecutar.
+Explicit instruction: use the local `debian13` container (hp-15, see
+`CLAUDE.md`) to investigate the "known gap" that same documentation had
+left open, `WORD1.exe.so` launched there was left with a single thread
+blocked reading its own internal pipe (`fd 9`) for 45+ seconds, without
+reaching either the Arch crash or the rest state documented in §8 for
+the VPS, and close it with `gdb`, the next step that had been noted but
+not executed.
 
-**Build:** `bin/WORD1.exe.so` en el contenedor ya estaba en el mismo `HEAD`
-que el host (`536072a`), reconstruido dentro del contenedor a las 14:41 de
-esta misma sesión — Qt 6.8.2 confirmado vía `ldd` (coincide con lo que exige
-el "gotcha" de `CLAUDE.md` sobre no mezclar binarios host/contenedor).
+**Build:** `bin/WORD1.exe.so` in the container was already on the same
+`HEAD` as the host (`536072a`), rebuilt inside the container at 14:41
+in this same session, Qt 6.8.2 confirmed via `ldd` (matches what
+`CLAUDE.md`'s "gotcha" requires about not mixing host/container
+binaries).
 
-**Lanzamiento:** `DISPLAY=:59 wine WORD1.exe.so` bajo un `Xvfb` ya activo en
-el contenedor, backgrounded con `nohup ... &` (no `setsid`: `setsid` dentro
-de una sesión de `machinectl shell` no sobrevivió al cierre de la sesión en
-los primeros dos intentos — proceso y log vacíos, causa exacta no
-investigada; `nohup` simple sí sobrevivió, verificado con `kill -0` antes y
-después de cerrar la sesión). Warnings esperados y benignos, ya documentados
-en `CLAUDE.md` (falta `wine32`/multiarch, `getaddrinfo` sin resolver
-hostname).
+**Launch:** `DISPLAY=:59 wine WORD1.exe.so` under an already-active
+`Xvfb` in the container, backgrounded with `nohup ... &` (not `setsid`:
+`setsid` inside a `machinectl shell` session did not survive the
+session closing in the first two attempts, empty process and log,
+exact cause not investigated; plain `nohup` did survive, verified with
+`kill -0` before and after closing the session). Expected, benign
+warnings, already documented in `CLAUDE.md` (missing `wine32`/multiarch,
+`getaddrinfo` unable to resolve hostname).
 
-**Estado del proceso, confirmado por `/proc` sin necesidad de `gdb`
-todavía:** un único hilo (`Threads: 1`), `State: S (sleeping)`, `wchan:
-anon_pipe_read`. `ls -la /proc/<pid>/fd` confirma exactamente lo que
-`CLAUDE.md` describía: `fd 9` es el extremo de lectura de `pipe:[297758]`,
-`fd 10` es el extremo de escritura del mismo pipe, ambos abiertos por el
-propio proceso.
+**Process state, confirmed via `/proc` without needing `gdb` yet:** a
+single thread (`Threads: 1`), `State: S (sleeping)`, `wchan:
+anon_pipe_read`. `ls -la /proc/<pid>/fd` confirms exactly what
+`CLAUDE.md` described: `fd 9` is the read end of `pipe:[297758]`,
+`fd 10` is the write end of the same pipe, both opened by the process
+itself.
 
-**`sudo gdb -p <pid> --batch -ex "bt full"` dentro del contenedor**
-(`ptrace_scope=1` bloquea el attach como usuario normal, igual que
-documentó §15 para hp-15/Arch — se necesitó `sudo`):
+**`sudo gdb -p <pid> --batch -ex "bt full"` inside the container**
+(`ptrace_scope=1` blocks attaching as a normal user, just as §15
+documented for hp-15/Arch, `sudo` was needed):
 
 ```
 __internal_syscall_cancel (fd=9) → __syscall_cancel → __GI___libc_read
-→ ntdll.so (sin símbolos, 3 frames) → NtWaitForMultipleObjects
-→ win32u.so (sin símbolos) → NtUserGetMessage
+→ ntdll.so (no symbols, 3 frames) → NtWaitForMultipleObjects
+→ win32u.so (no symbols) → NtUserGetMessage
 → __wine_syscall_dispatcher
 ```
 
-**Lectura:** esto es el mecanismo real y documentado de Wine para
-`GetMessage()` — el hilo cliente espera un objeto del kernel de Win32
-bloqueado en `read()` sobre un pipe que el propio proceso posee en ambos
-extremos (el extremo de escritura se le pasa a `wineserver` por el socket de
-protocolo para que lo señalice; el cliente conserva su propia copia). No es
-un cuelgue: es el estado de reposo normal de un `GetMessage()` esperando
-input que, bajo `Xvfb` sin interacción, nunca llega — la misma clase de
-estado que §8 documentó para el VPS, solo que ahí no se había confirmado
-con una herramienta que mirara dentro del proceso. El "known gap" de
-`CLAUDE.md` (contenedor con comportamiento distinto al VPS) queda cerrado:
-no hay una tercera firma de comportamiento — hay dos entornos Debian 13
-llegando al mismo estado sano, uno de ellos sin instrumentar hasta ahora.
+**Reading:** this is Wine's real, documented mechanism for
+`GetMessage()`, the client thread waits on a Win32 kernel object
+blocked in `read()` on a pipe the process itself owns at both ends (the
+write end is passed to `wineserver` over the protocol socket for it to
+signal; the client keeps its own copy). It is not a hang: it is the
+normal rest state of a `GetMessage()` waiting for input that, under
+`Xvfb` with no interaction, never comes, the same class of state §8
+documented for the VPS, only there it had not been confirmed with a
+tool that looked inside the process. The "known gap" in `CLAUDE.md`
+(the container behaving differently from the VPS) is closed: there is
+no third behavior signature, there are two Debian 13 environments
+reaching the same healthy state, one of them just not instrumented
+until now.
 
-**Confirmación visual, más allá del backtrace:** `DISPLAY=:59 xwininfo -root
--tree` lista 22 ventanas reales de `word1.exe`, incluyendo
-`0x800001 "Microsoft Word - Document1": 760x542+0+26` — título correcto,
-tamaño de documento razonable, visible. Se instaló `x11-apps`/`imagemagick`
-en el contenedor (`apt-get install`, no estaban) para capturar con `xwd
--root` + `convert` a PNG y leer la imagen directamente: la ventana muestra
-la barra de menú completa (File Edit View Insert Format Utilities Window),
-la toolbar con los controles de estilo/fuente/tamaño (`Normal`/`Arial`/`10`)
-y los botones de formato, la regla, y el cursor parpadeando al inicio del
-documento — el mismo `OpusWin95Toolbar` cuyo `sync_mirrors`/`sync_combo`
-crashea de forma reproducible en hp-15/Arch (§12-20) se ejecutó aquí de
-punta a punta sin corromper nada. Un recuadro negro sólido aparece en medio
-de la página del documento en la captura; no se investigó si es un
-artefacto de la conversión `xwd`→PNG bajo este color depth o algo real del
-render — el resto de la ventana (chrome, menús, texto de la barra) se ve
-correctamente, así que no se leyó como señal de un problema. Capturas
-borradas del árbol del proyecto después de leerlas (no forman parte del
-repo).
+**Visual confirmation, beyond the backtrace:** `DISPLAY=:59 xwininfo -root
+-tree` lists 22 real `word1.exe` windows, including
+`0x800001 "Microsoft Word - Document1": 760x542+0+26`, correct title,
+reasonable document size, visible. `x11-apps`/`imagemagick` were
+installed on the container (`apt-get install`, not present) to capture
+with `xwd -root` + `convert` to PNG and read the image directly: the
+window shows the full menu bar (File Edit View Insert Format Utilities
+Window), the toolbar with style/font/size controls
+(`Normal`/`Arial`/`10`) and the formatting buttons, the ruler, and the
+blinking cursor at the start of the document, the same
+`OpusWin95Toolbar` whose `sync_mirrors`/`sync_combo` reproducibly
+crashes on hp-15/Arch (§12-20) ran here end to end without corrupting
+anything. A solid black box appears in the middle of the document page
+in the capture; it was not investigated whether it is an artifact of
+the `xwd`→PNG conversion under this color depth or something real in
+the render, the rest of the window (chrome, menus, bar text) looks
+correct, so it was not read as a sign of a problem. Screenshots deleted
+from the project tree after reading them (not part of the repo).
 
-**Consecuencia — cambia el estado del blocker para la plataforma
-soportada:** las secciones 1-20 de este documento son un diagnóstico real y
-válido de un bug real, pero ese bug solo se ha reproducido en hp-15 (Arch,
-wine-staging 11.15/16, ya no un target de este proyecto). En las dos
-superficies Debian 13 disponibles (VPS, contenedor local), con el mismo
-código (`536072a`, sin diffs de `src/Opus/`/`src/port/` entre sesiones
-desde §12), `WORD1` arranca, construye la ventana de documento completa
-(incluyendo el tramo `FCreateMw`→`EndStartup1`→`DisplayRibbonInit`→
-`OpusSyncWin95Toolbar`→`sync_mirrors`→`sync_combo`→`locate_source_combos`,
-exactamente la cadena que se pasó 9 secciones instrumentando) y llega a un
-reposo sano. No se investigó *por qué* Arch/wine-staging sí corrompe el
-heap y Debian 13/wine vanilla no — las hipótesis abiertas en §17-20 (dos
-familias de asignador, código `ComboBox`/`ListBox` *builtin* distinto entre
-versiones de Wine) siguen sin confirmar, pero dejan de ser bloqueantes: el
-proyecto ya no valida en Arch. README.md actualizado para reflejar esto
-(Winelib vuelve a ser el foco activo; Qt core en pausa).
+**Consequence, changes the blocker's status for the supported
+platform:** sections 1-20 of this document are a real, valid diagnosis
+of a real bug, but that bug has only reproduced on hp-15 (Arch,
+wine-staging 11.15/16, no longer a target of this project). On the two
+available Debian 13 surfaces (VPS, local container), with the same code
+(`536072a`, no `src/Opus/`/`src/port/` diffs between sessions since
+§12), `WORD1` starts up, builds the full document window (including the
+`FCreateMw`→`EndStartup1`→`DisplayRibbonInit`→
+`OpusSyncWin95Toolbar`→`sync_mirrors`→`sync_combo`→`locate_source_combos`
+stretch, exactly the chain this document spent nine sections
+instrumenting) and reaches a healthy rest state. It was not
+investigated *why* Arch/wine-staging does corrupt the heap and Debian
+13/vanilla wine does not, the open hypotheses in §17-20 (two allocator
+families, different *builtin* `ComboBox`/`ListBox` code between Wine
+versions) remain unconfirmed, but they stop being blocking: the project
+no longer validates on Arch. README.md updated to reflect this
+(Winelib is the active focus again; Qt core paused).
 
-**No perseguido esta sesión:** enviar input real (teclado/mouse sintético
-vía `xdotool` o similar, no instalado) para confirmar interacción más allá
-de la construcción de ventana; identificar la causa del recuadro negro en
-la captura; investigar por qué `setsid` no sobrevivió al cierre de la
-sesión de `machinectl shell` en los dos primeros intentos de lanzamiento.
+**Not pursued this session:** sending real input (keyboard/mouse via
+synthetic `xdotool` or similar, not installed) to confirm interaction
+beyond window construction; identifying the cause of the black box in
+the capture; investigating why `setsid` did not survive the
+`machinectl shell` session closing in the first two launch attempts.
 
-### 22. `word1_startup_blocked` corrido de verdad en Debian 13 (contenedor) — 0/9 pasan, pero por motivos nuevos y distintos al heap corruption
+### 22. `word1_startup_blocked` actually run on Debian 13 (container), 0/9 pass, but for new reasons distinct from heap corruption
 
-Retoma §21: con el startup confirmado sano en Debian 13, vale la pena ver
-si los 9 tests de la label `word1_startup_blocked` (registrados como
-no-gating bajo la premisa "`WORD1` siempre crashea") en realidad ahora
-pasarían. Reconstruido todo desde cero dentro del contenedor (`rm -rf
-out/linux-winelib-debug` + reconfigure + build de `opus_original_engine`,
-`WORD1`, `opus_word1_ui_test`) para eliminar cualquier resto de cache del
-host de ayer.
+Resumes §21: with startup confirmed healthy on Debian 13, it is worth
+checking whether the 9 tests under the `word1_startup_blocked` label
+(registered as non-gating under the premise "`WORD1` always crashes")
+would actually pass now. Rebuilt everything from scratch inside the
+container (`rm -rf out/linux-winelib-debug` + reconfigure + build of
+`opus_original_engine`, `WORD1`, `opus_word1_ui_test`) to eliminate any
+leftover host cache from the day before.
 
-**Nota de tooling:** lanzar procesos de larga duración en background
-dentro de una sesión de `machinectl shell` (`nohup ... &`, con o sin
-`setsid`) no sobrevivió de forma consistente al cierre de esa sesión en
-este trabajo — un build de 337 TUs se interrumpió con `"ninja: build
-stopped: interrupted by user."` pese a `nohup`. `systemd-run
---machine=debian13 --uid=pablo ...` (lanza una unidad transient dentro
-del propio systemd del contenedor, independiente de cualquier PTY/sesión)
-resultó confiable en 5/5 usos. Usar ese mecanismo, no `machinectl shell
-... &`, para trabajo en background futuro en este contenedor.
+**Tooling note:** launching long-running background processes inside a
+`machinectl shell` session (`nohup ... &`, with or without `setsid`)
+did not consistently survive that session closing in this work, a
+337-TU build was interrupted with `"ninja: build
+stopped: interrupted by user."` despite `nohup`. `systemd-run
+--machine=debian13 --uid=pablo ...` (launches a transient unit inside
+the container's own systemd, independent of any PTY/session) proved
+reliable in 5/5 uses. Use that mechanism, not `machinectl shell
+... &`, for future background work in this container.
 
-**Resultado: `ctest -L word1_startup_blocked --timeout 90`, 0/9 pasan —
-pero ningún test muestra la firma de heap corruption de las secciones
-1-20.** Tres patrones distintos:
+**Result: `ctest -L word1_startup_blocked --timeout 90`, 0/9 pass, but
+no test shows the heap-corruption signature from sections 1-20.**
+Three distinct patterns:
 
-- **`word1_port_smoke_test`**: Timeout a los 90.10s (el timeout del
-  propio `ctest`). `WORD1.exe.so --self-test` corre, no crashea, llega al
-  mismo reposo `NtUserGetMessage`/`anon_pipe_read` de §21, y se queda
-  ahí — el test no tiene una condición de éxito que se cumpla con
-  "arrancó y quedó sano", solo agota el reloj.
-- **`opus_word1_ui_test`** (sin flag, el driver base): reportado "Timeout
-  20.01 sec" por `ctest` (coincide casi exacto con el `TIMEOUT 20` de
-  `set_tests_properties`, no con los 8000ms del `wait_for_window()`
-  interno del propio test — ver
-  `port/original/opus_word1_ui_test.cpp:633-637`), con `"WORD1 main
-  window did not appear"` en la salida. El título que busca
-  (`"Microsoft Word - Document1"`) es exactamente el mismo que §21
-  confirmó visible por `xwininfo` — la ventana sí existe. La discrepancia
-  entre el timeout interno de 8s y que `ctest` reporte ~20s no está
-  explicada; no se instrumentó más a fondo esta sesión.
-- **Los 7 tests restantes** (`--clipboard`, `--typing`, `--interaction`,
-  `--selection`, `--font-typing`, `--about`, `--save-as`): fallan en
-  0.04-0.09s con `"unknown test mode"` — el parseo de argumentos de
-  `wmain` en `opus_word1_ui_test.cpp:576-621` rechaza exactamente las
-  flags que `src/CMakeLists.txt:1580-1607` le pasa (`argument_count == 3`
-  con `arguments[2]` comparado por `wcscmp` contra cada flag). Verificado
-  leyendo el `CTestTestfile.cmake` generado que la flag correcta sí se
-  pasa (ej. `"--clipboard"`). Causa exacta no aislada — no se instrumentó
-  `argc`/`argv` reales dentro de `wmain` para ver qué llega realmente del
-  lado de Wine/`winegcc` al ejecutar el `.exe` vía `ctest`. Bug de parseo
-  de CLI del arnés de test, no relacionado con el heap corruption ni con
-  Wine/`GetMessage`.
+- **`word1_port_smoke_test`**: Times out at 90.10s (ctest's own
+  timeout). `WORD1.exe.so --self-test` runs, does not crash, reaches
+  the same `NtUserGetMessage`/`anon_pipe_read` rest state from §21, and
+  stays there, the test has no success condition that is met by
+  "started and stayed healthy", it just runs out the clock.
+- **`opus_word1_ui_test`** (no flag, the base driver): `ctest` reports
+  "Timeout 20.01 sec" (matches almost exactly the `TIMEOUT 20` from
+  `set_tests_properties`, not the 8000ms of the test's own internal
+  `wait_for_window()`, see
+  `port/original/opus_word1_ui_test.cpp:633-637`), with
+  `"WORD1 main window did not appear"` in the output. The title it
+  looks for (`"Microsoft Word - Document1"`) is exactly the same one
+  §21 confirmed visible via `xwininfo`, the window does exist. The
+  discrepancy between the 8s internal timeout and `ctest`'s reported
+  ~20s is not explained; not instrumented further this session.
+- **The remaining 7 tests** (`--clipboard`, `--typing`, `--interaction`,
+  `--selection`, `--font-typing`, `--about`, `--save-as`): fail in
+  0.04-0.09s with `"unknown test mode"`, `wmain`'s argument parsing in
+  `opus_word1_ui_test.cpp:576-621` rejects exactly the flags
+  `src/CMakeLists.txt:1580-1607` passes to it (`argument_count == 3`
+  with `arguments[2]` compared via `wcscmp` against each flag).
+  Verified by reading the generated `CTestTestfile.cmake` that the
+  correct flag really is passed (e.g. `"--clipboard"`). Exact cause not
+  isolated, `argc`/`argv` were not instrumented inside `wmain` to see
+  what actually arrives from the Wine/`winegcc` side when running the
+  `.exe` via `ctest`. A test-harness CLI parsing bug, unrelated to the
+  heap corruption or to Wine/`GetMessage`.
 
-**Consecuencia:** el label `word1_startup_blocked` sigue siendo 0/9 hoy,
-pero por razones completamente distintas y nuevas — ninguna es la
-corrupción de heap de las secciones 1-20. La smoke y la ui_test base
-necesitan una condición de éxito que reconozca "reposo sano" como
-resultado válido, no solo esperar a que el proceso termine solo. Los 7
-tests con flag necesitan que se resuelva el bug de parseo de CLI antes de
-llegar siquiera a lanzar `WORD1`. No se tocó código de test esta sesión
-(`src/port/original/opus_word1_ui_test.cpp` y `src/CMakeLists.txt` no
-están en el árbol restringido, así que un fix ahí no necesitaría
-autorización si se retoma).
+**Consequence:** the `word1_startup_blocked` label is still 0/9 today,
+but for completely different and new reasons, none of them the heap
+corruption from sections 1-20. The smoke test and the base ui_test need
+a success condition that recognizes "healthy rest state" as a valid
+result, not just waiting for the process to finish on its own. The 7
+flagged tests need the CLI parsing bug fixed before even getting to
+launch `WORD1`. No test code was touched this session
+(`src/port/original/opus_word1_ui_test.cpp` and `src/CMakeLists.txt`
+are not in the restricted tree, so a fix there would not need
+authorization if resumed).
 
-**No perseguido esta sesión:** instrumentar `argc`/`argv` real dentro de
-`wmain` de `opus_word1_ui_test.cpp` para ver la causa exacta de "unknown
-test mode"; medir el tiempo real entre `CreateProcessW` y que la ventana
-"Microsoft Word - Document1" quede visible, para saber si 8s es
-insuficiente o si `wait_for_window` tiene otro problema; rediseñar la
-condición de éxito de `word1_port_smoke_test`/`opus_word1_ui_test` para
-que un reposo sano cuente como pass.
+**Not pursued this session:** instrumenting real `argc`/`argv` inside
+`opus_word1_ui_test.cpp`'s `wmain` to see the exact cause of "unknown
+test mode"; measuring the real time between `CreateProcessW` and the
+"Microsoft Word - Document1" window becoming visible, to know whether
+8s is insufficient or `wait_for_window` has another problem;
+redesigning `word1_port_smoke_test`/`opus_word1_ui_test`'s success
+condition so a healthy rest state counts as a pass.
 
-### 23. Causa raíz de "unknown test mode" — glibc de 4 bytes contra `WCHAR` real de 2 bytes; corregido y verificado; destapa un problema más amplio en el mismo archivo
+### 23. Root cause of "unknown test mode", glibc's 4 bytes against the real 2-byte `WCHAR`; fixed and verified; uncovers a broader problem in the same file
 
-Retoma el pendiente #1 de §22. Instrumentación temporal en
-`opus_word1_ui_test.cpp` (revertida al cerrar, diff final limpio salvo por
-el fix real): `fprintf`/bucle manual de `%04x` por cada `wchar_t` de
-`arguments[2]`, sin pasar por `wcslen`/`%ls`.
+Resumes pending item #1 from §22. Temporary instrumentation in
+`opus_word1_ui_test.cpp` (reverted on close, final diff clean except
+for the real fix): `fprintf`/a manual loop printing each `wchar_t` of
+`arguments[2]` as `%04x`, without going through `wcslen`/`%ls`.
 
-**Hallazgo, confirmado con evidencia directa:** `arguments[2]` para
-`--clipboard` contiene 11 unidades UTF-16 correctas (`002d 002d 0063
-006c 0069 0070 0062 006f 0061 0072 0064` = `"--clipboard"`) — el
-puntero-a-puntero avanza correctamente en pasos de 2 bytes, confirmando
-que `sizeof(wchar_t)` es 2 en esta TU (`-fshort-wchar` de `winegcc`, como
-el resto del proyecto). Pero `std::wcslen(arguments[2])` en la misma
-línea, mismo puntero, devuelve **6**, no 11. La única explicación
-consistente: `wcslen`/`wcscmp`/`wcsstr` de `<cwchar>` resuelven al símbolo
-de **glibc**, compilado con su propio `wchar_t` nativo de **4 bytes** —
-esa función ignora el tamaño de tipo local del llamador (es código ya
-compilado, no una plantilla) y lee la memoria 4 bytes a la vez. Sobre un
-buffer real de 24 bytes (11 unidades × 2 + nulo × 2), leer en pasos de 4
-aterriza justo un `uint32` más allá del buffer (offset 24), y lo que sea
-que haya ahí (memoria adyacente, no necesariamente cero) determina dónde
-"termina" la cadena según `wcslen` — en esta corrida, coincidió con
-`len=6`. Mismo mecanismo para `%ls` en `fprintf`/`std::wcerr` (ver
-§16, donde ya se había documentado como problema de *volcado*; acá se
-confirma que es un problema de **lógica**, no solo de impresión).
+**Finding, confirmed with direct evidence:** `arguments[2]` for
+`--clipboard` contains 11 correct UTF-16 units (`002d 002d 0063
+006c 0069 0070 0062 006f 0061 0072 0064` = `"--clipboard"`), the
+pointer-to-pointer advances correctly in 2-byte steps, confirming
+`sizeof(wchar_t)` is 2 in this TU (`-fshort-wchar` from `winegcc`, like
+the rest of the project). But `std::wcslen(arguments[2])` on the same
+line, same pointer, returns **6**, not 11. The only consistent
+explanation: `wcslen`/`wcscmp`/`wcsstr` from `<cwchar>` resolve to the
+**glibc** symbol, compiled with its own native, **4-byte**, `wchar_t`,
+that function ignores the caller's local type size (it is already
+compiled code, not a template) and reads memory 4 bytes at a time. Over
+a real 24-byte buffer (11 units × 2 plus a null × 2), reading in
+4-byte steps lands exactly one `uint32` beyond the buffer (offset 24),
+and whatever is there (adjacent memory, not necessarily zero) decides
+where the string "ends" according to `wcslen`, in this run it
+happened to be `len=6`. Same mechanism for `%ls` in
+`fprintf`/`std::wcerr` (see §16, where it had already been documented
+as a *dump* problem; this confirms it is a **logic** problem, not just a
+printing one).
 
-**Fix aplicado y verificado — root cause, no síntoma:** reemplazadas las
-10 comparaciones `std::wcscmp(arguments[2], L"--flag")` por
-`lstrcmpW(arguments[2], L"--flag")` (Win32/`kernel32`, ya disponible sin
-cambiar el link de `target_link_libraries`, que solo tenía `user32
-gdi32`). **7/7 corridas con cada flag (`--clipboard`, `--typing`,
+**Fix applied and verified, root cause, not symptom:** replaced the 10
+`std::wcscmp(arguments[2], L"--flag")` comparisons with
+`lstrcmpW(arguments[2], L"--flag")` (Win32/`kernel32`, already available
+without changing `target_link_libraries`, which only had `user32
+gdi32`). **7/7 runs with each flag (`--clipboard`, `--typing`,
 `--interaction`, `--selection`, `--font-typing`, `--about`,
-`--save-as`), ninguna vuelve a imprimir `"unknown test mode"`.** Cierra
-la causa exacta que dejaba abierta §22.
+`--save-as`), none prints `"unknown test mode"` again.** Closes the
+exact cause §22 left open.
 
-**El mismo patrón se encontró y corrigió en dos sitios más de este mismo
-archivo, sin haber sido pedido explícitamente pero necesarios para
-seguir avanzando en la investigación:**
-- `find_window_callback` (usada por `wait_for_window`, la que busca la
-  ventana `"Microsoft Word - Document1"`): `std::wcscmp`/`std::wcsstr`
-  sobre `class_name`/`caption` reales (de `GetClassNameW`/
-  `GetWindowTextW`) reemplazados por `lstrcmpW` y un `wide_contains()`
-  local (bucle manual, sin depender de ninguna función de `<cwchar>`).
-- El macro `_wcsicmp` (definido `#define _wcsicmp wcscasecmp`, usado en
-  `find_descendant_by_class`/`collect_descendants_by_class`/
-  `control_has_class`): cambiado a `#define _wcsicmp lstrcmpiW`.
+**The same pattern was found and fixed in two more places in this same
+file, not explicitly requested but necessary to keep the investigation
+moving:**
+- `find_window_callback` (used by `wait_for_window`, which looks for
+  the `"Microsoft Word - Document1"` window): `std::wcscmp`/`std::wcsstr`
+  on real `class_name`/`caption` (from `GetClassNameW`/
+  `GetWindowTextW`) replaced by `lstrcmpW` and a local
+  `wide_contains()` (a manual loop, not depending on any `<cwchar>`
+  function).
+- The `_wcsicmp` macro (defined as `#define _wcsicmp wcscasecmp`, used
+  in `find_descendant_by_class`/`collect_descendants_by_class`/
+  `control_has_class`): changed to `#define _wcsicmp lstrcmpiW`.
 
-**Un tercer sitio del mismo patrón queda identificado pero sin corregir
-— y es, con evidencia, la causa real del siguiente bug detrás de
-"unknown test mode":** `std::wstring command_line = L"\"" +
-std::wstring(arguments[1]) + L"\"";` (construcción del command line para
-`CreateProcessW`, justo antes de la llamada). Con el fix de `argv` ya
-aplicado, `--clipboard` deja de imprimir "unknown test mode" pero
-crashea con `malloc(): invalid size (unsorted)` +
-`virtual_setup_exception stack overflow` — **antes de llegar siquiera a
-la primera línea de instrumentación puesta justo antes de
-`CreateProcessW`** (confirmado poniendo un marcador ahí y en
-`find_descendant_by_class`: ninguno de los dos llegó a imprimir en 5/5
-corridas del crash). Lo único entre el fin del parseo de argumentos y
-ese marcador es la construcción de `command_line` — un `std::wstring`
-construido desde `arguments[1]` (`WCHAR*` real). El constructor
-`std::wstring(const wchar_t*)` llama a `char_traits<wchar_t>::length()`
-internamente para dimensionar el buffer — si esa resolución cae en la
-misma implementación nativa de 4 bytes que `wcslen`, el `std::wstring`
-resultante queda con tamaño/capacidad corruptos desde su construcción,
-consistente con la corrupción de heap observada más tarde (no
-necesariamente en la misma línea que la escribe — es la firma típica de
-corrupción detectada tarde, igual que en §16). **No confirmado con la
-misma evidencia directa que los tres sitios de arriba (no se puso el
-volcado byte a byte sobre este `std::wstring` específico), pero es la
-lectura más consistente con la evidencia disponible.**
+**A third site with the same pattern is identified but not fixed, and
+is, with evidence, the real cause of the bug behind "unknown test
+mode":** `std::wstring command_line = L"\"" +
+std::wstring(arguments[1]) + L"\"";` (building the command line for
+`CreateProcessW`, right before that call). With the `argv` fix already
+applied, `--clipboard` stops printing "unknown test mode" but crashes
+with `malloc(): invalid size (unsorted)` +
+`virtual_setup_exception stack overflow`, **before even reaching the
+first instrumentation line placed right before
+`CreateProcessW`** (confirmed by placing a marker there and in
+`find_descendant_by_class`: neither printed in 5/5 runs of the crash).
+The only thing between the end of argument parsing and that marker is
+building `command_line`, a `std::wstring` built from `arguments[1]`
+(a real `WCHAR*`). The `std::wstring(const wchar_t*)` constructor
+internally calls `char_traits<wchar_t>::length()` to size the buffer,
+if that resolution falls into the same native 4-byte implementation as
+`wcslen`, the resulting `std::wstring` ends up with a corrupt
+size/capacity from construction, consistent with the heap corruption
+observed later (not necessarily on the same line that writes it, it is
+the typical signature of late-detected corruption, same as in §16).
+**Not confirmed with the same direct evidence as the three sites above
+(the byte-by-byte dump was not applied to this specific
+`std::wstring`), but it is the reading most consistent with the
+available evidence.**
 
-**Alcance: el problema es del archivo, no de una línea.** `grep` encontró
-`std::wstring`/`std::wcerr` en 6 sitios más de este archivo
-(`send_physical_text`, líneas ~1430/1602/1849 con literales/variables
-`std::wstring`, `log_window_callback` con `std::wcerr <<`), todos
-potencialmente con el mismo problema — no auditados uno por uno esta
-sesión. La regla general para cualquier código de este archivo (y,
-posiblemente, cualquier `.cpp` de `src/port/` compilado con
-`wineg++`/`-fshort-wchar` que incluya `<cwchar>`/`<string>` en vez de
-usar solo punteros `wchar_t*` crudos o las funciones Win32
-`lstrcmpW`/`lstrcmpiW`/`lstrlenW`/`lstrcpyW`): **cualquier función de
-`<cwchar>`/`<string>`/`<iostream>` que toque contenido de un `wchar_t*`
-real (no solo su dirección) es sospechosa por defecto**, sin importar
-que el tipo `wchar_t` se vea "correcto" (2 bytes) en el código fuente de
-la misma TU.
+**Scope: the problem is file-wide, not one line.** A `grep` found
+`std::wstring`/`std::wcerr` at 6 more sites in this file
+(`send_physical_text`, lines ~1430/1602/1849 with literals/variables
+`std::wstring`, `log_window_callback` with `std::wcerr <<`), all
+potentially with the same problem, not audited one by one this
+session. The general rule for any code in this file (and, possibly,
+any `.cpp` under `src/port/` compiled with `wineg++`/`-fshort-wchar`
+that includes `<cwchar>`/`<string>` instead of using only raw
+`wchar_t*` pointers or the Win32 functions
+`lstrcmpW`/`lstrcmpiW`/`lstrlenW`/`lstrcpyW`): **any function from
+`<cwchar>`/`<string>`/`<iostream>` that touches a real `wchar_t*`'s
+content (not just its address) is suspect by default**, regardless of
+the `wchar_t` type looking "correct" (2 bytes) in that same TU's source
+code.
 
-**No perseguido esta sesión:** confirmar con volcado directo que
-`std::wstring(arguments[1])` es el sitio exacto de la corrupción (en vez
-de solo inferirlo por descarte); auditar y corregir los 6 sitios
-restantes de `std::wstring`/`std::wcerr` en este archivo; retomar la
-pregunta de si, con esto resuelto del todo, `opus_word1_ui_test` en modo
-`--clipboard` (y los otros 6) llegan a pasar de verdad contra `WORD1` en
-Debian 13.
+**Not pursued this session:** confirming with a direct dump that
+`std::wstring(arguments[1])` is the exact corruption site (rather than
+just inferring it by elimination); auditing and fixing the 6 remaining
+`std::wstring`/`std::wcerr` sites in this file; revisiting whether, with
+this fully resolved, `opus_word1_ui_test` in `--clipboard` mode (and
+the other 6) really pass against `WORD1` on Debian 13.
 
-**Build restaurado a los tres fixes reales** (macro `_wcsicmp`,
-`wide_contains`+`find_window_callback`, `lstrcmpW` en el parseo de
-`argv`) — toda la instrumentación temporal (marcadores `[DIAG]`/
-`[DRIVER]`, el parámetro `depth` de `find_descendant_by_class`) revertida,
-diff confirmado limpio salvo por esos tres cambios.
+**Build restored to the three real fixes** (`_wcsicmp` macro,
+`wide_contains`+`find_window_callback`, `lstrcmpW` in `argv` parsing),
+all temporary instrumentation (`[DIAG]`/`[DRIVER]` markers,
+`find_descendant_by_class`'s `depth` parameter) reverted, diff
+confirmed clean except for those three changes.
 
-### 24. `std::wstring(arguments[1])` confirmado como la causa del `malloc()` — corregido y verificado; destapa un cuarto bug, de otra familia (`CreateProcessW` devuelve `PROCESS_INFORMATION` en cero)
+### 24. `std::wstring(arguments[1])` confirmed as the cause of the `malloc()`, fixed and verified; uncovers a fourth bug, of a different family (`CreateProcessW` returns `PROCESS_INFORMATION` zeroed out)
 
-Retoma el pendiente de §23: confirmar con volcado directo que
-`std::wstring(arguments[1])` es el sitio real de la corrupción, no solo
-inferirlo por descarte.
+Resumes the pending item from §23: confirm with a direct dump that
+`std::wstring(arguments[1])` is the real corruption site, not just
+infer it by elimination.
 
-**Confirmado con evidencia directa:** instrumentación temporal aislando
-la construcción (`const std::wstring diag_probe(arguments[1]);` justo
-antes del `command_line` real, revertida al cerrar) muestra
-`diag_probe.size()=22` contra `lstrlenW(arguments[1])=32` — el real es
-32 (`"/home/pablo/msword/bin/WORD1.exe"`). El contenido indexado
-(`diag_probe[i]` para `i` en `[0,22)`) es el prefijo correcto y real de
-la cadena (`"/home/pablo/msword/bin"`, no basura) — confirma que
-`operator[]` (acceso directo, sin pasar por `char_traits`) funciona
-bien en esta TU, pero el **constructor** de `std::wstring` calculó mal
-la longitud al construirse (mismo mecanismo de fondo que §23: la
-resolución de `char_traits<wchar_t>::length()` cae en glibc, 4 bytes,
-no en el `wchar_t` de 2 bytes real de esta TU).
+**Confirmed with direct evidence:** temporary instrumentation isolating
+the construction (`const std::wstring diag_probe(arguments[1]);` right
+before the real `command_line`, reverted on close) shows
+`diag_probe.size()=22` against `lstrlenW(arguments[1])=32`, the real
+value is 32 (`"/home/pablo/msword/bin/WORD1.exe"`). The indexed content
+(`diag_probe[i]` for `i` in `[0,22)`) is the correct, real prefix of the
+string (`"/home/pablo/msword/bin"`, not garbage), confirming that
+`operator[]` (direct access, not going through `char_traits`) works
+fine in this TU, but the `std::wstring` **constructor** miscalculated
+the length at construction time (the same underlying mechanism as
+§23: `char_traits<wchar_t>::length()`'s resolution falls into glibc,
+4 bytes, not into this TU's real 2-byte `wchar_t`).
 
-**Fix aplicado y verificado — root cause:** reemplazada
+**Fix applied and verified, root cause:** replaced
 `std::wstring command_line = L"\"" + std::wstring(arguments[1]) +
-L"\"";` por un buffer `wchar_t command_line[MAX_PATH + 4]` construido a
-mano con `lstrcpyW`/`lstrcatW` (Win32/`kernel32`, ya en el link). **3/3
-corridas de `--clipboard`, ninguna vuelve a mostrar `malloc(): invalid
-size (unsorted)` ni el `stack overflow` de Wine** — llegan limpio hasta
-`wait_for_window` y fallan ahí con un mensaje normal
-(`"WORD1 main window did not appear"`, código de salida 3), no con un
-crash. Confirma que este `std::wstring` era, en efecto, el sitio real
-de la corrupción de heap que aparecía después del fix de §23 — no una
-simple co-ocurrencia.
+L"\";` with a `wchar_t command_line[MAX_PATH + 4]` buffer built by hand
+with `lstrcpyW`/`lstrcatW` (Win32/`kernel32`, already in the link).
+**3/3 runs of `--clipboard`, none shows `malloc(): invalid
+size (unsorted)` or Wine's `stack overflow` again**, they reach
+`wait_for_window` cleanly and fail there with a normal message
+(`"WORD1 main window did not appear"`, exit code 3), not a crash.
+Confirms this `std::wstring` was indeed the real site of the heap
+corruption appearing after the §23 fix, not a mere co-occurrence.
 
-**Cuarto bug, de una familia completamente distinta, destapado al
-arreglar este:** con el crash resuelto, `--clipboard` (y por extensión
-los otros 6 modos con flag) siguen sin pasar — consistentemente,
-incluso subiendo el timeout de `wait_for_window` de 8000ms a 30000ms
-(descarta que sea un problema de timing; ya sabíamos por §21 que la
-ventana aparece bien dentro de esa ventana de tiempo). Confirmado con
-`xwininfo -root -tree` **durante** la corrida: la ventana
-`"Microsoft Word - Document1"` existe, en el mismo display, con el
-título exacto que se busca — igual que en §21. El problema no es que
-la ventana no exista: es que `find_process_window`/`find_window_callback`
-nunca la encuentran, porque filtran por `process_id` y ese `process_id`
-llega en **cero**. Rastreado hasta el origen: `CreateProcessW`
-**retorna éxito** (no se imprime `"CreateProcessW failed"`) pero deja
-`PROCESS_INFORMATION` completamente en cero —
-`dwProcessId=0 dwThreadId=0 hProcess=0`, confirmado con un print
-directo justo después de la llamada (instrumentación temporal,
-revertida). No es el mismo mecanismo que §16/§23/§24: `PROCESS_INFORMATION`
-no tiene ningún miembro `wchar_t`, es solo `HANDLE`/`DWORD` — el ancho
-de `wchar_t` no puede explicar esto. Candidatos no explorados: alguna
-particularidad de `CreateProcessW` bajo Wine específicamente cuando el
-proceso que llama es un ejecutable de subsistema **consola**
-(`-mconsole -municode`, como se documentó para este target en
-`src/CMakeLists.txt`) creando un hijo de subsistema **GUI**
-(`WORD1.exe`, `-mwindows`); o una limitación real de esta versión de
-Wine (`wine` 10.0 vanilla del contenedor) para creación anidada de
-procesos que no se manifiesta lanzando `wine WORD1.exe.so` de forma
-directa desde una shell de Linux (como en §21/§22, que sí funcionan).
+**A fourth bug, of a completely different family, uncovered by fixing
+this one:** with the crash resolved, `--clipboard` (and by extension
+the other 6 flagged modes) still do not pass, consistently, even
+raising `wait_for_window`'s timeout from 8000ms to 30000ms (rules out a
+timing problem; §21 already showed the window appears fine within that
+time window). Confirmed with `xwininfo -root -tree` **during** the
+run: the `"Microsoft Word - Document1"` window exists, on the same
+display, with the exact title being searched for, just as in §21. The
+problem is not that the window does not exist: it is that
+`find_process_window`/`find_window_callback` never find it, because
+they filter by `process_id`, and that `process_id` arrives as
+**zero**. Traced to the source: `CreateProcessW` **returns success**
+(no `"CreateProcessW failed"` is printed) but leaves
+`PROCESS_INFORMATION` completely zeroed,
+`dwProcessId=0 dwThreadId=0 hProcess=0`, confirmed with a direct print
+right after the call (temporary instrumentation, reverted). It is not
+the same mechanism as §16/§23/§24: `PROCESS_INFORMATION` has no
+`wchar_t` member at all, it is just `HANDLE`/`DWORD`, `wchar_t`'s width
+cannot explain this. Unexplored candidates: some particularity of
+`CreateProcessW` under Wine specifically when the calling process is a
+**console**-subsystem executable (`-mconsole -municode`, as documented
+for this target in `src/CMakeLists.txt`) creating a **GUI**-subsystem
+child (`WORD1.exe`, `-mwindows`); or a real limitation of this Wine
+version (`wine` 10.0 vanilla in the container) for nested process
+creation that does not manifest when launching `wine WORD1.exe.so`
+directly from a Linux shell (as in §21/§22, which do work).
 
-**Instrumentación revertida, build restaurado a solo los dos fixes
-reales de esta sección + los tres de §23** (`command_line` con buffer
-manual; `_wcsicmp`→`lstrcmpiW`; `wide_contains`+`find_window_callback`;
-`lstrcmpW` en el parseo de `argv`) — diff confirmado limpio.
+**Instrumentation reverted, build restored to only the two real fixes
+from this section plus the three from §23** (`command_line` with a
+manual buffer; `_wcsicmp`→`lstrcmpiW`; `wide_contains`+
+`find_window_callback`; `lstrcmpW` in `argv` parsing), diff confirmed
+clean.
 
-**No perseguido esta sesión:** aislar si el subsistema consola-vs-GUI
-del creador es la variable relevante (probar, por ejemplo, compilando
-una versión mínima de `opus_word1_ui_test` sin `-mconsole` para ver si
-`dwProcessId` deja de ser cero — cambio de build no trivial, no
-intentado); comparar contra el comportamiento de `CreateProcessW` en
-Wine-staging (host, Arch) para ver si es específico de `wine` 10.0
-vanilla; revisar el código fuente de Wine (`dlls/kernelbase/process.c`
-o equivalente) para el manejo de `lpProcessInformation` en la ruta que
-efectivamente toma este caso.
+**Not pursued this session:** isolating whether the creator's
+console-vs-GUI subsystem is the relevant variable (trying, for example,
+compiling a minimal version of `opus_word1_ui_test` without
+`-mconsole` to see whether `dwProcessId` stops being zero, a non-trivial
+build change, not attempted); comparing against `CreateProcessW`'s
+behavior on wine-staging (host, Arch) to see whether it is specific to
+vanilla `wine` 10.0; reviewing Wine's source code
+(`dlls/kernelbase/process.c` or equivalent) for `lpProcessInformation`
+handling on the path this case actually takes.
 
-### 25. `dwProcessId=0` aislado al binario, no al arnés — reproducido con un programa mínimo; conclusión: comportamiento de Wine, no bug de este proyecto
+### 25. `dwProcessId=0` isolated to the binary, not the harness, reproduced with a minimal program; conclusion: Wine behavior, not a bug in this project
 
-Retoma §24 con la pregunta que quedó abierta: ¿es `opus_word1_ui_test`
-(compilado `wmain`/`-mconsole -municode`) el que provoca el `PROCESS_INFORMATION`
-en cero, o es específico de lanzar `WORD1.exe`? Se probaron dos
-variantes rápidas primero, ninguna cambió el síntoma:
+Resumes §24 with the question left open: is it `opus_word1_ui_test`
+(compiled `wmain`/`-mconsole -municode`) that causes the zeroed
+`PROCESS_INFORMATION`, or is it specific to launching `WORD1.exe`? Two
+quick variants were tried first, neither changed the symptom:
 
-- **`GetLastError()` sin condicionar al resultado:** reveló `14007`
-  (`ERROR_SXS_KEY_NOT_FOUND`, contexto de activación/manifiesto "side
-  by side") en el primer intento — parecía una pista real, pero...
-- **`lpApplicationName = nullptr`** (pasar todo por `lpCommandLine`, el
-  patrón más común de uso de `CreateProcessW`): el `14007` desaparece
-  (`GetLastError()=0`, éxito limpio), pero `dwProcessId`/`hProcess`
-  **siguen en cero**. El `14007` era ruido — un efecto secundario de
-  pasar `lpApplicationName` explícito, no la causa real. Revertido
-  (sin motivo para mantenerlo, no arregla nada y cambia la semántica de
-  búsqueda del ejecutable).
+- **Unconditional `GetLastError()`:** revealed `14007`
+  (`ERROR_SXS_KEY_NOT_FOUND`, an activation-context/"side by side"
+  manifest context) on the first try, seemed like a real lead, but...
+- **`lpApplicationName = nullptr`** (passing everything through
+  `lpCommandLine`, the most common `CreateProcessW` usage pattern): the
+  `14007` disappears (`GetLastError()=0`, clean success), but
+  `dwProcessId`/`hProcess` **remain zero**. The `14007` was noise, a
+  side effect of passing `lpApplicationName` explicitly, not the real
+  cause. Reverted (no reason to keep it, it fixes nothing and changes
+  the executable-search semantics).
 
-**Aislamiento decisivo — programa mínimo, fuera de este archivo por
-completo:** dos `.c` de ~20 líneas, compilados con `winegcc` directo
-(sin `-mconsole`/`-municode`, `main()` normal, sin nada de este
-proyecto salvo el binario objetivo), para separar "arnés" de
-"objetivo":
+**Decisive isolation, a minimal program, entirely outside this file:**
+two ~20-line `.c` files, compiled directly with `winegcc` (no
+`-mconsole`/`-municode`, a normal `main()`, nothing from this project
+except the target binary), to separate "harness" from "target":
 
 ```c
 STARTUPINFOW si = {0}; si.cb = sizeof(si);
@@ -2922,151 +2940,148 @@ PROCESS_INFORMATION pi = {0};
 BOOL ok = CreateProcessW(NULL, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
 ```
 
-- **Objetivo `notepad.exe`** (builtin de Wine, `C:\windows\system32\notepad.exe`):
-  `ok=1 err=0 pid=292 tid=296 hProcess=0x40 hThread=0x44` — **funciona
-  perfecto**, PID y handles reales.
-- **Mismo programa, objetivo `WORD1.exe`** (el `.exe`/`.exe.so` de este
-  proyecto, sin tocar nada del arnés): `ok=1 err=0 pid=0 tid=4263507920
-  hProcess=(nil) hThread=(nil)` — **mismo síntoma que en
-  `opus_word1_ui_test`**, con un programa que no comparte una sola
-  línea de código con él.
+- **Target `notepad.exe`** (Wine builtin, `C:\windows\system32\notepad.exe`):
+  `ok=1 err=0 pid=292 tid=296 hProcess=0x40 hThread=0x44`, **works
+  perfectly**, real PID and handles.
+- **Same program, target `WORD1.exe`** (this project's `.exe`/`.exe.so`,
+  without touching the harness at all): `ok=1 err=0 pid=0 tid=4263507920
+  hProcess=(nil) hThread=(nil)`, **same symptom as in
+  `opus_word1_ui_test`**, with a program that does not share a single
+  line of code with it.
 
-**Conclusión:** el bug no está en `opus_word1_ui_test.cpp` ni en cómo
-está compilado (`wmain`, `-mconsole -municode` quedan descartados como
-variable — el programa mínimo no los usa y falla igual). Es específico
-de **crear un proceso para el `.exe`/`.exe.so` de este proyecto desde
-dentro de otro proceso Wine ya corriendo**, contra `notepad.exe`
-(builtin de Wine) que funciona sin problema en la misma llamada, mismo
-entorno, mismo momento. La diferencia más plausible entre ambos
-objetivos: `notepad.exe` es un ejecutable *builtin* de Wine (con su
-propio camino de carga interno, probablemente sin pasar por
-fork+exec de un `.so` externo), mientras que `WORD1.exe.so` es un ELF
-nativo externo construido por este proyecto — la ruta de
-`CreateProcessW` para ese segundo caso (spawnear un `.exe.so` de
-terceros como subproceso) parece no relayar `dwProcessId`/`hProcess`
-de vuelta al llamador correctamente en `wine` 10.0~repack-6 de este
-contenedor, aunque el hijo real sí se crea y sí llega a mostrar su
-ventana (confirmado en §24 con `xwininfo` durante la corrida).
+**Conclusion:** the bug is not in `opus_word1_ui_test.cpp` or in how it
+is compiled (`wmain`, `-mconsole -municode` are ruled out as the
+variable, the minimal program does not use them and fails the same
+way). It is specific to **creating a process for this project's
+`.exe`/`.exe.so` from inside an already-running Wine process**, against
+`notepad.exe` (a Wine builtin) which works fine in the same call, same
+environment, same moment. The most plausible difference between the
+two targets: `notepad.exe` is a Wine *builtin* executable (with its own
+internal load path, likely without going through fork+exec of an
+external `.so`), while `WORD1.exe.so` is a native ELF built externally
+by this project, the `CreateProcessW` path for that second case
+(spawning a third-party `.exe.so` as a subprocess) appears not to relay
+`dwProcessId`/`hProcess` back to the caller correctly in
+`wine` 10.0~repack-6 of this container, even though the real child does
+get created and does get to show its window (confirmed in §24 with
+`xwininfo` during the run).
 
-**Esto ya no es un bug de aplicación corregible sin rodeos** — a
-diferencia de §23/§24 (glibc de 4 bytes vs `WCHAR` de 2, con un fix de
-una línea cada uno), acá no hay ningún flag ni patrón de uso de
-`CreateProcessW` que se haya probado y evite el problema; parece un
-límite/comportamiento real de esta versión de Wine para este tipo
-específico de creación de proceso anidado. **Camino pragmático, no
-intentado esta sesión:** dejar de depender de `dwProcessId`/`hProcess`
-devueltos por `CreateProcessW` para localizar la ventana de `WORD1` —
-`find_window_callback` ya filtra por título (`"Microsoft Word -
-Document1"`, razonablemente específico) vía `wide_contains`; quitar o
-relajar el filtro por `process_id` haría que el emparejamiento sea por
-título solo, lo cual ya sabemos que encuentra la ventana correcta (§21,
-§24). Contrapartida real, no cosmética: sin el filtro por PID, una
-ventana residual de una corrida anterior (crasheada o no limpiada)
-con el mismo título podría dar un falso positivo — señalado para
-decidir explícitamente, no aplicado unilateralmente.
+**This is no longer a straightforwardly fixable application bug**,
+unlike §23/§24 (glibc's 4 bytes vs a 2-byte `WCHAR`, a one-line fix
+each), here no flag or `CreateProcessW` usage pattern was found and
+tried that avoids the problem; it looks like a real limitation/behavior
+of this Wine version for this specific kind of nested process creation.
+**Pragmatic path, not attempted this session:** stop depending on
+`dwProcessId`/`hProcess` returned by `CreateProcessW` to locate
+`WORD1`'s window, `find_window_callback` already filters by title
+(`"Microsoft Word -
+Document1"`, reasonably specific) via `wide_contains`; removing or
+relaxing the `process_id` filter would make the match title-only,
+which we already know finds the right window (§21, §24). A real, not
+cosmetic, trade-off: without the PID filter, a leftover window from a
+previous run (crashed or not cleaned up) with the same title could give
+a false positive, flagged for an explicit decision, not applied
+unilaterally.
 
-**Limpieza:** los dos `.c`/`.exe`/`.exe.so` del programa mínimo
-(`minimal_cp_test*`) se escribieron temporalmente en la raíz del repo
-para compilarlos con `winegcc` desde ahí (necesitan estar dentro del
-árbol para que las rutas relativas del `WINEPREFIX` resuelvan
-igual que el resto de esta investigación) y se borraron al cerrar —
-nunca llegaron a `git add`. Instrumentación de `opus_word1_ui_test.cpp`
-(valores canario, prints de `GetLastError()`/tamaños de struct, el
-experimento de `lpApplicationName=nullptr`) revertida; build
-restaurado a los dos fixes reales de §23-24, diff confirmado limpio.
+**Cleanup:** the minimal program's two `.c`/`.exe`/`.exe.so` files
+(`minimal_cp_test*`) were written temporarily at the repo root to
+compile them with `winegcc` from there (they need to be inside the tree
+for the `WINEPREFIX`'s relative paths to resolve the same way as the
+rest of this investigation) and deleted on close, never `git add`ed.
+`opus_word1_ui_test.cpp`'s instrumentation (canary values,
+`GetLastError()`/struct-size prints, the `lpApplicationName=nullptr`
+experiment) reverted; build restored to the two real fixes from
+§23-24, diff confirmed clean.
 
-**No perseguido esta sesión:** implementar el workaround de
-emparejar solo por título (decisión de diseño, no técnica, pendiente
-de acordar); confirmar si el mismo programa mínimo falla igual en el
-VPS o en wine-staging del host (aislaría si es específico de `wine`
-10.0~repack-6 vanilla o más general); revisar
-`dlls/kernelbase/process.c` de Wine (o el mirror de GitHub, mismo
-patrón que §19/§20) para la ruta exacta que toma al crear un proceso
-para un ELF externo en vez de un módulo builtin.
+**Not pursued this session:** implementing the title-only matching
+workaround (a design decision, not a technical one, pending
+agreement); confirming whether the same minimal program fails the same
+way on the VPS or on the host's wine-staging (would isolate whether it
+is specific to vanilla `wine` 10.0~repack-6 or more general); reviewing
+Wine's `dlls/kernelbase/process.c` (or the GitHub mirror, same pattern
+as §19/§20) for the exact path taken when creating a process for an
+external ELF instead of a builtin module.
 
-### 26. Workaround de emparejamiento por título aplicado — desbloquea 8/9 tests hasta lógica real de interacción; el 9no (typing) revela otro sitio de `std::wstring`
+### 26. Title-matching workaround applied, unblocks 8/9 tests up to real interaction logic; the 9th (typing) reveals another `std::wstring` site
 
-Aplica el workaround que §25 dejó anotado sin implementar: en
-`find_window_callback`, el filtro por `process_id` ahora se saltea
-cuando `search.process_id == 0` (el caso conocido y roto de §24-25) —
-se mantiene sin cambios, más preciso, cuando el PID sí llega válido.
-Cuatro líneas, con comentario explicando el porqué y apuntando a
-§24-25.
+Applies the workaround §25 left noted but unimplemented: in
+`find_window_callback`, the `process_id` filter is now skipped when
+`search.process_id == 0` (the known, broken case from §24-25), it stays
+unchanged, more precise, when the PID does arrive valid. Four lines,
+with a comment explaining why and pointing to §24-25.
 
-**Verificado con la suite completa (`ctest -L word1_startup_blocked`,
-reconstruido `opus_word1_ui_test` desde el fix, mismo entorno que
-§22).** Sigue siendo 0/9 — pero el contraste con §22 es total: antes,
-7/9 fallaban instantáneo con `"unknown test mode"` y 2/9 con
-`"WORD1 main window did not appear"` (ni siquiera llegaban a intentar
-nada). Ahora:
+**Verified with the full suite (`ctest -L word1_startup_blocked`,
+`opus_word1_ui_test` rebuilt from the fix, same environment as §22).**
+Still 0/9, but the contrast with §22 is total: before, 7/9 failed
+instantly with `"unknown test mode"` and 2/9 with
+`"WORD1 main window did not appear"` (not even attempting
+anything). Now:
 
-| Test | Antes (§22) | Ahora (§26) |
+| Test | Before (§22) | Now (§26) |
 |---|---|---|
-| `word1_port_smoke_test` | Timeout 90s (sin cambio, no relacionado — sigue sin condición de éxito para reposo sano) | Timeout 90s |
-| `opus_word1_ui_test` (base) | Timeout 20s, ventana no encontrada | Timeout 20s, `"File New dialog did not appear"` |
+| `word1_port_smoke_test` | Timeout 90s (unchanged, unrelated, still no success condition for a healthy rest state) | Timeout 90s |
+| `opus_word1_ui_test` (base) | Timeout 20s, window not found | Timeout 20s, `"File New dialog did not appear"` |
 | `--clipboard` | `"unknown test mode"` (0.09s) | Timeout 20s, `"Ctrl+A did not execute Select All"` |
 | `--typing` | `"unknown test mode"` (0.04s) | Timeout 20s, **`malloc(): invalid size (unsorted)` + stack overflow** |
 | `--interaction` | `"unknown test mode"` (0.04s) | Timeout 25s, `"could not prepare the native window move test"` |
 | `--selection` | `"unknown test mode"` (0.04s) | Timeout 20s, `"typing did not leave a canonical insertion selection"` |
 | `--font-typing` | `"unknown test mode"` (0.04s) | Timeout 20s, `"font typing test could not find the ribbon controls"` |
-| `--about` | `"unknown test mode"` (0.04s) | Timeout 20s, `"Help About dialog did not appear"` (+ diagnóstico: `mainWindow=1 responsive=1 stage=0`) |
+| `--about` | `"unknown test mode"` (0.04s) | Timeout 20s, `"Help About dialog did not appear"` (+ extra diagnostics: `mainWindow=1 responsive=1 stage=0`) |
 | `--save-as` | `"unknown test mode"` (0.04s) | Timeout 20s, `"File Save As dialog did not appear"` (+ `Save As stage=0`) |
 
-**8 de 9 ahora llegan a la lógica de interacción real del test** —
-mensajes de fallo específicos y con sentido, propios de cada
-verificación (no genéricos ni de parseo). Esto es, por primera vez en
-esta serie de sesiones, el arnés de test funcionando como fue
-diseñado: cada fallo que queda es una pregunta real sobre el
-comportamiento de `WORD1` bajo Debian 13 (¿el Ctrl+A no selecciona
-todo?, ¿el diálogo de Guardar Como no aparece?, etc.), no un problema
-del arnés en sí. Ninguno de los 9 pasa todavía, pero el tipo de
-trabajo que falta cambió por completo: de "arreglar el test harness"
-a "auditar comportamiento real de `WORD1`".
+**8 of 9 now reach the test's real interaction logic**, specific,
+meaningful failure messages, each from its own actual check (not
+generic, not parsing-related). This is, for the first time in this
+series of sessions, the test harness working as designed: every
+remaining failure is a real question about `WORD1`'s behavior on
+Debian 13 (does Ctrl+A not select all?, does the Save As dialog not
+appear?, etc.), not a harness problem in itself. None of the 9 passes
+yet, but the kind of work remaining changed entirely, from "fix the
+test harness" to "audit `WORD1`'s real behavior".
 
-**El caso `--typing` (test 13) es la excepción — sigue crasheando,
-misma firma que §24** (`malloc(): invalid size (unsorted)` +
-`virtual_setup_exception stack overflow`, dirección/rango de stack
-prácticamente idénticos). No es el mismo bug que §24 (ese ya está
-corregido y verificado ahí) — es, casi con certeza, uno de los "6+
-sitios más de `std::wstring`/`std::wcerr`" que §23-24 dejaron
-señalados como sospechosos sin auditar, específicamente el candidato
-de la línea ~1430 (`const std::wstring sentence = L"physical keyboard
-input line one";`, dentro del código que solo se ejecuta en modo
-`--typing`) — coincide con que sea justo *este* test, y ningún otro,
-el que lo dispare: es el único camino de código que llega a
-construir ese `std::wstring` en particular.
+**The `--typing` case (test 13) is the exception, it still crashes,
+the same signature as §24** (`malloc(): invalid size (unsorted)` +
+`virtual_setup_exception stack overflow`, practically identical
+address/stack range). It is not the same bug as §24 (that one is
+already fixed and verified there), it is, almost certainly, one of the
+"6+ more `std::wstring`/`std::wcerr` sites" that §23-24 left flagged as
+suspicious without auditing, specifically the candidate at line ~1430
+(`const std::wstring sentence = L"physical keyboard
+input line one";`, inside code that only runs in `--typing` mode),
+matching that it is exactly *this* test, and no other, that triggers
+it: it is the only code path that ever constructs that particular
+`std::wstring`.
 
-**Consecuencia práctica para la próxima sesión, en orden de
-apalancamiento:**
-1. Auditar el sitio de `std::wstring` en la ruta de `--typing`
-   (línea ~1430 y `send_physical_text`) con el mismo patrón de fix de
-   §24 (buffer manual + `lstrcpyW`/`lstrcatW`, o construir el
-   `std::wstring` letra por letra con `+=` sobre literales cortos si
-   el uso real no necesita concatenación — no confirmado cuál aplica
-   sin leer el código con más detalle).
-2. Los 6 sitios restantes de `std::wstring`/`std::wcerr` (no
-   necesariamente en la ruta de ningún test todavía, pero cualquier
-   modo nuevo que los ejercite reproducirá el mismo crash).
-3. Los 7 mensajes de fallo "reales" de la tabla de arriba —cada uno
-   es ahora una investigación de comportamiento de `WORD1` en sí, no
-   del arnés; empezar por `--about` y `--save-as`, que ya traen
-   diagnóstico extra (`stage=`, `responsive=`) útil para acotar sin
-   instrumentar de nuevo.
+**Practical consequence for the next session, in order of leverage:**
+1. Audit the `std::wstring` site in the `--typing` path
+   (line ~1430 and `send_physical_text`) with the same fix pattern as
+   §24 (a manual buffer + `lstrcpyW`/`lstrcatW`, or building the
+   `std::wstring` letter by letter with `+=` on short literals if the
+   real usage does not need concatenation, not confirmed which applies
+   without reading the code in more detail).
+2. The remaining 6 `std::wstring`/`std::wcerr` sites (not necessarily
+   in the path of any test yet, but any new mode that exercises them
+   will reproduce the same crash).
+3. The 7 "real" failure messages in the table above, each is now an
+   investigation into `WORD1`'s own behavior, not the harness; start
+   with `--about` and `--save-as`, which already come with extra
+   diagnostics (`stage=`, `responsive=`) useful for narrowing without
+   instrumenting again.
 
-**No perseguido esta sesión:** auditar o corregir el sitio de
-`std::wstring` de `--typing`; investigar cualquiera de los 7 fallos
-de comportamiento real; confirmar si la contrapartida de diseño
-señalada en §25 (falso positivo por ventana residual de una corrida
-anterior) llegó a manifestarse en algún punto de esta corrida — no
-observado, pero tampoco se buscó activamente.
+**Not pursued this session:** auditing or fixing the `--typing`
+`std::wstring` site; investigating any of the 7 real behavior failures;
+confirming whether the design trade-off flagged in §25 (a false
+positive from a leftover window from a previous run) ever manifested at
+any point in this run, not observed, but not actively looked for
+either.
 
-### 27. El `std::wstring` de `--typing` — no era la línea ~1445 sospechada en §26, era el loop acumulador de §1864; corregido y verificado
+### 27. The `--typing` `std::wstring`, it was not the line ~1445 suspected in §26, it was the accumulator loop from §1864; fixed and verified
 
-Retoma el pendiente #1 de §26. El candidato que §26 señaló (`const
-std::wstring sentence = L"physical keyboard input line one";`, línea
-~1445) resultó ser una asignación simple desde un literal — no está
-en la ruta de `typing_mode` en absoluto (pertenece a otro modo). El
-sitio real, tras leer el cuerpo completo de `if (typing_mode)`:
+Resumes pending item #1 from §26. The candidate §26 flagged (`const
+std::wstring sentence = L"physical keyboard input line one";`, line
+~1445) turned out to be a simple literal assignment, not on the
+`typing_mode` path at all (it belongs to another mode). The real site,
+after reading the full body of `if (typing_mode)`:
 
 ```cpp
 std::wstring text;
@@ -3078,167 +3093,168 @@ for (int line = 0; line != 40; ++line) {
 }
 ```
 
-Un `std::wstring` que crece con `operator+=` en 160 pasos (40
-iteraciones × 4 mutaciones cada una), cada uno posiblemente
-disparando una reasignación interna cuyo tamaño se calcula con la
-misma maquinaria de `char_traits<wchar_t>` de glibc (4 bytes) que
-§23-24 ya encontraron rota contra el `wchar_t` real de 2 bytes de
-esta TU — `std::to_wstring` también pasa por esa maquinaria. Con 160
-oportunidades de corrupción en vez de una sola construcción, encaja
-con que este haya sido, de los sitios sin auditar, el más propenso a
-manifestarse primero.
+A `std::wstring` growing via `operator+=` over 160 steps (40
+iterations × 4 mutations each), each possibly triggering an internal
+reallocation whose size is computed with the same
+`char_traits<wchar_t>` glibc machinery (4 bytes) that §23-24 already
+found broken against this TU's real 2-byte `wchar_t`,
+`std::to_wstring` also goes through that machinery. With 160
+opportunities for corruption instead of a single construction, it fits
+that this would be, of the unaudited sites, the one most likely to
+manifest first.
 
-**Fix aplicado — mismo patrón que §24, sin `std::wstring` en
-absoluto:** reemplazado por un `wchar_t text[40 * 20 + 1]` fijo,
-llenado con `wsprintfW(line_text, L"original line %02d\r", line)`
-(Win32/`user32`, ya en el link) por cada línea y copiado a mano al
-buffer principal con un puntero cursor. El `%02d` de `wsprintfW`
-reproduce exactamente el padding manual que hacía el código
-original (cero a la izquierda solo si `line < 10`). El bucle
-siguiente, que ya recorría `text` tolerando `L'\0'`
-(`if (character != L'\0')`), no necesitó cambios — un `wchar_t[]`
-fijo con cola en cero encaja directamente con esa guarda existente.
+**Fix applied, same pattern as §24, no `std::wstring` at all:**
+replaced with a fixed `wchar_t text[40 * 20 + 1]`, filled with
+`wsprintfW(line_text, L"original line %02d\r", line)` (Win32/`user32`,
+already in the link) for each line and copied by hand into the main
+buffer with a cursor pointer. `wsprintfW`'s `%02d` reproduces exactly
+the manual padding the original code did (a leading zero only if
+`line < 10`). The following loop, which already walked `text`
+tolerating `L'\0'` (`if (character != L'\0')`), needed no changes, a
+fixed `wchar_t[]` with a zeroed tail fits directly with that existing
+guard.
 
-**Verificado 4/4 corridas de `--typing` (una sola, dos concurrentes,
-una sola de nuevo): ninguna crashea.** Antes: `malloc(): invalid
+**Verified 4/4 runs of `--typing` (one, two concurrent, one again):
+none crashes.** Before: `malloc(): invalid
 size (unsorted)` + `virtual_setup_exception stack overflow`
-consistente. Ahora: código de salida 13
-(`"active document pane has no focus"`) o 15 (`"could not post a
-character to the document"`) según la corrida — ambos fallos de
-aplicación reales y específicos, de la misma clase que los otros 7
-de §26, no crashes. La variación entre 13 y 15 no se investigó (bien
-podría ser una condición de carrera genuina del propio test contra
-el foco de la ventana, no relacionada con este fix).
+consistently. Now: exit code 13
+(`"active document pane has no focus"`) or 15 (`"could not post a
+character to the document"`) depending on the run, both real, specific
+application failures, of the same class as the other 7 from §26, not
+crashes. The variation between 13 and 15 was not investigated (it could
+well be a genuine race condition in the test itself against the
+window's focus, unrelated to this fix).
 
-**Con esto, los 9 tests de `word1_startup_blocked` llegan de forma
-consistente a lógica de interacción real** — ninguno crashea más por
-el patrón de wide-char de §23-24/§27. Quedan 6 sitios más de
-`std::wstring`/`std::wcerr` sin auditar en el archivo (líneas
-~1617/1627, `log_window_callback`, y los usos de `send_physical_text`
-con literales cortos vía conversión implícita), ninguno confirmado
-como problemático — podrían no llegar a ejercitarse en la práctica
-(literales cortos son menos propensos a necesitar reasignación) o
-podrían fallar igual si algún modo nuevo los ejercita con más carga.
+**With this, all 9 `word1_startup_blocked` tests consistently reach
+real interaction logic**, none crashes anymore from the wide-char
+pattern of §23-24/§27. 6 more `std::wstring`/`std::wcerr` sites remain
+unaudited in the file (lines ~1617/1627, `log_window_callback`, and
+`send_physical_text`'s uses with short literals via implicit
+conversion), none confirmed as problematic, they might never get
+exercised in practice (short literals are less likely to need
+reallocation) or they might fail the same way if some new mode
+exercises them under more load.
 
-**Build restaurado, diff limpio** — sin instrumentación temporal
-esta vez, el fix se escribió y verificó directo dado que el sitio
-ya estaba identificado con certeza razonable por lectura de código.
+**Build restored, clean diff**, no temporary instrumentation this
+time, the fix was written and verified directly since the site was
+already identified with reasonable certainty by reading the code.
 
-**No perseguido esta sesión:** auditar los 6 sitios restantes de
-`std::wstring`/`std::wcerr`; investigar la variación 13 vs. 15 entre
-corridas de `--typing`; retomar cualquiera de los 7 fallos de
-comportamiento real que §26 dejó como lista de trabajo pendiente.
+**Not pursued this session:** auditing the remaining 6
+`std::wstring`/`std::wcerr` sites; investigating the 13 vs. 15
+variation between `--typing` runs; resuming any of the 7 real behavior
+failures §26 left as a pending work list.
 
-### 28. Cuarto entorno independiente, máquina virgen — confirma build limpio y arranque real fuera de hp-15 y del contenedor del proyecto (2026-08-14)
+### 28. A fourth independent environment, a virgin machine, confirms a clean build and real startup outside hp-15 and the project's container (2026-08-14)
 
-Verificación solicitada explícitamente para probar el port en un
-Debian 13 distinto de los dos ya usados en esta serie: ni hp-15
-(EndeavourOS/Arch, §Sesión hp-15) ni "el contenedor Debian 13 del
-proyecto" (el que asentó el hallazgo de §README — que el crash de
-arranque no reproduce fuera de Arch). Esta sesión corre en una
-tercera máquina, una VM Debian 13 (trixie) / kernel 6.12.101 /
-GCC 14.2.0, **sin ninguna herramienta de build preinstalada** — ni
-siquiera `git` o `gcc` estaban presentes al empezar. Es, hasta ahora,
-la corrida más cercana a "clean room" de todas las registradas en
-esta serie.
+Verification explicitly requested to test the port on a Debian 13
+distinct from the two already used in this series: neither hp-15
+(EndeavourOS/Arch, hp-15 session) nor "the project's Debian 13
+container" (the one that established the README's finding, that the
+startup crash does not reproduce outside Arch). This session runs on a
+third machine, a Debian 13 (trixie) VM / kernel 6.12.101 /
+GCC 14.2.0, **with no build tooling preinstalled**, not even `git` or
+`gcc` were present at the start. This is, so far, the closest to
+"clean room" of all the runs recorded in this series.
 
-**Clon limpio, sin arrastrar nada de hp-15 ni de ningún checkout
-previo:** `gh repo clone jphonorato/msword` (origin `jphonorato/msword`,
-upstream `jmarshall23/msword` agregado automáticamente por `gh`).
+**Clean clone, carrying nothing over from hp-15 or any prior
+checkout:** `gh repo clone jphonorato/msword` (origin
+`jphonorato/msword`, upstream `jmarshall23/msword` added automatically
+by `gh`).
 
-**Toolchain instalado desde cero vía `apt`:** `git`, `build-essential`,
-`cmake` (3.31.6), `ninja-build`, `wine`/`wine64-tools` (paquete
-`wine-devel` que nombra el README **no existe en Debian** — el
-equivalente correcto es `wine64-tools`, que sí provee `winegcc`,
-`wineg++`, `wrc`, `winebuild`; vale la pena que el README lo refleje),
-`qt6-base-dev`. `wineboot --init` con `WINEARCH=win64` crea el prefijo
-con un error no fatal (`failed to open
-L"C:\windows\syswow64\rundll32.exe"`) por ausencia de `wine32`/soporte
-multiarch i386 en esta máquina — `system.reg` y `drive_c` se generan
-igual y no bloquea nada de lo que sigue.
+**Toolchain installed from scratch via `apt`:** `git`,
+`build-essential`, `cmake` (3.31.6), `ninja-build`, `wine`/`wine64-tools`
+(the `wine-devel` package the README names **does not exist on Debian**,
+the correct equivalent is `wine64-tools`, which does provide
+`winegcc`, `wineg++`, `wrc`, `winebuild`; worth having the README
+reflect this), `qt6-base-dev`. `wineboot --init` with `WINEARCH=win64`
+creates the prefix with a non-fatal error (`failed to open
+L"C:\windows\syswow64\rundll32.exe"`) due to the absence of
+`wine32`/i386 multiarch support on this machine, `system.reg` and
+`drive_c` are generated anyway and nothing that follows is blocked.
 
-**Contradice el "CI blocker" documentado en el README (`src/port/tools/host/`
-ausente en clon limpio):** `cmake --preset linux-winelib-debug` configuró
-sin errores a la primera, sin intervención manual. El `CMakeLists.txt`
-de `src/port/tools/host/` sí está trackeado en git — el `.gitignore`
-solo excluye el `build/` generado (`src/port/tools/host/build/`), no el
-directorio completo como el README da a entender. No se investigó por
-qué el blocker sí reproduce en CI (podría ser un problema del entorno
-de GitHub Actions específicamente, no de la fuente del repo) — queda
-como discrepancia sin resolver entre lo documentado y lo observado acá.
+**Contradicts the "CI blocker" documented in the README (`src/port/tools/host/`
+missing on a clean clone):** `cmake --preset linux-winelib-debug`
+configured with no errors on the first try, no manual intervention.
+`src/port/tools/host/`'s `CMakeLists.txt` is indeed tracked in git,
+`.gitignore` only excludes the generated `build/`
+(`src/port/tools/host/build/`), not the whole directory as the README
+implies. It was not investigated why the blocker does reproduce in CI
+(could be a problem specific to the GitHub Actions environment, not to
+the repo's source), it stands as an unresolved discrepancy between what
+is documented and what was observed here.
 
-**Build, ambos targets, 0 errores:**
+**Build, both targets, 0 errors:**
 
 ```
 cmake --build --preset linux-winelib-debug --target opus_original_engine
-# 337/337, solo warnings esperables de C K&R (PASCAL/NATIVE sin tipo,
-# macros redefinidas, punteros incompatibles)
+# 337/337, only expected K&R C warnings (untyped PASCAL/NATIVE,
+# redefined macros, incompatible pointers)
 
 cmake --build --preset linux-winelib-debug --target WORD1
-# 127/127, 0 errores
+# 127/127, 0 errors
 ```
 
-Artefactos: `bin/WORD1.exe` (697 B, wrapper de Winelib) +
-`bin/WORD1.exe.so` (14.6 MB, ELF 64-bit LSB, 7040 símbolos exportados
-vía `nm -D`).
+Artifacts: `bin/WORD1.exe` (697 B, Winelib wrapper) +
+`bin/WORD1.exe.so` (14.6 MB, ELF 64-bit LSB, 7040 exported symbols
+via `nm -D`).
 
-**Arranque real, verificado con `xwininfo` y captura de pantalla
-(`xwd` + ImageMagick), no solo por ausencia de crash:** `./WORD1.exe`
-abre "Microsoft Word - Document1" (1280×739) con chrome completo —
-barra de menú (File/Edit/View/Insert/Format/Utilities/Window/Help),
-toolbar con iconos, selectores de estilo ("Normal") y fuente
-("Arial", 10 pt), regla, cursor de texto parpadeante, barra de
-estado. Sin heap corruption, sin timeout, sin intervención — coincide
-con el hallazgo del README de que el blocker de arranque no reproduce
-en Debian 13, ahora confirmado en una tercera máquina Debian 13
-distinta de las dos ya usadas.
+**Real startup, verified with `xwininfo` and a screenshot
+(`xwd` + ImageMagick), not just by absence of a crash:** `./WORD1.exe`
+opens "Microsoft Word - Document1" (1280×739) with full chrome, the
+menu bar (File/Edit/View/Insert/Format/Utilities/Window/Help),
+toolbar with icons, style ("Normal") and font
+("Arial", 10 pt) selectors, ruler, blinking text cursor, status
+bar. No heap corruption, no timeout, no intervention, matches the
+README's finding that the startup blocker does not reproduce on
+Debian 13, now confirmed on a third, distinct Debian 13
+machine.
 
-**Con esto, el hallazgo "no reproduce en Debian 13" deja de depender
-de una sola máquina/contenedor** — se sostiene en un entorno
-provisionado desde cero, sin ningún estado previo del proyecto.
+**With this, the finding "does not reproduce on Debian 13" stops
+depending on a single machine/container**, it holds on an environment
+provisioned from scratch, with no prior project state.
 
-**No perseguido esta sesión:** por qué el CI blocker de
-`src/port/tools/host/` sí reproduce en GitHub Actions si el
-`CMakeLists.txt` está trackeado; instalar `wine32`/multiarch para
-resolver el warning de `wineboot`; correr `word1_startup_blocked` o
-cualquiera de los 9 tests de interacción en esta máquina; actualizar
-el nombre de paquete `wine-devel` → `wine64-tools` en el README de
-Requirements.
+**Not pursued this session:** why the `src/port/tools/host/` CI
+blocker does reproduce on GitHub Actions if `CMakeLists.txt` is
+tracked; installing `wine32`/multiarch to resolve the `wineboot`
+warning; running `word1_startup_blocked` or any of the 9 interaction
+tests on this machine; updating the `wine-devel` → `wine64-tools`
+package name in the README's Requirements.
 
-### 29. "word1_port_smoke_test" no colgaba por falta de condición de éxito — colgaba porque std::wcsstr nunca detectaba --self-test
+### 29. "word1_port_smoke_test" was not hanging for lack of a success condition, it was hanging because std::wcsstr never detected --self-test
 
-Misma clase de bug que §23-24/27, sin auditar en
-`src/port/original/opus_original_startup_probe.cpp`. El fast path de
-`--self-test` en `wWinMain` (aprox. líneas 431-432) usaba
-`std::wcsstr(command_line, L"--self-test")` y
-`std::wcsstr(GetCommandLineW(), L"--self-test")`. Bajo winegcc,
-`wchar_t` es WCHAR de 2 bytes (`-fshort-wchar`), pero `std::wcsstr` de
-glibc opera sobre `wchar_t` nativo de 4 bytes: la búsqueda no encuentra
-el flag aunque esté en la línea de comandos real, `wWinMain` cae al
-arranque GUI completo (`GetMessage`), y el test se queda ~90 s hasta el
-timeout por defecto de ctest (el test **no** tiene `TIMEOUT` property).
+Same bug class as §23-24/27, unaudited in
+`src/port/original/opus_original_startup_probe.cpp`. The `--self-test`
+fast path in `wWinMain` (around lines 431-432) used
+`std::wcsstr(command_line, L"--self-test")` and
+`std::wcsstr(GetCommandLineW(), L"--self-test")`. Under winegcc,
+`wchar_t` is a 2-byte WCHAR (`-fshort-wchar`), but glibc's `std::wcsstr`
+operates on a native 4-byte `wchar_t`: the search does not find the
+flag even though it is in the real command line, `wWinMain` falls
+through to the full GUI startup (`GetMessage`), and the test sits for
+~90s until ctest's default timeout (the test does **not** have a
+`TIMEOUT` property).
 
-**Repro directo (contenedor debian13, DISPLAY=:59, build en
+**Direct repro (debian13 container, DISPLAY=:59, build in
 `/home/pablo/build-debian13-verify`):**
 
 ```
-# Antes del fix
+# Before the fix
 timeout 15 /usr/lib/wine/wine64 ./WORD1.exe.so --self-test
-# EXIT=124 ELAPSED=15  (timeout mata el proceso)
-# /tmp/word1_self_test.txt ausente — la rama self-test nunca corrió
-# (aparece stub DwmSetWindowAttribute → arranque GUI real)
+# EXIT=124 ELAPSED=15  (timeout kills the process)
+# /tmp/word1_self_test.txt absent -- the self-test branch never ran
+# (a DwmSetWindowAttribute stub appears -> real GUI startup)
 
-# Después del fix (helper CommandLineHasFlag, bucle manual 2-byte)
+# After the fix (CommandLineHasFlag helper, manual 2-byte loop)
 timeout 15 /usr/lib/wine/wine64 ./WORD1.exe.so --self-test
 # EXIT=0 ELAPSED=0
 # /tmp/word1_self_test.txt:
 #   module=0x7f9c8ee80000 CmdHelp=0x7f9c8ef4007a CmdAbout=0x7f9c8ef4050a
 ```
 
-**Fix:** `CommandLineHasFlag()` local (mismo patrón que `wide_contains()`
-en `opus_word1_ui_test.cpp` §23) sustituye las dos llamadas a
-`std::wcsstr`. Este archivo es Linux/Winelib-only en la práctica del
-probe; no se tocó `src/Opus/`.
+**Fix:** a local `CommandLineHasFlag()` (same pattern as
+`wide_contains()` in `opus_word1_ui_test.cpp` §23) replaces the two
+`std::wcsstr` calls. This file is Linux/Winelib-only in practice for
+the probe; `src/Opus/` was not touched.
 
 **ctest (Step 5):**
 
@@ -3248,57 +3264,57 @@ ctest --test-dir /home/pablo/build-debian13-verify -R word1_port_smoke_test --ou
 # CTEST_EXIT=0
 ```
 
-Cierra el gap B del plan winelib-startup-blocked: el smoke deja de ser
-un timeout silencioso de ~90 s y pasa a ser un chequeo sub-segundo.
+Closes gap B of the winelib-startup-blocked plan: the smoke test stops
+being a silent ~90s timeout and becomes a sub-second check.
 
-### 30. Cierre del audit de std::wstring/std::wcerr en opus_word1_ui_test.cpp — 4 sitios más (9 vía send_physical_text) sin crashear en las 4/4 corridas
+### 30. Closing the std::wstring/std::wcerr audit in opus_word1_ui_test.cpp, 4 more sites (9 via send_physical_text) not crashing in 4/4 runs
 
-Cierra el gap A del plan winelib-startup-blocked (los sitios de
-`std::wstring`/`std::wcerr` que §23-24/§27 dejaron sin auditar en
-`src/port/original/opus_word1_ui_test.cpp`). Misma clase de bug que
-§23-24/§27/§29: `wchar_t` de 2 bytes bajo winegcc (`-fshort-wchar`)
-contra la maquinaria de glibc/`std::` pensada para `wchar_t` de 4
-bytes.
+Closes gap A of the winelib-startup-blocked plan (the
+`std::wstring`/`std::wcerr` sites §23-24/§27 left unaudited in
+`src/port/original/opus_word1_ui_test.cpp`). Same bug class as
+§23-24/§27/§29: a 2-byte `wchar_t` under winegcc (`-fshort-wchar`)
+against glibc/`std::` machinery built for a 4-byte `wchar_t`.
 
-**Grep previo (Step 1)** — hits vivos vs. comentarios:
+**Prior grep (Step 1), live hits vs. comments:**
 
-| Línea | Hit | Estado |
+| Line | Hit | Status |
 |---|---|---|
-| 129 | `std::wcerr << L"window class='" ...` en `log_window_callback` | vivo |
-| 514 | `bool send_physical_text(const std::wstring& text)` | vivo (9 call sites con literales `L"..."`) |
-| 671/675 | comentarios sobre el fix de §24 | comentario |
-| 1445 | `const std::wstring sentence = ...` en `selection_mode` | vivo |
-| 1617 | `const std::wstring physical_text = ...` en `interaction_mode` | vivo |
-| 1865/1870 | comentarios sobre el fix de §27 | comentario |
+| 129 | `std::wcerr << L"window class='" ...` in `log_window_callback` | live |
+| 514 | `bool send_physical_text(const std::wstring& text)` | live (9 call sites with `L"..."` literals) |
+| 671/675 | comments about the §24 fix | comment |
+| 1445 | `const std::wstring sentence = ...` in `selection_mode` | live |
+| 1617 | `const std::wstring physical_text = ...` in `interaction_mode` | live |
+| 1865/1870 | comments about the §27 fix | comment |
 
-**Sitios corregidos:**
+**Sites fixed:**
 
-1. **`send_physical_text`** — firma `const std::wstring&` → `const wchar_t*`;
-   bucle `for (character : text)` → índice acotado por `lstrlenW`.
-   Los 9 call sites con literales `L"..."` enlazan sin construir
-   `std::wstring` temporal.
-2. **`sentence` en `selection_mode`** — `const wchar_t* const` +
-   `lstrlenW` + bucle por índice (incluye el uso posterior
-   `sentence.size()` → `sentence_length`).
-3. **`physical_text` en `interaction_mode`** — `const wchar_t* const`;
-   el paso a `send_physical_text` y el cálculo de `expected_cp_after_typing`
-   (antes `physical_text.size()` + range-for contando `L'\r'`) pasan a
-   `lstrlenW` + bucle por índice.
-4. **`log_window_callback`** — `std::wcerr` con buffers `WCHAR` →
-   `WideCharToMultiByte(CP_ACP, ...)` a buffers `char[]` y
-   `std::cerr` (mismo patrón de diagnóstico estrecho del resto del
-   archivo).
+1. **`send_physical_text`**, signature changed from `const std::wstring&`
+   to `const wchar_t*`; `for (character : text)` loop replaced by an
+   index bounded by `lstrlenW`. The 9 call sites with `L"..."` literals
+   link without constructing a temporary `std::wstring`.
+2. **`sentence` in `selection_mode`**, changed to `const wchar_t* const` +
+   `lstrlenW` + an index-based loop (including the later use of
+   `sentence.size()`, now `sentence_length`).
+3. **`physical_text` in `interaction_mode`**, changed to
+   `const wchar_t* const`; the pass to `send_physical_text` and the
+   computation of `expected_cp_after_typing` (previously
+   `physical_text.size()` + a range-for counting `L'\r'`) switch to
+   `lstrlenW` + an index-based loop.
+4. **`log_window_callback`**, `std::wcerr` with `WCHAR` buffers changed
+   to `WideCharToMultiByte(CP_ACP, ...)` into `char[]` buffers and
+   `std::cerr` (the same narrow-diagnostic pattern as the rest of the
+   file).
 
-Grep post-fix: solo quedan menciones en comentarios deliberados
-(§24/§27 y la nota del callback).
+Post-fix grep: only mentions left are in deliberate comments (§24/§27
+and the callback's note).
 
-**Nota sobre el brief:** el plan decía que `physical_text` solo se
-pasaba a `send_physical_text`. En el código real también se usaba
-`.size()` y un range-for para contar `L'\r'` al calcular el CP
-esperado; esos usos se migraron al mismo patrón de puntero +
-`lstrlenW` (sin reintroducir `std::wstring`).
+**Note on the brief:** the plan said `physical_text` was only passed to
+`send_physical_text`. In the real code it was also used with `.size()`
+and a range-for to count `L'\r'` when computing the expected CP; those
+uses were migrated to the same pointer + `lstrlenW` pattern (without
+reintroducing `std::wstring`).
 
-**ctest (Step 6, contenedor debian13, DISPLAY=:59, build en
+**ctest (Step 6, debian13 container, DISPLAY=:59, build at
 `/home/pablo/build-debian13-verify`):**
 
 ```
@@ -3324,53 +3340,52 @@ File Save As dialog did not appear
 # Label Time Summary: word1_startup_blocked = 165.21 sec*proc (9 tests)
 ```
 
-Coincide con la tabla de §26/§27 (mensajes de comportamiento real;
-typing sigue en la familia 13/15 de §27: esta corrida `"could not
-post a character to the document"`). **Ningún crash** de la clase
-`malloc(): invalid size` / stack overflow. El smoke pasa (Task 1 /
-§29). Este task **no** corrige ninguno de los 8 fallos de
-comportamiento — solo quita el riesgo residual de wide-char en el
-arnés para que Tasks 3-10 puedan fiarse de los mensajes de fallo.
+Matches the table from §26/§27 (real behavior messages; typing is
+still in the 13/15 family from §27: this run gives `"could not
+post a character to the document"`). **No crash** of the
+`malloc(): invalid size` / stack overflow class. The smoke test passes
+(Task 1 / §29). This task does **not** fix any of the 8 behavior
+failures, it only removes the residual wide-char risk in the harness so
+Tasks 3-10 can trust the failure messages.
 
-### 31. `opus_x64_runtime_test` (gating) -- no era un cuelgue de infraestructura, era una colisión de id con `kIddOpen` (2026-08-19)
+### 31. `opus_x64_runtime_test` (gating), it was not an infrastructure hang, it was an id collision with `kIddOpen` (2026-08-19)
 
-**Investigado a pedido explícito, en exia**, tras haber quedado
-documentado en 9 lugares distintos de este proyecto (§27 más abajo en
-este mismo archivo, y 5 secciones de
-`03-word1-startup-blocked-behavior.md`) como "gating, cuelga sin
-imprimir nada, pre-existente, sin relación con nada, sin investigar".
-Cada mención citaba la misma evidencia: `rc=124` bajo `timeout 40`,
-cero salida. Nadie lo había investigado más allá de reconstruir el
-binario.
+**Investigated at explicit request, on exia**, after having ended up
+documented in 9 different places in this project (§27 further below in
+this same file, and 5 sections of
+`03-word1-startup-blocked-behavior.md`) as "gating, hangs without
+printing anything, pre-existing, unrelated to anything, not
+investigated". Every mention cited the same evidence: `rc=124` under
+`timeout 40`, zero output. Nobody had investigated it beyond rebuilding
+the binary.
 
-**Primer hallazgo, y el mismo patrón de esta sesión entera:** el
-binario en `build/tests/Debug/opus_x64_runtime_test.exe.so` tenía
-fecha del 13 de agosto -- reconstruirlo con
-`cmake --build --target opus_x64_runtime_test` y correrlo **sin**
-`DISPLAY` da `exit=20` en 2.7s, no un cuelgue (`return 20;` en
-`opus_x64_runtime_test.cpp:282`, `CreateWindowExA` devuelve `nullptr`
-por `nodrv_CreateWindow`, sin driver de pantalla -- comportamiento
-correcto y esperado sin `DISPLAY`).
+**First finding, and this session's recurring pattern:** the binary at
+`build/tests/Debug/opus_x64_runtime_test.exe.so` was dated August 13,
+rebuilding it with
+`cmake --build --target opus_x64_runtime_test` and running it
+**without** `DISPLAY` gives `exit=20` in 2.7s, not a hang
+(`return 20;` in `opus_x64_runtime_test.cpp:282`, `CreateWindowExA`
+returns `nullptr` because of `nodrv_CreateWindow`, no display driver,
+correct, expected behavior without `DISPLAY`).
 
-**El cuelgue real solo aparece con `DISPLAY` real** (`Xvfb :77` propio,
-aislado, con `openbox` -- no el `:99` compartido). Con eso,
-`CreateWindowExA` sí tiene éxito y la ejecución avanza más allá de
-`return 20`, hasta bloquearse de verdad (`rc=124`). **Esto es
-exactamente el entorno que usa CI** (`.github/workflows/build.yml:47-53`
-levanta `Xvfb :99` antes de todo `ctest`) -- el cuelgue reportado en
-9 sitios de este proyecto era real ahí, no un artefacto de máquina de
-desarrollo.
+**The real hang only shows up with a real `DISPLAY`** (its own,
+isolated `Xvfb :77` with `openbox`, not the shared `:99`). With that,
+`CreateWindowExA` does succeed and execution moves past
+`return 20`, up to a real block (`rc=124`). **This is exactly the
+environment CI uses** (`.github/workflows/build.yml:47-53` starts
+`Xvfb :99` before every `ctest`), the hang reported in 9 places in this
+project was real there, not a development-machine artifact.
 
-**`gdb -p <pid> --batch -ex "thread apply all bt"`** (mismo patrón que
-§21/§25 de este archivo) confirma el hilo único parado en
-`NtUserGetMessage` -- el mismo reposo normal de `GetMessage()` que
-`CLAUDE.md` y este archivo ya documentan extensamente para WORD1
-mismo. No es un crash ni corrupción: algo está esperando un mensaje
-que nunca llega.
+**`gdb -p <pid> --batch -ex "thread apply all bt"`** (same pattern as
+§21/§25 of this document) confirms the single thread parked in
+`NtUserGetMessage`, the same normal `GetMessage()` rest state
+`CLAUDE.md` and this document already document extensively for WORD1
+itself. It is not a crash or corruption: something is waiting for a
+message that never arrives.
 
-**Causa raíz, en el código, no solo el síntoma:** dos plantillas de
-diálogo sintéticas en `opus_x64_runtime_test.cpp` reusan valores de
-`hid` que colisionan con las constantes reales de
+**Root cause, in the code, not just the symptom:** two synthetic
+dialog templates in `opus_x64_runtime_test.cpp` reuse `hid` values
+that collide with real constants from
 `opus_sdm_runtime.cpp`:
 
 ```c
@@ -3379,10 +3394,10 @@ constexpr Word kIddOpen = 3;
 constexpr Word kIddSaveAs = 4;
 ```
 
-La primera plantilla (`modal_template`, probada con
-`ModalRuntimeProbe`) usaba `hid=3` -- exactamente `kIddOpen`.
-`TmcDoDlgDli` (`opus_sdm_runtime.cpp:2565`) tiene un caso especial que
-se evalúa **antes** que su propio loop de mensajes nativo:
+The first template (`modal_template`, tested by
+`ModalRuntimeProbe`) used `hid=3`, exactly `kIddOpen`.
+`TmcDoDlgDli` (`opus_sdm_runtime.cpp:2565`) has a special case that is
+evaluated **before** its own native message loop:
 
 ```cpp
 if (dialog->modal &&
@@ -3391,64 +3406,62 @@ if (dialog->modal &&
     ...
 ```
 
-Con `hid==kIddOpen`, cualquier llamada a `TmcDoDlgDli` -- sin importar
-que el llamador solo quisiera *un* hid real cualquiera para activar
-`native_modal=true` vía `create_dialog_host`/`materialize_open_template`,
-no específicamente el diálogo de abrir archivo -- se desvía derecho a
-`run_word95_common_file_dialog`, que bloquea el hilo dentro de
-`GetOpenFileNameA`, el diálogo de archivo **real** de Win32/Wine. Nada
-en este arnés headless mueve ese diálogo (ningún clic en Cancelar, ningún
-Escape) -- se queda esperando input real para siempre. Este caso especial
-(§26 de `03-word1-startup-blocked-behavior.md` documenta cuándo se
-integró `run_word95_common_file_dialog`) es **más nuevo** que este test:
-`hid=3` funcionaba cuando se escribió el test, antes de que
-`kIddOpen`/`kIddSaveAs` tuvieran este atajo -- una regresión real, silenciosa,
-de una tarea que nunca tocó este archivo ni sabía que este test existía.
+With `hid==kIddOpen`, any call to `TmcDoDlgDli`, regardless of the
+caller only wanting *any* real hid to activate `native_modal=true` via
+`create_dialog_host`/`materialize_open_template`, not specifically the
+open-file dialog, gets redirected straight to
+`run_word95_common_file_dialog`, which blocks the thread inside
+`GetOpenFileNameA`, the **real** Win32/Wine file dialog. Nothing in
+this headless harness moves that dialog (no Cancel click, no Escape),
+it sits waiting for real input forever. This special case (§26 of
+`03-word1-startup-blocked-behavior.md` documents when
+`run_word95_common_file_dialog` was integrated) is **newer** than this
+test: `hid=3` worked when the test was written, before
+`kIddOpen`/`kIddSaveAs` had this shortcut, a real, silent regression
+from a task that never touched this file nor knew this test existed.
 
-La segunda plantilla (`new_modal_template`, probada con
-`NewModalRuntimeProbe`) usa `hid=2` (`kIddNewDoc`) -- **no** es una
-colisión, es intencional: el propio probe verifica
-(`new_modal_controls_present`) que los controles reales de
-`materialize_new_template` (`0x0402`-`0x0405`) existen bajo ese hid,
-así que necesita la plantilla real de New Doc aplicada. `kIddNewDoc`
-no tiene el atajo de `run_word95_common_file_dialog` (solo
-`kIddOpen`/`kIddSaveAs` lo tienen), así que nunca tuvo este problema.
+The second template (`new_modal_template`, tested by
+`NewModalRuntimeProbe`) uses `hid=2` (`kIddNewDoc`), **not** a
+collision, it is intentional: the probe itself verifies
+(`new_modal_controls_present`) that `materialize_new_template`'s real
+controls (`0x0402`-`0x0405`) exist under that hid, so it needs the real
+New Doc template applied. `kIddNewDoc` does not have the
+`run_word95_common_file_dialog` shortcut (only
+`kIddOpen`/`kIddSaveAs` do), so it never had this problem.
 
-**Fix:** `modal_template` cambia su `hid` de `3` (`kIddOpen`) a `44`
-(`kIddAbout`) -- cualquiera de los otros 5 hid reales sin el atajo de
-archivo funcionaba, ya que `ModalRuntimeProbe` no verifica ningún
-control específico de diálogo (a diferencia de `new_modal_template`);
-se eligió About por ser el camino más verificado de toda esta sesión
-(Task 3 del plan de winelib). `new_modal_template` queda sin cambios.
+**Fix:** `modal_template` changes its `hid` from `3` (`kIddOpen`) to
+`44` (`kIddAbout`), any of the other 5 real hids without the file
+shortcut would have worked, since `ModalRuntimeProbe` does not check
+for any specific dialog control (unlike `new_modal_template`); About
+was chosen as the most verified path of this whole session (Task 3 of
+the winelib plan). `new_modal_template` stays unchanged.
 
-**Verificado:**
+**Verified:**
 ```
 DISPLAY=:77 wine opus_x64_runtime_test.exe.so
-    exit=0   (antes: rc=124, cuelgue de 15s+ confirmado, cero salida)
+    exit=0   (before: rc=124, a 15s+ hang confirmed, zero output)
 
-DISPLAY=:99 ctest --output-on-failure   (todo el CTestTestfile, no solo la etiqueta)
-    18/18... no, 16/18 -- los 2 fallos son los ya documentados y
-    esperados de --interaction y --font-typing (§12/§8 de
-    03-comportamiento). Los 9 tests gating, incluido
-    opus_x64_runtime_test, TODOS pasan por primera vez en este
-    proyecto.
+DISPLAY=:99 ctest --output-on-failure   (the whole CTestTestfile, not just the label)
+    18/18... no, 16/18 -- the 2 failures are the already-documented and
+    expected ones from --interaction and --font-typing (§12/§8 of
+    03-comportamiento). All 9 gating tests, including
+    opus_x64_runtime_test, pass for the first time in this project.
 ```
 
-Archivo: `src/port/original/opus_x64_runtime_test.cpp` únicamente --
-ningún cambio en `opus_sdm_runtime.cpp` ni en `Opus/`. El caso especial
-de `kIddOpen`/`kIddSaveAs` en `TmcDoDlgDli` se queda como está: es
-código de producción correcto (el port SÍ necesita que Open/Save As
-usen el diálogo real de Win32), el bug era enteramente del test
-reusando un id que un cambio posterior, no relacionado, volvió
-significativo.
+File: `src/port/original/opus_x64_runtime_test.cpp` only, no change in
+`opus_sdm_runtime.cpp` or in `Opus/`. The `kIddOpen`/`kIddSaveAs`
+special case in `TmcDoDlgDli` stays as is: it is correct production
+code (the port DOES need Open/Save As to use the real Win32 dialog),
+the bug was entirely in the test reusing an id that a later, unrelated
+change made significant.
 
-**Lección para releer antes de asumir "sin relación, pre-existente"
-en este proyecto:** dos veces en esta misma sesión (aquí, y antes con
-`opus_word1_ui_test.exe.so` en `docs/port-linux/03-comportamiento-
-word1-startup-blocked.md` §5) un "cuelgue pre-existente confirmado"
-resultó ser un binario de días atrás nunca reconstruido con
-`cmake --build --target <ese target específico>` -- `cmake --build
---target WORD1` (o cualquier otro target) no reconstruye targets de
-test hermanos.
+**Lesson to re-read before assuming "unrelated, pre-existing" in this
+project:** twice in this same session (here, and earlier with
+`opus_word1_ui_test.exe.so` in `docs/port-linux/03-word1-startup-
+blocked-behavior.md` §5) a "confirmed pre-existing hang" turned out to
+be a binary from days earlier never rebuilt with
+`cmake --build --target <that specific target>`, `cmake --build
+--target WORD1` (or any other target) does not rebuild sibling test
+targets.
 
-Cierra el gap A del plan winelib-startup-blocked.
+Closes gap A of the winelib-startup-blocked plan.

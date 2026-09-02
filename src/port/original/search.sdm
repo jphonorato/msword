@@ -1,2 +1,15 @@
 #pragma once
-static DLG_CONST DLT dltSearch = { 0 };
+
+/* Regenerated header from Opus/dlg/search.des.  The x64 SDM runtime consumes
+   the header and materializes the archived controls as native Win32 items.
+   Was a stub (dltSearch = { 0 }) until this port's opus_sdm_runtime.cpp
+   gained a materialize_search_template -- see kIddSearch there. */
+extern BOOL FDlgSearchRepl(DLM, TMC, WORD, WORD, WORD);
+/* static: this header is #included by both Opus/search.c and
+   Opus/srchfmt.c -- external linkage here duplicate-defines dltSearch
+   at link time (see search.c.o vs srchfmt.c.o). The stub this replaced
+   was static for the same reason. */
+static DLG_CONST DLT dltSearch = {
+    { 60, 120, 203, 63 }, IDDSearch, tmcSearch, FDlgSearchRepl,
+    12, bdrSysMenu, { 0 }
+};

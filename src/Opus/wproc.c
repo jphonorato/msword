@@ -1803,6 +1803,31 @@ LONG      lParam;
 				CachePara(selCur.doc, selCur.cpFirst);
 				return (LRESULT) vpapFetch.jc;
 				}
+			case 85:
+				{
+				/* vtmcFocus (search.c) is tmcSearchNil (-1) when no
+				   Search/Replace banter is active, and the tmc of
+				   whichever banter field currently has focus otherwise.
+				   Exposed so opus_word1_ui_test.cpp can poll for the
+				   dialog reaching a ready state instead of racing it. */
+				extern int vtmcFocus;
+				return (LRESULT) vtmcFocus;
+				}
+			case 86:
+				{
+				CachePara(selCur.doc, selCur.cpFirst);
+				return (LRESULT) vpapFetch.stc;
+				}
+			case 87:
+				{
+				extern int FInPrvwMode();
+				return (LRESULT) FInPrvwMode();
+				}
+			case 88:
+				{
+				extern int IpgdCurPrvw();
+				return (LRESULT) IpgdCurPrvw();
+				}
 			}
 		return (LRESULT) -1;
 #endif

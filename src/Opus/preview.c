@@ -348,6 +348,25 @@ EL ElPrintPrvw(fOn)
 }
 
 
+/* Exposed for opus_word1_ui_test.cpp's WM_OPUS_X64_QUERY_SELECTION probe
+   (wproc.c queries 87/88): 87 reports whether print preview mode is
+   active, 88 reports vpvs.ipgdPrvw, the 0-based index of the page
+   currently shown on the left while it is. */
+
+/* %%Function:FInPrvwMode %%Owner:opus-x64-port */
+int FInPrvwMode()
+{
+	return vlm == lmPreview;
+}
+
+
+/* %%Function:IpgdCurPrvw %%Owner:opus-x64-port */
+int IpgdCurPrvw()
+{
+	return vpvs.ipgdPrvw;
+}
+
+
 /*
 	PgPrvwWndProc handles all Windows message to the page preview
 	window and it's children (two scroll bars and a sizebox)

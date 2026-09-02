@@ -520,7 +520,16 @@ BOOL ChangeAll()
 		return fFalse;
 	StartLongOp();
 
+#ifdef OPUS_X64
+	/* HpprStartProgressReport's DisplayPrompt/UpdateWindow leaves
+	   *hppr as 0xffffffff on this port (AV writing nIncr). Search
+	   already uses SetPromptMst without a % field; keep that path
+	   here until the prompt-heap interaction is fixed. */
+	SetPromptMst(mstSearching, pdcCkReport);
+	hppr = hNil;
+#else
 	hppr = HpprStartProgressReport(mstReplacing, NULL, nIncrPercent, fTrue);
+#endif
 
 LRestartChangeAll:
 	cpSearchStartSav = cpSearchStart;

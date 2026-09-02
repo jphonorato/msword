@@ -1685,6 +1685,14 @@ add_test(NAME opus_word1_formatting_test
     COMMAND $<TARGET_FILE:opus_word1_ui_test> $<TARGET_FILE:WORD1> --rich-format
 )
 set_tests_properties(opus_word1_formatting_test PROPERTIES TIMEOUT 45 LABELS "word1_startup_blocked")
+add_test(NAME opus_word1_sdm_modals_test
+    COMMAND $<TARGET_FILE:opus_word1_ui_test> $<TARGET_FILE:WORD1> --sdm-modals
+)
+set_tests_properties(opus_word1_sdm_modals_test PROPERTIES TIMEOUT 45 LABELS "word1_startup_blocked")
+add_test(NAME opus_word1_print_preview_test
+    COMMAND $<TARGET_FILE:opus_word1_ui_test> $<TARGET_FILE:WORD1> --print-preview
+)
+set_tests_properties(opus_word1_print_preview_test PROPERTIES TIMEOUT 30 LABELS "word1_startup_blocked")
 
 # Binary validation of what the engine actually wrote to disk.
 #

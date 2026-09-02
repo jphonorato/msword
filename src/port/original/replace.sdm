@@ -1,2 +1,12 @@
 #pragma once
-static DLG_CONST DLT dltReplace = { 0 };
+
+/* Regenerated header from Opus/dlg/replace.des.  The x64 SDM runtime consumes
+   the header and materializes the archived controls as native Win32 items.
+   Was a stub (dltReplace = { 0 }) until this port's opus_sdm_runtime.cpp
+   gained a materialize_replace_template -- see kIddReplace there. */
+extern BOOL FDlgSearchRepl(DLM, TMC, WORD, WORD, WORD);
+/* static: dual-included like search.sdm -- see the comment there. */
+static DLG_CONST DLT dltReplace = {
+    { 8, 16, 205, 93 }, IDDReplace, tmcRSearch, FDlgSearchRepl,
+    14, bdrSysMenu, { 0 }
+};

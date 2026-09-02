@@ -1,2 +1,12 @@
 #pragma once
-static DLG_CONST DLT dltConfirmRepl = { 0 };
+
+/* Regenerated header from Opus/dlg/confirmr.des.  The x64 SDM runtime
+   consumes the header and materializes the archived controls as native
+   Win32 items. Was a stub (dltConfirmRepl = { 0 }) until this port's
+   opus_sdm_runtime.cpp gained a materialize_confirm_repl_template -- see
+   kIddConfirmRepl there. */
+extern BOOL FDlgConfirmRepl(DLM, TMC, WORD, WORD, WORD);
+static DLG_CONST DLT dltConfirmRepl = {
+    { 66, 31, 164, 40 }, IDDConfirmRepl, tmcNull, FDlgConfirmRepl,
+    5, bdrSysMenu, { 0 }
+};

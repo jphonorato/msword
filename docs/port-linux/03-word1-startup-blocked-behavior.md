@@ -1,82 +1,83 @@
-# Comportamiento de WORD1: lista de arranque bloqueado
+# WORD1 Behavior: Startup-Blocked List
 
-Fecha original: 2026-08-15 · Rama `fix/winelib-startup-blocked`. Esta
-serie parte de la tabla de §26 de
+Original date: 2026-08-15. Branch `fix/winelib-startup-blocked`. This
+series starts from the §26 table of
 [`01-heap-corruption-startup-diagnosis.md`](01-heap-corruption-startup-diagnosis.md)
-(los 7 fallos de comportamiento real que quedaron cuando el arnés dejó
-de crashear). Cada sección es un ítem de esa lista.
+(the 7 real behavior failures that remained once the harness stopped
+crashing). Each section is one item from that list.
 
-Todas las afirmaciones están respaldadas por comandos ejecutados en
-debian13 contra `/home/pablo/build-debian13-verify`, `DISPLAY=:59`.
+All claims are backed by commands run on
+debian13 against `/home/pablo/build-debian13-verify`, `DISPLAY=:59`.
 
 ---
 
 ## 1. `--about`: "Help About dialog did not appear"
 
-**Test:** `opus_word1_about_test` · `stage=0 responsive=1` (y, si se
-fuerza el cierre del MessageBox, `exit=0x0 mainWindow=0`).
+**Test:** `opus_word1_about_test`, `stage=0 responsive=1` (and, if the
+MessageBox close is forced, `exit=0x0 mainWindow=0`).
 
-**Estado:** causa raíz confirmada. El diálogo About **sí se materializa**
-cuando `WM_COMMAND` 182 llega a `CmdAbout`. El test no lo ve porque ese
-comando nunca se ejecuta: un MessageBox modal de arranque deja
-`vcInMessageBox=1` y `AppWndProc` descarta todo `WM_COMMAND`. Fix de
-producto diferido (3+ intentos de desbloqueo no dejaron el test en
-Passed; ver más abajo).
+**Status:** root cause confirmed. The About dialog **does materialize**
+when `WM_COMMAND` 182 reaches `CmdAbout`. The test doesn't see it
+because that command never runs: a modal startup MessageBox leaves
+`vcInMessageBox=1` and `AppWndProc` discards every `WM_COMMAND`.
+Product fix deferred (3+ unblocking attempts did not leave the test
+Passed; see below).
 
-### Qué significa `stage=0` / `responsive=1`
+### What `stage=0` / `responsive=1` means
 
-En `opus_word1_ui_test.cpp` (`about_mode`):
+In `opus_word1_ui_test.cpp` (`about_mode`):
 
-1. Espera la ventana principal `"Microsoft Word - Document1"`.
+1. Waits for the main window `"Microsoft Word - Document1"`.
 2. `Sleep(1000)`.
 3. `PostMessageW(main, WM_COMMAND, kHelpAbout=182, 0)`.
-4. Espera una top-level `OpusSdmDialog` 5 s.
-5. Si no aparece, imprime
+4. Waits for a top-level `OpusSdmDialog` for 5 s.
+5. If it doesn't appear, prints
    `exit=… mainWindow=… responsive=… stage=…`.
 
-- `responsive=1` es `window_is_responsive`: el proceso sigue vivo, la
-  ventana principal responde a `WM_NULL`.
-- `stage=` es `GetPropA(main, "OpusX64AboutStage")`. **Nadie en el
-  árbol pone esa propiedad.** `stage=0` solo dice “nunca se instrumentó
-  el comando”, no en qué línea falló SDM.
+- `responsive=1` is `window_is_responsive`: the process is still
+  alive, the main window responds to `WM_NULL`.
+- `stage=` is `GetPropA(main, "OpusX64AboutStage")`. **No one in the
+  tree sets that property.** `stage=0` only says "the command was
+  never instrumented," not which line SDM failed on.
 
-`182` es el `bcm` correcto (`opuscmd.h`: `bcmAbout = 182`).
+`182` is the correct `bcm` (`opuscmd.h`: `bcmAbout = 182`).
 
-### El diálogo no se crea (never-reached), no es invisible
+### The dialog is never created (never-reached), not invisible
 
-Instrumentación temporal en `NatAppWndProc` y
-`HdlgStartDlg`/`TmcDoDlgDli`/`IdDoMsgBox` (revertida; no quedó en el
-árbol):
+Temporary instrumentation in `NatAppWndProc` and
+`HdlgStartDlg`/`TmcDoDlgDli`/`IdDoMsgBox` (reverted; did not stay in
+the tree):
 
 ```
-create_dialog_host hid=32773 / 32774   ← ribbon / ruler (hijos, no About)
+create_dialog_host hid=32773 / 32774   (ribbon / ruler children, not About)
 IdDoMsgBox parent=(nil) flags=0x30
   caption='Microsoft Word'
   text='Low memory: cannot display requested font'
 NatAppWndProc WM_COMMAND LOWORD=2799 (ViewPage)  vcInMessageBox=1
 NatAppWndProc WM_COMMAND LOWORD=182  (HelpAbout) vcInMessageBox=1
   sy[182] mct=3 name=HelpAbout pfn≠0
-— no hay TmcDoDlgDli hid=44 —
+  (no TmcDoDlgDli hid=44)
 ```
 
-La tabla de comandos está bien (`mctSdm`, `CmdAbout` resuelto).
-`AppWndProc` (`wproc.c:854`) hace `if (vcInMessageBox) return 0`. El
-About **nunca llega** a `HdlgStartDlg` ni al bloque compartido
-`create_dialog_host` líneas 338-397.
+The command table is fine (`mctSdm`, `CmdAbout` resolved).
+`AppWndProc` (`wproc.c:854`) does `if (vcInMessageBox) return 0`.
+About **never reaches** `HdlgStartDlg` or the shared block
+`create_dialog_host` lines 338-397.
 
-El MessageBox es real: `xwininfo` muestra
-`"Microsoft Word" 295x82+364+356` junto a
-`"Microsoft Word - Document1"`. En el screenshot de Xvfb se ve un
-rectángulo negro (el `#32770` no pinta el texto en este Wine). El
-origen del texto es `eidCantRealizeFont` (`error.c:933-934`), disparado
-desde `ReportPendingAlerts` cuando `vmerr.mat == matFont`.
-`LOADFONT.C` pone `matFont` si `CreateFontIndirect` / `OurSelectObject`
-falla y cae a `SYSTEM_FONT`.
+The MessageBox is real: `xwininfo` shows
+`"Microsoft Word" 295x82+364+356` next to
+`"Microsoft Word - Document1"`. In the Xvfb screenshot a black
+rectangle is visible (the `#32770` doesn't paint the text in this
+Wine build). The text's origin is `eidCantRealizeFont`
+(`error.c:933-934`), triggered from `ReportPendingAlerts` when
+`vmerr.mat == matFont`. `LOADFONT.C` sets `matFont` if
+`CreateFontIndirect` / `OurSelectObject` fails and it falls back to
+`SYSTEM_FONT`.
 
-### El camino About funciona si el comando se ejecuta
+### The About path works if the command runs
 
-Con WORD1 lanzado a mano en `:59`, `xdotool` Return sobre el
-MessageBox y luego Alt+H, A:
+With WORD1 launched by hand on `:59`, `xdotool` Return on the
+MessageBox and then Alt+H, A:
 
 ```
 IdDoMsgBox returned 1
@@ -88,98 +89,101 @@ materialize_about_template hid=44
 TmcDoDlgDli branch hid=44 modal=1 native_modal=1
 ```
 
-`xwininfo`: `"About Microsoft Word" 410x230`. El host SDM, el
-`materialize_about_template` y el loop modal de `TmcDoDlgDli` están
-sanos. El fallo del test no está en las líneas 338-397.
+`xwininfo`: `"About Microsoft Word" 410x230`. The SDM host, the
+`materialize_about_template` call, and the `TmcDoDlgDli` modal loop
+are sound. The test's failure is not in lines 338-397.
 
-### Intentos de desbloqueo (ninguno dejó Passed)
+### Unblocking attempts (none left it Passed)
 
-| # | Cambio | Resultado |
+| # | Change | Result |
 |---|---|---|
-| 1 | `IdDoMsgBox` con owner `vhwndApp` | El `#32770` se puede encontrar; al cerrarlo WORD1 acaba en `exit=0` |
-| 2 | El test hace `PostMessage(IDOK)` / `WM_CLOSE` / `BM_CLICK` al `#32770` y luego About | Tras dismiss `mainWindow=1`; el About deja `exit=0x0 mainWindow=0` |
-| 3 | `IdDoMsgBox` devuelve `IDOK` al ver `"cannot display requested font"` (sin `MessageBoxA`) | WORD1 **sale solo a los ~3 s** (el loop modal del MB era el que mantenía vivo el arranque: bombea `ViewPage` y el resto del idle) |
-| 4 | Test envía `VK_RETURN` + `TmcDoDlgDli` drena `WM_QUIT` | Sigue `exit=0x0 mainWindow=0` |
+| 1 | `IdDoMsgBox` with owner `vhwndApp` | The `#32770` can be found; closing it makes WORD1 end with `exit=0` |
+| 2 | The test does `PostMessage(IDOK)` / `WM_CLOSE` / `BM_CLICK` to the `#32770` and then About | After dismiss `mainWindow=1`; About leaves `exit=0x0 mainWindow=0` |
+| 3 | `IdDoMsgBox` returns `IDOK` on seeing `"cannot display requested font"` (without `MessageBoxA`) | WORD1 **exits on its own after ~3 s** (the MB's modal loop was what kept startup alive: it pumps `ViewPage` and the rest of idle) |
+| 4 | Test sends `VK_RETURN` + `TmcDoDlgDli` drains `WM_QUIT` | Still `exit=0x0 mainWindow=0` |
 
-Cerrar el alerta desde otro proceso Wine, o saltárselo, no reproduce el
-camino interactivo (Return en el X window, luego el menú). El MessageBox
-de arranque es a la vez **el bloqueo de `WM_COMMAND`** y **parte del
-bombeo de mensajes que termina el init**. Eso es pregunta de
-arquitectura (¿arreglar `CreateFontIndirect` para que no haya
-`matFont`? ¿un `IdDoMsgBox` que no sea modal y no corte el idle? ¿el
-arnés usa `SendInput` en el hilo de WORD1?), no un parche de una línea
-en `create_dialog_host`.
+Closing the alert from another Wine process, or skipping it, does not
+reproduce the interactive path (Return on the X window, then the
+menu). The startup MessageBox is at once **the `WM_COMMAND` blocker**
+and **part of the message pumping that finishes init**. That is an
+architecture question (fix `CreateFontIndirect` so there's no
+`matFont`? an `IdDoMsgBox` that isn't modal and doesn't cut idle?
+does the harness use `SendInput` on WORD1's thread?), not a one-line
+patch in `create_dialog_host`.
 
-### Shared vs independent (Tasks 4–5)
+### Shared vs independent (Tasks 4-5)
 
-**El mismo punto de fallo cubre `kIddNewDoc` y `kIddSaveAs`.** File New
-(1813) y File Save As (1897) también van por `AppWndProc` → `FExecCmd`.
-Con `vcInMessageBox=1` esos `WM_COMMAND` se tragan igual. El bloque
-338-397 de `create_dialog_host` **no** es el fallo compartido: About,
-New y Save As divergen *antes*, en el gate de `vcInMessageBox`.
+**The same failure point covers `kIddNewDoc` and `kIddSaveAs`.** File
+New (1813) and File Save As (1897) also go through `AppWndProc` →
+`FExecCmd`. With `vcInMessageBox=1` those `WM_COMMAND` messages get
+swallowed the same way. The 338-397 block of `create_dialog_host` is
+**not** the shared failure: About, New, and Save As diverge *earlier*,
+at the `vcInMessageBox` gate.
 
-Cuando el alerta deje de bloquear el pump, Tasks 4–5 deben
-**verificar primero** el mismo camino (`TmcDoDlgDli` ya creó About con
-`hid=44`). Si New/Save As siguen fallando *después* de un About verde,
-entonces sí investigación propia (Save As además entra en
+Once the alert stops blocking the pump, Tasks 4-5 should **first
+verify** the same path (`TmcDoDlgDli` already created About with
+`hid=44`). If New/Save As are still failing *after* a green About,
+then a separate investigation is warranted (Save As also enters
 `run_word95_common_file_dialog`).
 
-Pendiente de producto, fuera de este ítem: por qué
-`CreateFontIndirect` falla (Arial 10 en la cinta se ve; el documento
-cae a `SYSTEM_FONT`); el `#32770` y el About se pintan negros en este
-Xvfb/Wine.
+Outstanding for the product, outside this item: why
+`CreateFontIndirect` fails (Arial 10 on the ribbon renders fine; the
+document falls back to `SYSTEM_FONT`); the `#32770` and the About
+dialog paint black on this Xvfb/Wine setup.
 
-### Fix round (2026-08-15): sitio LOADFONT + `OpusShellCharWidths`
+### Fix round (2026-08-15): LOADFONT site + `OpusShellCharWidths`
 
-De los tres sitios que ponen `matFont` en `LOADFONT.C`, el que disparó
-antes del MessageBox es el **3** (camino Linux, líneas 428-459):
+Of the three sites that set `matFont` in `LOADFONT.C`, the one that
+fired before the MessageBox is **3** (Linux path, lines 428-459):
 `OpusShellCharWidths(...) != 0` → `LSystemFontErr`.
 
-Instrumentación temporal de `OpusShellCharWidths` (luego retirada):
+Temporary instrumentation of `OpusShellCharWidths` (later removed):
 
 ```
 OpusShellCharWidths ftc=2 ps=0 catr=0 chFirst=0 cch=256 rc=-1 why=bad-px
 ```
 
-No es `CreateFontIndirect` NULL (sitio 1) ni `OurSelectObject`/`FSelectFont`
-(sitio 2): se llegó a pedir anchos. La petición de arranque es Helv
-(`ftc=2`) con `hps==0`. `RawFontFor` hacía `px = MulDiv(ps/2, 96, 72)`
-y rechazaba `px<=0`. Ese `-1` es el que pone `matFont` y deja
-`vcInMessageBox=1`.
+It is not `CreateFontIndirect` returning NULL (site 1), nor
+`OurSelectObject`/`FSelectFont` (site 2): width was actually
+requested. The startup request is Helv (`ftc=2`) with `hps==0`.
+`RawFontFor` did `px = MulDiv(ps/2, 96, 72)` and rejected `px<=0`.
+That `-1` is what sets `matFont` and leaves `vcInMessageBox=1`.
 
-Cambio en `src/core/src/OpusShellFontMetrics.cpp` (sin tocar `src/Opus/`):
+Change in `src/core/src/OpusShellFontMetrics.cpp` (without touching
+`src/Opus/`):
 
-- `hps==0` se mide como 10 pt (`hpsDefault`), igual que
-  `CreateFontIndirect(lfHeight==0)` usa altura por defecto.
-- WORD1 no tiene `QGuiApplication`. Crear una en el hilo Wine cuelga el
-  pump o mata el proceso. Sin app, `QRawFont` no se construye: se
-  rellenan los anchos desde la tabla oráculo ya medida
-  (`opus_shell_font_metrics_oracle_table.h`, Helv 10 pt).
+- `hps==0` is measured as 10 pt (`hpsDefault`), the same way
+  `CreateFontIndirect(lfHeight==0)` uses a default height.
+- WORD1 has no `QGuiApplication`. Creating one on the Wine thread
+  hangs the pump or kills the process. Without an app, `QRawFont`
+  cannot be built: the widths are filled in from the already-measured
+  oracle table (`opus_shell_font_metrics_oracle_table.h`, Helv 10 pt).
 
-Tras ese éxito, el MessageBox de fuente **no aparece**, pero WORD1
-sigue sin dejar About verde: el init continúa y cae en
-`FInsertInPl` (`clsplc.c:829`) desde `C_PushLbs` (`layout2.c:1430`),
-write AV `0xC0000005` vía `HpInPl` (`opus_asm_resn2_pl.cpp`).
-`ctest -R opus_word1_about_test` queda:
+After that success, the font MessageBox **does not appear**, but
+WORD1 still doesn't leave About green: init continues and falls into
+`FInsertInPl` (`clsplc.c:829`) from `C_PushLbs` (`layout2.c:1430`),
+a write AV `0xC0000005` via `HpInPl` (`opus_asm_resn2_pl.cpp`).
+`ctest -R opus_word1_about_test` results in:
 
 ```
 Help About process exit=0x0 mainWindow=0 responsive=0 stage=0
 Help About dialog did not appear
+CTEST_EXIT=8
 ```
 
 (debian13, `/home/pablo/build-debian13-verify`, `DISPLAY=:59`)
 
-Una vez con `QGuiApplication` en el hilo Wine el diálogo About
-*sí* se creó (`OpusSdmDialog`) y el fallo pasó a “did not finish
-initializing” (el host no respondía `WM_NULL`). Ese camino no se dejó:
-Qt en el hilo Wine no es viable. El crash de `FInsertInPl` es el
-siguiente bloqueo; no es un quinto skip del MessageBox.
+With `QGuiApplication` on the Wine thread, the About dialog *did* get
+created (`OpusSdmDialog`) and the failure shifted to "did not finish
+initializing" (the host wasn't responding to `WM_NULL`). That path
+was not kept: Qt on the Wine thread is not viable. The `FInsertInPl`
+crash is the next blocker; it is not a fifth MessageBox skip.
 
-### Estado al cortar (2026-08-15, HEAD `134cddc`)
+### Status at cutoff (2026-08-15, HEAD `134cddc`)
 
-`opus_word1_about_test` **sigue en Failed** (~7.8 s,
-`exit=0x0 mainWindow=0`). El MessageBox de fuente ya no aparece. El
-proceso muere en layout:
+`opus_word1_about_test` **is still Failed** (~7.8 s,
+`exit=0x0 mainWindow=0`). The font MessageBox no longer appears. The
+process dies in layout:
 
 ```
 Exception 0xC0000005 write at 0xFFFFFFFD3726D202
@@ -191,16 +195,16 @@ C_PushLbs+0x296
 (`build/WORD1-crash.txt`; call site C `layout2.c:1430`
 `FInsertInPl(vhpllbs, ilbs, plbsTo)`.)
 
-Instrumentación temporal de `HpInPl`/`OpusPlData` (revertida, no quedó
-en el árbol) dejó `build/t3-h2-pl.log`. Las primeras llamadas son
-PLs sanos:
+Temporary instrumentation of `HpInPl`/`OpusPlData` (reverted, did not
+stay in the tree) left `build/t3-h2-pl.log`. The first calls are
+sound PLs:
 
 ```
 iMac=1 iMax=1 cb=2  brgfoo=20  fExternal=0
-iMac=1 iMax=1 cb=136 brgfoo=256 fExternal=0   ← dest in-heap, insane=0
+iMac=1 iMax=1 cb=136 brgfoo=256 fExternal=0   (dest in-heap, insane=0)
 ```
 
-La última, ya con el header destrozado, es otro `hpl`:
+The last one, with the header already smashed, is a different `hpl`:
 
 ```
 HpInPl hpl=0x7ffffe811970 *hpl=0x7ffffe811bc0
@@ -208,70 +212,72 @@ HpInPl hpl=0x7ffffe811970 *hpl=0x7ffffe811bc0
   i=-1072622912 base=(nil) dest=0xfffffffe80667080 insane=1
 ```
 
-`HpInPl` no inventa ese puntero: le pasan un bloque que ya no es un
-`struct PL`. `iMac==iMax==1` en las llamadas sanas implica que el
-siguiente `FInsertInPl` entra en el grow (`clsplc.c:847-874`).
-Siguiente Phase 1 (no hecha): discriminar *grow que corrompe el
-header* (`FChngSizeHCw` / tamaño `brgfoo + cb*iMax`) vs *handle
-equivocado* (no es `vhpllbs`). No editar `src/Opus/`.
+`HpInPl` does not invent that pointer: it is handed a block that is
+no longer a `struct PL`. `iMac==iMax==1` in the sound calls implies
+the next `FInsertInPl` enters the grow path (`clsplc.c:847-874`).
+Next Phase 1 (not done): distinguish a *grow that corrupts the
+header* (`FChngSizeHCw` / size `brgfoo + cb*iMax`) from a *wrong
+handle* (not `vhpllbs`). Do not edit `src/Opus/`.
 
-Un intento a medias de anchos GDI (`opus_gdi_char_widths.cpp` +
-`OpusShellSetCharWidthsFallback`) se descartó al cortar: no llegó a
-ctest verde. No reintroducirlo hasta tener el log de `HpInPl` sobre
-el grow.
+A half-finished attempt at GDI widths (`opus_gdi_char_widths.cpp` +
+`OpusShellSetCharWidthsFallback`) was discarded at cutoff: it did not
+reach a green ctest. Do not reintroduce it until there is a `HpInPl`
+log covering the grow.
 
-**Shared vs independent (Tasks 4–5), actualizado:** About / New /
-Save As ya no están tapados por `vcInMessageBox`. Siguen
-bloqueados porque el proceso no sobrevive al primer layout. Verificar
-primero cuando About esté verde.
+**Shared vs independent (Tasks 4-5), updated:** About / New / Save As
+are no longer masked by `vcInMessageBox`. They remain blocked because
+the process does not survive the first layout. Verify first once
+About is green.
 
-### Fix round 2 (2026-08-15): H1 vs H2 del AV en `FInsertInPl`
+### Fix round 2 (2026-08-15): H1 vs H2 of the AV in `FInsertInPl`
 
-Phase 1, un cambio cada vez. El MessageBox de fuente sigue cerrado.
+Phase 1, one change at a time. The font MessageBox is still closed.
 
-**H1 (métricas):** `OpusShellCharWidths` devolvió 0 (sin `matFont`) y
-rellenó la tabla con un dummy constante 8. El AV **no desapareció**.
-Luego se midió con GDI (`CreateCompatibleDC` + `CreateFontIndirectA`
-mismo `LOGFONT` que `C_FGraphicsFcidToPlf`, `hps==0` → `lfHeight==0`,
-`GetCharWidthA`; confirmado `GDI ftc=2 ps=0 w32=3 wA=7`). El AV
-**sigue** en `FInsertInPl`. Los valores de la tabla no son la causa:
-oráculo Helv-10, dummy 8 y GDI Helv `lfHeight=0` mueren igual.
+**H1 (metrics):** `OpusShellCharWidths` returned 0 (no `matFont`) and
+filled the table with a constant dummy value of 8. The AV **did not
+disappear**. It was then measured with GDI (`CreateCompatibleDC` +
+`CreateFontIndirectA`, the same `LOGFONT` as `C_FGraphicsFcidToPlf`,
+`hps==0` → `lfHeight==0`, `GetCharWidthA`; confirmed
+`GDI ftc=2 ps=0 w32=3 wA=7`). The AV **still occurs** in
+`FInsertInPl`. The table values are not the cause: Helv-10 oracle,
+dummy 8, and GDI Helv `lfHeight=0` all die the same way.
 
-El camino interactivo que sí abre About usa `fFallback` /
-`fFixedPitch=true` (`LOADFONT.C:397` no llena `hqrgdxp`). Eso no se
-puede forzar desde el puerto sin devolver -1 (`matFont` / MessageBox).
+The interactive path that does open About uses `fFallback` /
+`fFixedPitch=true` (`LOADFONT.C:397` does not fill `hqrgdxp`). That
+cannot be forced from the port without returning -1 (`matFont` /
+MessageBox).
 
-**H2 (header PL / HpInPl):** confirmado. El `hpl` del crash **es**
-`vhpllbs` (`lbs=1`, `hsz=1428` = `cbPLBase + 8*sizeof(LBS)` con
-`sizeof(LBS)==176`). En la primera `FInsertInPl` el header ya es
-basura:
+**H2 (PL header / HpInPl):** confirmed. The `hpl` in the crash **is**
+`vhpllbs` (`lbs=1`, `hsz=1428` = `cbPLBase + 8*sizeof(LBS)` with
+`sizeof(LBS)==176`). At the first `FInsertInPl` the header is already
+garbage:
 
 ```
 iMac=-1072622911 iMax=32726 cb=6 brgfoo=0 fExternal=-31497312
 i=-1072622912 base=(nil) dest=0xfffffffe80667080
 ```
 
-`PL`: `cbPLBase=20`, `fExternal` @ 16. `PLLBS` no tiene `fExternal`
-(`rglbs` @ 16). `OpusPlData` trataba cualquier `fExternal!=0` como HQ
-→ dest salvaje. Las primeras `HpInPl` son **otros** PLs sanos
-(`cb=2`/`cb=136`); `vhpllbs` no se ve sano ni una vez.
+`PL`: `cbPLBase=20`, `fExternal` @ 16. `PLLBS` has no `fExternal`
+(`rglbs` @ 16). `OpusPlData` treated any `fExternal!=0` as HQ,
+producing a wild dest. The first `HpInPl` calls are **other**, sound
+PLs (`cb=2`/`cb=136`); `vhpllbs` is never seen sound, not even once.
 
-El smash **no** es un `bltbh` sobre los 20 bytes del header (un
-`memmove` vigilado no disparó). Tampoco un `FChngSizeHCb` de
-`vhpllbs`: al `HAllocateCw(1428)` `vhpllbs` aún es nil; no hay
-`chng` posterior sobre ese handle antes del AV.
+The smash is **not** a `bltbh` over the 20-byte header (a watched
+`memmove` did not fire). Nor is it a `FChngSizeHCb` of `vhpllbs`: at
+`HAllocateCw(1428)` `vhpllbs` is still nil; there is no later `chng`
+on that handle before the AV.
 
-Clamp de `dest` en `HpInPl` evita el write salvaje y mueve el crash a
-`UnstackLbs` (camina `ilbsMac` basura) o `IpgdPldrFromWwDocCpIpgd`.
-No repara el header.
+Clamping `dest` in `HpInPl` avoids the wild write and moves the crash
+to `UnstackLbs` (walks garbage `ilbsMac`) or
+`IpgdPldrFromWwDocCpIpgd`. It does not fix the header.
 
-**Ambas:** H1 no es “tabla Helv-10 ≠ GDI”. H2 es el mecanismo del AV
-(`HpInPl` sobre `vhpllbs` ya destrozado). El header se corrompe en
-el camino variable-pitch (`fFixedPitch=false`) antes de
-`C_PushLbs`; el puerto no ve el store. Sin editar Opus no hay sitio
-para restaurar `iMac` antes de `layout2.c:1384`.
+**Both:** H1 is not "Helv-10 table ≠ GDI". H2 is the AV's mechanism
+(`HpInPl` over an already-smashed `vhpllbs`). The header gets
+corrupted on the variable-pitch path (`fFixedPitch=false`) before
+`C_PushLbs`; the port never sees the store. Without editing Opus
+there is nowhere to restore `iMac` before `layout2.c:1384`.
 
-**ctest** (debian13, `DISPLAY=:59`, GDI + `fExternal==1` en
+**ctest** (debian13, `DISPLAY=:59`, GDI + `fExternal==1` in
 `OpusPlData`):
 
 ```
@@ -282,33 +288,35 @@ CTEST_EXIT=8
 Exception 0xC0000005 FInsertInPl+0x1B6 C_PushLbs+0x296
 ```
 
-**BLOCKED** en líneas Opus (no tocadas):
-`src/Opus/wordtech/layout2.c:1384` (`ilbs = (*vhpllbs)->ilbsMac`) y
-`1430` (`FInsertInPl`); o `LOADFONT.C:397` (único camino que no
-entra en layout variable-pitch).
+**BLOCKED** on Opus lines (not touched):
+`src/Opus/wordtech/layout2.c:1384` (`ilbs = (*vhpllbs)->ilbsMac`) and
+`1430` (`FInsertInPl`); or `LOADFONT.C:397` (the only path that does
+not enter variable-pitch layout).
 
-### Fix round 3 (2026-08-15): `_setjmp` con ABI equivocada — RESUELTO
+### Fix round 3 (2026-08-15): `_setjmp` with the wrong ABI: RESOLVED
 
-`opus_word1_about_test` **pasa**. El AV no estaba en `FInsertInPl` ni en
-`HpInPl`: los dos eran víctimas. Quien destroza el header de `vhpllbs`
-es `setjmp`.
+`opus_word1_about_test` **passes**. The AV was not in `FInsertInPl`
+or `HpInPl`: both were victims. What smashes the `vhpllbs` header is
+`setjmp`.
 
-**Evidencia (watchpoint de hardware, no printf).** En el contenedor
-debian13, `gdb -batch` sobre `/usr/lib/wine/wine64` (no sobre
-`/usr/bin/wine`, que es un script), con `set follow-fork-mode parent`
-para no seguir al `wineserver`, y `handle SIGSEGV nostop noprint pass`
-para que Wine convierta la falla en excepción Win32:
+**Evidence (hardware watchpoint, not printf).** On the debian13
+container, `gdb -batch` on `/usr/lib/wine/wine64` (not on
+`/usr/bin/wine`, which is a script), with `set follow-fork-mode
+parent` so as not to follow `wineserver`, and `handle SIGSEGV nostop
+noprint pass` so Wine converts the fault into a Win32 exception:
 
-1. Breakpoint en `layout.c:286` (justo después de
-   `vhpllbs = HplInit(sizeof(struct LBS), 8)`). El header está **sano**:
-   `iMac=0 iMax=8 cb=176 brgfoo=20 fExternal=0`, `data=0x7ffffe8117a0`.
-   Es decir, la hipótesis "ya nace destrozado" de la ronda 2 era falsa:
-   nace bien y lo rompen cuatro líneas más abajo.
-2. `watch -l *(int *)(data + 16)` (o sea `PL.fExternal`) y `continue`.
-   Dispara enseguida: `Old value = 0`, `New value = -31497312`, con
-   `#1 LbcFormatPage ... layout.c:290` — o sea `SetLayoutAbort()`.
-3. En el punto del disparo, `x/10i $pc-32` muestra el cuerpo del
-   callee, que es exactamente el `_setjmp` de MSVCRT x86-64:
+1. Breakpoint at `layout.c:286` (right after
+   `vhpllbs = HplInit(sizeof(struct LBS), 8)`). The header is
+   **sound**: `iMac=0 iMax=8 cb=176 brgfoo=20 fExternal=0`,
+   `data=0x7ffffe8117a0`. In other words, round 2's "it's born
+   already smashed" hypothesis was false: it is born fine and gets
+   broken four lines below.
+2. `watch -l *(int *)(data + 16)` (that is, `PL.fExternal`) and
+   `continue`. It fires right away: `Old value = 0`,
+   `New value = -31497312`, with `#1 LbcFormatPage ... layout.c:290`,
+   that is, `SetLayoutAbort()`.
+3. At the point of the fire, `x/10i $pc-32` shows the callee's body,
+   which is exactly the MSVCRT x86-64 `_setjmp`:
 
    ```
    0x6fffffc2f8e8:  mov    %rdx,(%rcx)      ; buf->Frame
@@ -318,72 +326,75 @@ para que Wine convierta la falla en excepción Win32:
 => 0x6fffffc2f8f8:  mov    %rbp,0x18(%rcx)  ; buf->Rbp
    ```
 
-   y los registros: `rdi=0x7ffff79122d8` (que **sí** es
-   `&venvLayout.nativeEnv`, el buffer correcto) frente a
-   `rcx=0x7ffffe8117a0` (que es `*vhpllbs`).
+   and the registers: `rdi=0x7ffff79122d8` (which **is** in fact
+   `&venvLayout.nativeEnv`, the correct buffer), against
+   `rcx=0x7ffffe8117a0` (which is `*vhpllbs`).
 
-**Causa raíz, en una frase:** `_setjmp` se resolvía contra el `msvcrt`
-PE de Wine, que es Microsoft-x64 y toma el `jmp_buf` en **RCX**,
-mientras que todo el código de Opus es System V y lo pasa en **RDI**;
-el import escribía su `_JUMP_BUFFER` de 256 bytes sobre el puntero
-rancio que quedara en RCX.
+**Root cause, in one sentence:** `_setjmp` was resolving against
+Wine's `msvcrt` PE, which is Microsoft-x64 and takes the `jmp_buf` in
+**RCX**, while all of Opus's code is System V and passes it in
+**RDI**; the import was writing its 256-byte `_JUMP_BUFFER` over
+whatever stale pointer was left in RCX.
 
-En `LbcFormatPage` ese RCX rancio es `*vhpllbs`, el bloque que
-`HplInit` acababa de devolver nueve líneas antes, así que cada pasada
-de layout escribía estado de registros encima del `struct PL`:
+In `LbcFormatPage` that stale RCX is `*vhpllbs`, the block that
+`HplInit` had just returned nine lines earlier, so every layout pass
+wrote register state on top of the `struct PL`:
 
-- `fExternal` (offset 16) recibía la mitad baja de RSP →
-  `0xfe1f63a0` = `-31497312`, que es justo el valor que la ronda 2
-  había registrado.
-- offsets 20..27 recibían `0x00007fff` + ceros → de ahí sale el
-  `hqple = 0x7fff00000000` del AV.
+- `fExternal` (offset 16) received the low half of RSP:
+  `0xfe1f63a0` = `-31497312`, which is exactly the value round 2 had
+  recorded.
+- offsets 20..27 received `0x00007fff` plus zeros: that is where the
+  `hqple = 0x7fff00000000` of the AV comes from.
 
-El síntoma final (tras el clamp de `OpusPlData` de `5bebdd9`) ya no era
-`FInsertInPl` sino `FreeHpl` (`clsplc.c:465`): con `fExternal` distinto
-de cero toma el PL no-externo por externo, lee ese `hqple` basura de
-`rglbs[0]` y llama a `FreeHq` → AV de lectura en `OpusFreeH`
-(`opus_x64_heap.cpp:411`, `mov (%rax),%rax` con `rax=0x7fff00000000`).
-La cadena `LbcFormatPage → FreePhpl(&vhpllbs) → FreeHpl → OpusFreeH`
-quedó confirmada casando los retornos con el desensamblado
-(`FreeHpl+84` es exactamente el retorno del `call OpusFreeH` de la rama
-`FreeHq`, y el slot `rbp-8` de `FreePhpl` contiene `&vhpllbs`).
+The final symptom (after the `OpusPlData` clamp from `5bebdd9`) was
+no longer `FInsertInPl` but `FreeHpl` (`clsplc.c:465`): with
+`fExternal` nonzero it treats the non-external PL as external, reads
+that garbage `hqple` from `rglbs[0]`, and calls `FreeHq`, causing a
+read AV in `OpusFreeH` (`opus_x64_heap.cpp:411`, `mov (%rax),%rax`
+with `rax=0x7fff00000000`). The chain
+`LbcFormatPage → FreePhpl(&vhpllbs) → FreeHpl → OpusFreeH` was
+confirmed by matching the returns against the disassembly
+(`FreeHpl+84` is exactly the return of the `call OpusFreeH` from the
+`FreeHq` branch, and `FreePhpl`'s `rbp-8` slot holds `&vhpllbs`).
 
-Confirmación estática: `nm bin/WORD1.exe.so` mostraba
-`__imp__setjmp` y un thunk `t _setjmp` en la misma tabla de imports que
-`ShellExecuteA` / `AdjustWindowRect`. `_setjmp` era el **único** símbolo
-de CRT importado por error (los otros cuatro con pinta de CRT —
-`_lclose`, `_llseek`, `_lread`, `_lwrite` — son APIs Win16 legítimas de
-kernel32). `longjmp`, en cambio, sí resolvía a glibc
-(`longjmp@GLIBC_2.2.5`): el par estaba roto por la mitad.
+Static confirmation: `nm bin/WORD1.exe.so` showed `__imp__setjmp` and
+a `t _setjmp` thunk in the same import table as `ShellExecuteA` /
+`AdjustWindowRect`. `_setjmp` was the **only** CRT symbol imported by
+mistake (the other four that look like CRT, `_lclose`, `_llseek`,
+`_lread`, `_lwrite`, are legitimate Win16 kernel32 APIs). `longjmp`,
+on the other hand, did resolve to glibc (`longjmp@GLIBC_2.2.5`): the
+pair was broken in half.
 
-Llega ahí porque `Opus/lib/qsetjmp.h` (rama `OPUS_X64`) usa el
-`<setjmp.h>` del host y glibc expande `setjmp(env)` a `_setjmp(env)`.
+It gets there because `Opus/lib/qsetjmp.h` (`OPUS_X64` branch) uses
+the host's `<setjmp.h>`, and glibc expands `setjmp(env)` to
+`_setjmp(env)`.
 
-**Fix (todo fuera de árbol restringido):**
-`src/port/original/opus_x64_setjmp.cpp` define `_setjmp` en ABI System V
-como salto de cola a `__sigsetjmp(env, 0)` — que es literalmente lo que
-hace el `_setjmp` de glibc. Tiene que ser salto de cola: un wrapper en C
-dejaría un marco de pila que ya no existe cuando `longjmp` vuelve a él.
-Al quedar el símbolo definido, `winebuild` deja de generar el import de
-`msvcrt` (verificado: `nm` ahora da `T _setjmp` + `U
-__sigsetjmp@GLIBC_2.2.5`, sin `__imp__setjmp`). Se añade a
-`WORD1_SOURCES` dentro del bloque `if(OPUS_WINELIB_BUILD)` que ya
-existía, así que MSVC no lo ve.
+**Fix (all outside the restricted tree):**
+`src/port/original/opus_x64_setjmp.cpp` defines `_setjmp` in System V
+ABI as a tail jump to `__sigsetjmp(env, 0)`, which is literally what
+glibc's `_setjmp` does. It has to be a tail jump: a C wrapper would
+leave a stack frame that no longer exists by the time `longjmp`
+returns to it. With the symbol now defined, `winebuild` stops
+generating the `msvcrt` import (verified: `nm` now gives `T _setjmp`
+plus `U __sigsetjmp@GLIBC_2.2.5`, with no `__imp__setjmp`). It is
+added to `WORD1_SOURCES` inside the already-existing
+`if(OPUS_WINELIB_BUILD)` block, so MSVC never sees it.
 
-**Segundo cambio, necesario para que ctest lo *vea*.** Con el AV
-arreglado, `opus_word1_ui_test --about` termina en 2 s con código 0
-(diálogo `OpusSdmDialog` creado, botón en el id 1, responde, cierra
-limpio), pero ctest seguía dando `Timeout 20 s` sin imprimir nada. La
-causa es el §25 ya documentado: `CreateProcessW` devuelve un
-`PROCESS_INFORMATION` a cero para `WORD1.exe.so`, así que
-`hProcess == nullptr` y el `TerminateProcess` de cada salida es un
-no-op; WORD1 sobrevivía al harness reteniendo el pipe de stdout
-heredado y ctest esperaba. Mientras WORD1 se moría solo esto no se
-notaba. `opus_word1_ui_test.cpp` recupera ahora el PID real desde la
-ventana principal (`GetWindowThreadProcessId` + `OpenProcess`) cuando
-`hProcess` viene nulo; con eso todo el teardown y las esperas ya
-existentes funcionan sin tocarlas, y las búsquedas de ventana
-recuperan el filtro por PID exacto que el §26 prefiere.
+**Second change, needed for ctest to actually *see* it.** With the AV
+fixed, `opus_word1_ui_test --about` finishes in 2 s with code 0 (the
+`OpusSdmDialog` dialog is created, the button at id 1 responds, it
+closes cleanly), but ctest kept giving `Timeout 20 s` without
+printing anything. The cause is the already-documented §25:
+`CreateProcessW` returns a zeroed `PROCESS_INFORMATION` for
+`WORD1.exe.so`, so `hProcess == nullptr` and the `TerminateProcess`
+on each exit path is a no-op; WORD1 was outliving the harness by
+holding on to the inherited stdout pipe, and ctest was waiting. As
+long as WORD1 died on its own this went unnoticed.
+`opus_word1_ui_test.cpp` now recovers the real PID from the main
+window (`GetWindowThreadProcessId` + `OpenProcess`) whenever
+`hProcess` comes back null; with that, all the existing teardown and
+waits work without needing changes, and the window searches regain
+the exact-PID filter that §26 prefers.
 
 **ctest** (debian13, `/home/pablo/build-debian13-verify`, `DISPLAY=:59`):
 
@@ -392,10 +403,10 @@ recuperan el filtro por PID exacto que el §26 prefiere.
 100% tests passed, 0 tests failed out of 1
 ```
 
-Estable en 3 ejecuciones consecutivas (2.84 / 2.97 / 2.83 s).
+Stable across 3 consecutive runs (2.84 / 2.97 / 2.83 s).
 
-La etiqueta `word1_startup_blocked` pasa de **0/9** a **5/9** (cifras
-tras la revisión, ver "Cierre de revisión" abajo):
+The `word1_startup_blocked` label goes from **0/9** to **5/9**
+(figures after review, see "Review closure" below):
 
 ```
 1/9 Test #10: word1_port_smoke_test ................   Passed    1.56 sec
@@ -410,37 +421,38 @@ tras la revisión, ver "Cierre de revisión" abajo):
 56% tests passed, 4 tests failed out of 9
 ```
 
-Los 4 que siguen fallando ya no mueren por el AV: fallan rápido y con
-mensaje propio. Son el material de las Tasks 4–5.
+The 4 that keep failing no longer die from the AV: they fail fast,
+with their own message. They are the material for Tasks 4-5.
 
-Gating: 8/8 verdes (`opus_original_strtbl_test`,
-`opus_original_sttb_test`, `opus_original_plc_test`, `opus_sdm_cab_test`,
-`opus_original_command_test`, `opus_shell_memory_foreign_test`,
-`opus_shell_config_test`, `opus_shell_font_substitution_test`).
+Gating: 8/8 green (`opus_original_strtbl_test`,
+`opus_original_sttb_test`, `opus_original_plc_test`,
+`opus_sdm_cab_test`, `opus_original_command_test`,
+`opus_shell_memory_foreign_test`, `opus_shell_config_test`,
+`opus_shell_font_substitution_test`).
 
-### Cierre de revisión (2026-08-15): las dos mitades del par, y el guard
+### Review closure (2026-08-15): the two halves of the pair, and the guard
 
-La revisión levantó dos cosas importantes; ambas corregidas.
+The review raised two important things; both fixed.
 
-**1. `longjmp` seguía atado a glibc solo por suerte de link order.**
-El fix original fijaba `_setjmp` por definición pero dejaba `longjmp`
-a lo que decidiera el enlazador. No es una preocupación teórica: en
-este contenedor hay **14 archivos de import de Wine** que definen
-`longjmp`, `_setjmp` y `_setjmpex` — `libmsvcrt.a`, `libmsvcr70..120`,
-`libucrtbase.a`, `libvcruntime140.a`, `libntdll.a`, `libntoskrnl.a`,
-tanto en `x86_64-unix` como en `x86_64-windows`. `libntdll.a` lo enlaza
-cualquier target winelib. Pasarle un `jmp_buf` de glibc al `longjmp`
-Microsoft-x64 de Wine es la misma catástrofe silenciosa en la otra
-dirección.
+**1. `longjmp` was still tied to glibc only by luck of link order.**
+The original fix pinned `_setjmp` by definition but left `longjmp` to
+whatever the linker decided. This is not a theoretical concern: in
+this container there are **14 Wine import files** that define
+`longjmp`, `_setjmp`, and `_setjmpex`: `libmsvcrt.a`,
+`libmsvcr70..120`, `libucrtbase.a`, `libvcruntime140.a`,
+`libntdll.a`, `libntoskrnl.a`, in both `x86_64-unix` and
+`x86_64-windows`. `libntdll.a` gets linked by every winelib target.
+Passing a glibc `jmp_buf` to Wine's Microsoft-x64 `longjmp` is the
+same silent catastrophe in the other direction.
 
-`opus_x64_setjmp.cpp` fija ahora también `longjmp`, como salto de cola
-a `_longjmp@PLT`. `_longjmp` es un nombre que **ninguno** de esos 14
-archivos define (verificado), así que es un destino seguro; y en glibc
-`longjmp`, `_longjmp` y `siglongjmp` son alias débiles de un mismo
-`__libc_siglongjmp` (misma dirección `0x3fab0` en `libc.so.6`), o sea
-que el reenvío es exacto.
+`opus_x64_setjmp.cpp` now also pins `longjmp`, as a tail jump to
+`_longjmp@PLT`. `_longjmp` is a name that **none** of those 14 files
+define (verified), so it is a safe target; and in glibc `longjmp`,
+`_longjmp`, and `siglongjmp` are weak aliases of the same
+`__libc_siglongjmp` (same address `0x3fab0` in `libc.so.6`), so the
+forwarding is exact.
 
-Comprobación en el binario:
+Verification on the binary:
 
 ```
                  U __sigsetjmp@GLIBC_2.2.5
@@ -449,58 +461,59 @@ Comprobación en el binario:
 000000000008bd3b T longjmp
 ```
 
-**2. Guard en tiempo de build.** `src/cmake/AssertNoWineCrtSetjmp.cmake`
-corre como `POST_BUILD` de WORD1 y falla el build si reaparece
-cualquier thunk `__imp_` de la familia (`__imp__setjmp`,
-`__imp__setjmpex`, `__imp_longjmp`, `__imp__longjmp`,
-`__imp_siglongjmp`). Así, un cambio futuro de toolchain o de orden de
-enlace sale como error de build y no como escritura salvaje durante
-layout.
+**2. Build-time guard.** `src/cmake/AssertNoWineCrtSetjmp.cmake` runs
+as a `POST_BUILD` step for WORD1 and fails the build if any `__imp_`
+thunk from that family reappears (`__imp__setjmp`, `__imp__setjmpex`,
+`__imp_longjmp`, `__imp__longjmp`, `__imp_siglongjmp`). This way, a
+future toolchain or link-order change shows up as a build error, not
+a wild write during layout.
 
-El guard está probado en los dos sentidos, no solo escrito:
+The guard is tested in both directions, not just written:
 
 ```
-NEGATIVO: binario fabricado con `void *__imp__setjmp = 0;`
+NEGATIVE: binary crafted with `void *__imp__setjmp = 0;`
   -> CMake Error ... imports the Microsoft-x64 CRT setjmp/longjmp
      family from Wine: __imp__setjmp        (rc=1)
-POSITIVO: bin/WORD1.exe.so                  (rc=0)
-CABLEADO: ninja -t commands WORD1 | grep AssertNoWineCrtSetjmp.cmake  -> presente
+POSITIVE: bin/WORD1.exe.so                  (rc=0)
+WIRED IN: ninja -t commands WORD1 | grep AssertNoWineCrtSetjmp.cmake  -> present
 ```
 
-**3. `word1_port_smoke_test` ya tiene `TIMEOUT 20`**
-(`CMakeLists.txt:1580`), igual que sus 8 hermanos. Le faltaba, y
-mientras WORD1 moría solo eso no se notaba. Con el par setjmp/longjmp
-completo el test además **pasa** (1.56 s), no solo deja de colgarse.
+**3. `word1_port_smoke_test` now has `TIMEOUT 20`**
+(`CMakeLists.txt:1580`), like its 8 siblings. It was missing this,
+and as long as WORD1 died on its own it went unnoticed. With the
+complete setjmp/longjmp pair the test also **passes** (1.56 s), not
+merely stops hanging.
 
-**Sigue pendiente, y no lo causa este fix:**
-`opus_x64_runtime_test` (gating) **se cuelga** en el tip de la rama:
-ejecutado directamente termina en `timeout 40` sin imprimir una sola
-línea (`rc=124`). El binario de ayer (05:46, anterior a `5bebdd9` y a
-este fix) se colgaba igual, no contiene ningún símbolo `setjmp`, y ni
-`opus_x64_setjmp.cpp` ni el cambio del harness entran en ese target.
-Reconstruirlo no lo arregla. Hay que investigarlo aparte.
+**Still outstanding, and not caused by this fix:**
+`opus_x64_runtime_test` (gating) **hangs** at the tip of the branch:
+run directly it ends in `timeout 40` without printing a single line
+(`rc=124`). Yesterday's binary (05:46, prior to `5bebdd9` and to this
+fix) hung the same way, contains no `setjmp` symbol at all, and
+neither `opus_x64_setjmp.cpp` nor the harness change enter that
+target. Rebuilding it does not fix it. It needs to be investigated
+separately.
 
-**Alcance real del bug.** `SetJmp` no se usa solo en layout: también en
-`GRSPEC.C`, `eldde.c`, `fieldpic.c`, `fltexp.c`, `ffread.c`,
-`mathapi.c`, `token.c`, `sort.c` e `interp/elinit.c`. Todos esos sitios
-llevaban escribiendo 256 bytes de estado de registros sobre punteros
-ajenos. Conviene revisar si otros fallos "inexplicables" del port
-desaparecen con esto antes de investigarlos por separado.
+**Real scope of the bug.** `SetJmp` is not used only in layout: also
+in `GRSPEC.C`, `eldde.c`, `fieldpic.c`, `fltexp.c`, `ffread.c`,
+`mathapi.c`, `token.c`, `sort.c`, and `interp/elinit.c`. All those
+sites had been writing 256 bytes of register state over unrelated
+pointers. It is worth checking whether other "inexplicable" port
+failures disappear with this before investigating them separately.
 
-**Nota para quien siga:** `opus_original_startup_probe` (target
-`EXCLUDE_FROM_ALL`, no entra en ctest) enlaza el mismo grafo y sigue
-sin el shim. Si se revive, hay que añadirle
-`port/original/opus_x64_setjmp.cpp` igual que a WORD1.
+**Note for whoever continues:** `opus_original_startup_probe` (target
+`EXCLUDE_FROM_ALL`, not part of ctest) links the same graph and still
+lacks the shim. If it is revived, it needs
+`port/original/opus_x64_setjmp.cpp` added, same as WORD1.
 
 ---
 
-## 4. File > New: verificación bloqueada por entorno (no por código)
+## 4. File > New: verification blocked by environment (not by code)
 
-**Estado:** sin determinar. Task 4 se lanzó para verificar si File > New
-comparte la causa raíz de Task 3 (hipótesis fuerte: sí — `opus_word1_ui_test`
-en modo base, el mismo test, ya había dado `Passed 1.82 s` dentro del run
-completo de Fix round 3). El intento de verificación de esta sesión no
-llegó a confirmarlo ni a refutarlo:
+**Status:** undetermined. Task 4 was launched to verify whether
+File > New shares Task 3's root cause (strong hypothesis: yes;
+`opus_word1_ui_test` in base mode, the same test, had already given
+`Passed 1.82 s` within the complete Fix round 3 run). This session's
+verification attempt did not manage to either confirm or refute it:
 
 ```
 1/9 Test #10: word1_port_smoke_test .................   Passed    1.69 sec
@@ -510,128 +523,131 @@ WORD1 main window did not appear
 (Wine CreateWindow error 1400: Invalid window handle)
 ```
 
-El fallo ocurre **antes** de llegar al comando File > New (línea ~1965 del
-arnés) — la segunda instancia de WORD1 nunca crea su ventana principal.
-Diagnóstico del implementador: síntoma de `explorer.exe`/wineserver en
-mal estado tras el primer proceso, no relacionado con el binario (símbolos
-`_setjmp`/`longjmp` verificados correctos).
+The failure occurs **before** reaching the File > New command (line
+~1965 of the harness): the second WORD1 instance never creates its
+main window. Implementer's diagnosis: symptom of
+`explorer.exe`/wineserver being in a bad state after the first
+process, unrelated to the binary (`_setjmp`/`longjmp` symbols
+verified correct).
 
-**Causa más probable, descubierta después de que Task 4 se cerrara BLOCKED:**
-durante esta misma sesión había **otra sesión** trabajando en paralelo
-sobre el mismo checkout y el mismo `~/build-debian13-verify` dentro de
-debian13 (confirmado con procesos en vivo: un `cmake --build --target
-WORD1` + `ctest -R opus_word1_ui_test` detached, `PPID 1`, que ninguno de
-los agentes de esta sesión lanzó). Dos wineserver/Wine-prefix compartidos
-recibiendo lanzamientos de WORD1 al mismo tiempo explica el síntoma
-("Wine state corruption between test runs") mejor que una regresión de
-código — y es coherente con que `opus_word1_ui_test` ya había pasado horas
-antes, en la misma rama, sin cambios de código de por medio. **No
-confirmado**, es la hipótesis más probable a re-verificar primero, en una
-ventana donde el build dir no esté en uso por nadie más.
+**Most likely cause, discovered after Task 4 closed BLOCKED:** during
+this same session there was **another session** working in parallel
+on the same checkout and the same `~/build-debian13-verify` inside
+debian13 (confirmed with live processes: a detached
+`cmake --build --target WORD1` + `ctest -R opus_word1_ui_test`,
+`PPID 1`, that none of this session's agents launched). Two shared
+wineserver/Wine prefix instances receiving WORD1 launches at the same
+time explains the symptom ("Wine state corruption between test runs")
+better than a code regression, and it is consistent with
+`opus_word1_ui_test` having already passed hours earlier, on the same
+branch, with no code changes in between. **Not confirmed**, it is the
+most likely hypothesis to re-verify first, in a window where the
+build dir is not in use by anyone else.
 
-No hubo cambios de código ni commit para Task 4. Detalle completo:
+There were no code changes or commit for Task 4. Full detail:
 `.superpowers/sdd/2026-08-15-terminar-winelib/task-4-report.md`.
 
 ---
 
-## 5. Revisión independiente de Task 3 -- 4 hallazgos de fidelidad, corregidos y verificados en exia
+## 5. Independent review of Task 3: 4 fidelity findings, fixed and verified on exia
 
-**Contexto:** antes de confiar en Task 3, se corrió `/code-review` (nivel
-`high`) contra los 9 commits de `fix/winelib-startup-blocked` sobre
-`main`. Encontró 4 problemas, los 4 en el mismo tema: la rama arregla el
-AV real de `_setjmp`, pero dos de sus workarounds de la era de
-investigación (antes de encontrar la causa raíz) y dos gaps del camino
-sin-`QGuiApplication` de `OpusShellFontMetrics` quedaban silenciando
-datos incorrectos en vez de fallar visible -- exactamente lo que el
-proyecto no se puede permitir dado el requisito duro de paginación
-byte-idéntica.
+**Context:** before trusting Task 3, `/code-review` (level `high`)
+was run against the 9 commits of `fix/winelib-startup-blocked` on top
+of `main`. It found 4 problems, all 4 on the same theme: the branch
+fixes the real `_setjmp` AV, but two of its workarounds from the
+investigation era (before finding the root cause) and two gaps in
+`OpusShellFontMetrics`'s no-`QGuiApplication` path were silently
+masking incorrect data instead of failing visibly, exactly what the
+project cannot afford given the hard byte-identical pagination
+requirement.
 
-**Los 4, con su causa raíz confirmada contra el código real (no solo el
-diff):**
+**The 4, with their root cause confirmed against the real code (not
+just the diff):**
 
-1. **`opus_original_startup_probe.cpp` -- `OpusPortGdiCharWidths`**
-   dejaba `lfHeight=0` (tamaño por defecto de Wine, indefinido) cuando
-   `hps<=0`, mientras `OpusShellFontMetrics` ya usaba 10pt
-   (`PixelSizeFor`/`PointSizeFor`, hpsDefault) para la *misma* petición
-   de fuente -- anchos y ascent/descent medidos a dos tamaños distintos.
-   El comentario original decía que esto "recreaba" el `LOGFONT` que
-   `C_FGraphicsFcidToPlf` real construye para `hps==0`; falso:
-   `Opus/LOADFONT.C:880` tiene `Assert( fcid.hps > 0 )` -- el Word real
-   nunca llega a esa función con `hps==0`. Se corrigió para usar el
-   mismo default de 10pt.
+1. **`opus_original_startup_probe.cpp`, `OpusPortGdiCharWidths`** left
+   `lfHeight=0` (Wine's undefined default size) when `hps<=0`, while
+   `OpusShellFontMetrics` already used 10pt (`PixelSizeFor`/
+   `PointSizeFor`, hpsDefault) for the *same* font request: widths
+   and ascent/descent measured at two different sizes. The original
+   comment said this "recreated" the `LOGFONT` that the real
+   `C_FGraphicsFcidToPlf` builds for `hps==0`; false:
+   `Opus/LOADFONT.C:880` has `Assert( fcid.hps > 0 )`: the real Word
+   never reaches that function with `hps==0`. Fixed to use the same
+   10pt default.
 
-2. **`opus_x64_layout.c` -- `OpusPlData`** clampeaba cualquier
-   `brgfoo` fuera de `[cbPLBase, 4096]` a `cbPLBase` en silencio. Es un
-   workaround de la sesión de investigación de Task 3 (mismo commit
-   `5bebdd9` que originó el AV), de cuando la causa raíz todavía no se
-   conocía. Con `_setjmp`/`longjmp` ya arreglados no debería dispararse
-   más -- se dejó el clamp pero se le añadió un `fprintf(stderr, ...)`
-   para que una recurrencia real sea visible.
+2. **`opus_x64_layout.c`, `OpusPlData`** was silently clamping any
+   `brgfoo` outside `[cbPLBase, 4096]` to `cbPLBase`. This is a
+   workaround from Task 3's investigation session (the same commit
+   `5bebdd9` that caused the AV), from when the root cause was still
+   unknown. With `_setjmp`/`longjmp` already fixed it should no
+   longer fire; the clamp was kept but a `fprintf(stderr, ...)` was
+   added so that a real recurrence would be visible.
 
-3. **`opus_asm_resn2_pl.cpp` -- `HpInPl`** devolvía el puntero al
-   elemento 0 (no `nullptr`) cuando `cb<=0` o `index<0` -- también del
-   mismo commit `5bebdd9`. El original (`Opus/asm/resn2.asm:1340`) no
-   tiene ningún fallback de release, solo un `Assert` de DEBUG; dar el
-   elemento 0 como si fuera válido hace que cualquier llamador (todos
-   tratan un retorno no-nulo como "índice válido") lea o escriba el
-   slot equivocado sin poder distinguirlo de un acceso real. Se
-   corrigió a `nullptr`.
+3. **`opus_asm_resn2_pl.cpp`, `HpInPl`** was returning the pointer to
+   element 0 (not `nullptr`) when `cb<=0` or `index<0`; also from the
+   same commit `5bebdd9`. The original (`Opus/asm/resn2.asm:1340`)
+   has no release fallback at all, only a DEBUG `Assert`; handing
+   back element 0 as if it were valid makes any caller (all of which
+   treat a non-null return as "valid index") read or write the wrong
+   slot with no way to tell it apart from a real access. Fixed to
+   `nullptr`.
 
-4. **`OpusShellFontMetrics.cpp`** -- el fallback de tabla oráculo
-   (usado cuando no hay `QGuiApplication`, el caso de arranque) ignoraba
-   `key->catr` (negrita/cursiva): la tabla
-   (`opus_shell_font_metrics_oracle_table.h`) solo tiene filas de peso
-   regular (28 filas = 4 nombres de época × 7 tamaños, nunca se capturó
-   negrita/cursiva), así que una petición en negrita/cursiva recibía en
-   silencio las métricas de peso regular. El llamador real
-   (`Opus/LOADFONT.C:442-448`) documenta explícitamente que `catr != 0`
-   debe fallar controlado -- ese contrato ya se cumplía en el camino
-   con `QGuiApplication`, pero no en este fallback. Se corrigió para
-   que el fallback de oráculo (ascenso/descenso y, si el GDI de
-   `OpusPortGdiCharWidths` también falla, anchos) se salte cuando
-   `catr != 0`, en vez de responder con datos de peso equivocado.
+4. **`OpusShellFontMetrics.cpp`**: the oracle-table fallback (used
+   when there is no `QGuiApplication`, the startup case) ignored
+   `key->catr` (bold/italic): the table
+   (`opus_shell_font_metrics_oracle_table.h`) only has regular-weight
+   rows (28 rows = 4 era names times 7 sizes, bold/italic was never
+   captured), so a bold/italic request silently received
+   regular-weight metrics. The real caller
+   (`Opus/LOADFONT.C:442-448`) explicitly documents that `catr != 0`
+   must fail in a controlled way; that contract was already honored
+   on the `QGuiApplication` path, but not in this fallback. Fixed so
+   that the oracle fallback (ascent/descent, and, if
+   `OpusPortGdiCharWidths`'s GDI also fails, widths) is skipped when
+   `catr != 0`, instead of answering with wrong-weight data.
 
-**Verificado en exia (VPS, no el contenedor `debian13` de hp-15--
-hp-15 no estaba disponible esta sesión; exia es Debian 13 trixie con
-`wine`/`winegcc` igual de válido per `CLAUDE.md`):**
+**Verified on exia (VPS, not the `debian13` container on hp-15;
+hp-15 was not available this session; exia is Debian 13 trixie with
+`wine`/`winegcc`, equally valid per `CLAUDE.md`):**
 
-- `ninja`/`cmake --build` de `opus_original_engine` y `WORD1`: 0
-  errores, mismos warnings preexistentes de siempre.
-- `ctest` completo (sin `opus_x64_runtime_test`, ver nota abajo): igual
-  que antes de estos 4 fixes -- sin regresión.
-- **Gotcha real encontrado en esta verificación, no relacionado con el
-  código:** la primera corrida de la etiqueta `word1_startup_blocked`
-  dio 0/9 con `free(): corrupted unsorted chunks` y `unknown test mode`
-  en todos -- el patrón de bug *original*, de antes de Tasks 1-2. Causa:
-  `build/tests/Debug/opus_word1_ui_test.exe.so` tenía fecha del 12 de
-  agosto -- de **antes** de que existieran los fixes de Tasks 1-3 en el
-  árbol. `cmake --build --target WORD1` no reconstruye el arnés de
-  test; hace falta `--target opus_word1_ui_test` aparte. Con el arnés
-  reconstruido: **4/9** (`word1_port_smoke_test`, `opus_word1_ui_test`
-  base, `opus_word1_clipboard_shortcut_test`, `opus_word1_about_test`),
-  coincide con los mismos 4 wins ya documentados en §1-4 arriba (la
-  quinta de "5/9" en `Cómo retomar` corresponde al mismo `ui_test` base
-  contado una sola vez ahí). Los 5 fallos restantes
-  (`--typing`, `--interaction`, `--selection`, `--font-typing`,
-  Save As) son exactamente el alcance sin empezar de Tasks 5-10 --
-  no regresiones de estos 4 fixes.
-- **`Xvfb` real necesario:** sin `DISPLAY`, Wine cae a `nodrv` y todo
-  falla con "Invalid window handle" antes de llegar a la lógica real.
-  Este VPS ya tenía un `Xvfb :99` corriendo desde el 12 de agosto
-  (otra sesión); se reusó en vez de levantar uno nuevo.
-- `opus_x64_runtime_test` (gating) sigue colgándose sin imprimir nada
-  -- confirmado también aquí, mismo síntoma que documentó la sesión de
-  Task 3 en debian13. Sigue sin investigar, sigue sin relación con
-  Task 3 ni con estos 4 fixes.
+- `ninja`/`cmake --build` of `opus_original_engine` and `WORD1`: 0
+  errors, the same preexisting warnings as always.
+- Full `ctest` (without `opus_x64_runtime_test`, see note below): same
+  as before these 4 fixes, no regression.
+- **Real gotcha found during this verification, unrelated to the
+  code:** the first run of the `word1_startup_blocked` label gave 0/9
+  with `free(): corrupted unsorted chunks` and `unknown test mode` on
+  all of them, the *original* bug pattern, from before Tasks 1-2.
+  Cause: `build/tests/Debug/opus_word1_ui_test.exe.so` was dated
+  August 12, from **before** the Tasks 1-3 fixes existed in the tree.
+  `cmake --build --target WORD1` does not rebuild the test harness;
+  `--target opus_word1_ui_test` is needed separately. With the
+  harness rebuilt: **4/9** (`word1_port_smoke_test`,
+  `opus_word1_ui_test` base, `opus_word1_clipboard_shortcut_test`,
+  `opus_word1_about_test`), matching the same 4 wins already
+  documented in §1-4 above (the fifth in "5/9" under "How to resume"
+  corresponds to that same base `ui_test`, counted once there). The 5
+  remaining failures (`--typing`, `--interaction`, `--selection`,
+  `--font-typing`, Save As) are exactly the not-yet-started scope of
+  Tasks 5-10, not regressions from these 4 fixes.
+- **A real `Xvfb` is necessary:** without `DISPLAY`, Wine falls back
+  to `nodrv` and everything fails with "Invalid window handle" before
+  reaching the real logic. This VPS already had an `Xvfb :99` running
+  since August 12 (another session); it was reused instead of
+  starting a new one.
+- `opus_x64_runtime_test` (gating) is still hanging without printing
+  anything, confirmed here too, same symptom the Task 3 session
+  documented on debian13. Still not investigated, still unrelated to
+  Task 3 or to these 4 fixes.
 
-4 commits nuevos sobre `16145b6`: uno por hallazgo, mismo formato de
-mensaje que el resto de la rama.
+4 new commits on top of `16145b6`: one per finding, in the same
+message format as the rest of the branch.
 
-## 6. File > New: confirmado -- verify-only, cierra §4
+## 6. File > New: confirmed, verify-only, closes §4
 
-**Task 4 retomada 2026-08-19 en exia.** El plan (Task 4, Step 1) pedía
-correr `opus_word1_ui_test` (modo base) aislado: si pasa sin ningún
-cambio de código, Task 4 es verify-only.
+**Task 4 resumed 2026-08-19 on exia.** The plan (Task 4, Step 1)
+called for running `opus_word1_ui_test` (base mode) in isolation: if
+it passes with no code changes, Task 4 is verify-only.
 
 ```
 ctest -R "^opus_word1_ui_test$" --output-on-failure
@@ -640,203 +656,205 @@ ctest -R "^opus_word1_ui_test$" --output-on-failure
 100% tests passed, 0 tests failed out of 1
 ```
 
-El modo base del arnés (`opus_word1_ui_test.cpp:1964-1995`) manda
-`WM_COMMAND`/`kFileNew` (id 1813), confirma que el diálogo File New
-aparece, que sus controles coinciden con el contrato SDM, lo acepta,
-espera a que cierre y confirma que `Document2` se creó -- exactamente
-el flujo que §4 dejó sin determinar. Pasa limpio, sin ningún cambio de
-código en esta sesión.
+The harness's base mode (`opus_word1_ui_test.cpp:1964-1995`) sends
+`WM_COMMAND`/`kFileNew` (id 1813), confirms the File New dialog
+appears, that its controls match the SDM contract, accepts it, waits
+for it to close, and confirms that `Document2` was created: exactly
+the flow §4 left undetermined. It passes clean, with no code changes
+in this session.
 
-**Confirma la hipótesis de §4** ("la causa más probable... contención
-del build dir compartido, no una regresión de código", no confirmada
-en su momento): mismo root cause que About (Task 3, `_setjmp`/`longjmp`
-ABI), sin bug independiente de File > New. La corrida de §4 falló por
-el entorno compartido de debian13/hp-15 en esa sesión, no por el
-código -- aquí, en exia, sin contención, pasa a la primera.
+**Confirms §4's hypothesis** ("the most likely cause... contention
+over the shared build dir, not a code regression", unconfirmed at the
+time): same root cause as About (Task 3, `_setjmp`/`longjmp` ABI), no
+independent File > New bug. The §4 run failed because of the shared
+debian13/hp-15 environment in that session, not because of the code:
+here, on exia, with no contention, it passes on the first try.
 
-Sin cambios de código para esta sección -- commit de documentación
-solamente.
+No code changes for this section: documentation commit only.
 
-## 7. Save As: "File Save As dialog did not cancel cleanly" -- causa raíz independiente, arreglada
+## 7. Save As: "File Save As dialog did not cancel cleanly": independent root cause, fixed
 
-**Task 5, 2026-08-19 en exia.** A diferencia de Task 4, esta **no**
-comparte causa raíz con Task 3 -- verify-only dio un fallo real, con
-mensaje propio:
+**Task 5, 2026-08-19 on exia.** Unlike Task 4, this one does **not**
+share a root cause with Task 3: verify-only gave a real failure, with
+its own message:
 
 ```
 ctest -R "^opus_word1_save_as_test$" --output-on-failure
     File Save As dialog did not cancel cleanly
 ```
 
-**Causa raíz, confirmada leyendo el código real (no solo el síntoma):**
-`create_dialog_host` (`opus_sdm_runtime.cpp:336`) crea, para
-`kIddOpen`/`kIddSaveAs`, una ventana `WS_POPUP` de clase
-`"OpusSdmDialog"` **sin `WS_VISIBLE`** -- un señuelo que
-`materialize_save_as_template` puebla con controles reales (incluido
-el botón Cancel, id 2). Pero `TmcDoDlgDli` (`opus_sdm_runtime.cpp:2522`)
-nunca usa esa ventana para Open/Save As: para esos dos `hid` llama
-directo a `run_word95_common_file_dialog`, que bloquea el hilo dentro
-de `GetSaveFileNameA`/`GetOpenFileNameA` -- el diálogo real y visible
-es una ventana completamente distinta (`#32770`, el común de Windows/
-Wine), no el señuelo.
+**Root cause, confirmed by reading the real code (not just the
+symptom):** `create_dialog_host` (`opus_sdm_runtime.cpp:336`)
+creates, for `kIddOpen`/`kIddSaveAs`, a `WS_POPUP` window of class
+`"OpusSdmDialog"` **without `WS_VISIBLE`**: a decoy that
+`materialize_save_as_template` populates with real controls
+(including the Cancel button, id 2). But `TmcDoDlgDli`
+(`opus_sdm_runtime.cpp:2522`) never uses that window for Open/Save
+As: for those two `hid` values it calls
+`run_word95_common_file_dialog` directly, which blocks the thread
+inside `GetSaveFileNameA`/`GetOpenFileNameA`; the real, visible
+dialog is a completely different window (`#32770`, the common
+Windows/Wine one), not the decoy.
 
-El arnés de test (razonablemente, seguiendo la misma convención de
-clase que usan *todos los demás* diálogos SDM) busca `"OpusSdmDialog"`
-+ `"Save As"` -- encuentra el señuelo (existe, aunque oculto:
-`EnumWindows` no filtra por visibilidad y nada en `find_window_callback`
-lo hace tampoco), le manda `WM_COMMAND` id=2 al botón Cancel del
-señuelo. `handle_dialog_command` lo recibe (la bomba de mensajes de
-`GetSaveFileNameA` despacha *todos* los mensajes del hilo, no solo los
-de su propia ventana) y llama `finish_native_dialog`, que marca
-`dialog.dying=true` y hace `ShowWindow(SW_HIDE)` -- pero nada de eso
-llega al diálogo real, que sigue bloqueado esperando su propio Cancel.
-`wait_for_window_to_close` espera a que la ventana señuelo *desaparezca*
-(`find_process_window` devuelve null), pero `DestroyWindow` del señuelo
-solo ocurre en `TmcDoDlgDli` **después** de que
-`run_word95_common_file_dialog` retorne -- que nunca pasa. Timeout a
-los 5000 ms.
+The test harness (reasonably, following the same class convention
+that *every other* SDM dialog uses) looks for `"OpusSdmDialog"` +
+`"Save As"`: it finds the decoy (it exists, even though hidden:
+`EnumWindows` does not filter by visibility, and nothing in
+`find_window_callback` does either), and sends `WM_COMMAND` id=2 to
+the decoy's Cancel button. `handle_dialog_command` receives it (the
+message pump inside `GetSaveFileNameA` dispatches *every* message on
+the thread, not just its own window's) and calls
+`finish_native_dialog`, which marks `dialog.dying=true` and does
+`ShowWindow(SW_HIDE)`; but none of that reaches the real dialog, which
+stays blocked waiting for its own Cancel. `wait_for_window_to_close`
+waits for the decoy window to *disappear* (`find_process_window`
+returns null), but the decoy's `DestroyWindow` only happens in
+`TmcDoDlgDli` **after** `run_word95_common_file_dialog` returns, which
+never happens. Times out at 5000 ms.
 
-No es un bug compartido con Task 3, y no es un bug del arnés tampoco
-(apuntar al señuelo es lo correcto dado que ningún otro diálogo de este
-código tiene esta arquitectura de dos ventanas) -- es un hueco real:
-nada conecta el señuelo con el diálogo real que reemplaza.
+It is not a bug shared with Task 3, and it is not a harness bug
+either (targeting the decoy is the correct thing to do, given that no
+other dialog in this code has this two-window architecture): it is a
+real gap: nothing connects the decoy to the real dialog it replaces.
 
-**Fix:** un hook `OFN_ENABLEHOOK`/`lpfnHook` en el `OPENFILENAMEA` de
-`run_word95_common_file_dialog` captura el HWND real del diálogo
-(`GetParent()` del hook, el patrón documentado para diálogos
-`OFN_EXPLORER`) en `WM_INITDIALOG`, guardado en un global
-(`g_active_win95_file_dialog`, limpiado apenas retorna la llamada
-bloqueante). `handle_dialog_command`, para `kIddOpen`/`kIddSaveAs` con
-`tmc == kTmcOk || tmc == kTmcCancel`, ahora reenvía el clic del señuelo
-al diálogo real (`PostMessageA(..., WM_COMMAND, MAKEWPARAM(tmc,
-BN_CLICKED), 0)` -- `IDOK`/`IDCANCEL` coinciden con `kTmcOk`/`kTmcCancel`
-por la misma convención de Windows que ya usa este archivo) en vez de
-llamar `finish_native_dialog` directo -- así es
-`run_word95_common_file_dialog` el que termina el diálogo exactamente
-una vez, igual que si un usuario real hubiera hecho clic en la ventana
-visible.
+**Fix:** an `OFN_ENABLEHOOK`/`lpfnHook` hook in
+`run_word95_common_file_dialog`'s `OPENFILENAMEA` captures the
+dialog's real HWND (the hook's `GetParent()`, the documented pattern
+for `OFN_EXPLORER` dialogs) at `WM_INITDIALOG`, saved in a global
+(`g_active_win95_file_dialog`, cleared as soon as the blocking call
+returns). `handle_dialog_command`, for `kIddOpen`/`kIddSaveAs` with
+`tmc == kTmcOk || tmc == kTmcCancel`, now forwards the decoy's click
+to the real dialog (`PostMessageA(..., WM_COMMAND, MAKEWPARAM(tmc,
+BN_CLICKED), 0)`; `IDOK`/`IDCANCEL` match `kTmcOk`/`kTmcCancel` by the
+same Windows convention this file already uses) instead of calling
+`finish_native_dialog` directly: this way it is
+`run_word95_common_file_dialog` that ends the dialog exactly once,
+just as if a real user had clicked on the visible window.
 
-**Verificado:**
+**Verified:**
 ```
 ctest -R "^opus_word1_save_as_test$" --output-on-failure
     Passed    4.79 sec
 
 ctest -L word1_startup_blocked --output-on-failure
-    5/9 (antes 4/9) -- Save As nuevo, sin regresión en los demás
+    5/9 (previously 4/9): Save As newly green, no regression in the rest
 ```
 
-Archivos: `src/port/original/opus_sdm_runtime.cpp` (global +
-hook + wiring `lpfnHook`/`OFN_ENABLEHOOK` + reenvío en
+Files: `src/port/original/opus_sdm_runtime.cpp` (global + hook +
+wiring `lpfnHook`/`OFN_ENABLEHOOK` + forwarding in
 `handle_dialog_command`).
 
-## 8. `--font-typing`: dos bugs reales encontrados y arreglados, uno localizado y sin cerrar
+## 8. `--font-typing`: two real bugs found and fixed, one located but not closed
 
-**Task 6, 2026-08-19 en exia.** El plan (Step 1) anticipaba que este test
-necesitaba un display real, no Xvfb, para la parte visual ("black popup").
-Esta sesión avanzó sin eso -- el fallo real resultó ser de datos y de
-lógica de foco, no de render -- pero **no cierra** Task 6 del todo: un
-tercer problema queda localizado sin arreglar.
+**Task 6, 2026-08-19 on exia.** The plan (Step 1) anticipated that
+this test needed a real display, not Xvfb, for the visual part
+("black popup"). This session made progress without that: the real
+failure turned out to be about data and focus logic, not rendering,
+but it **does not fully close** Task 6: a third problem is located
+but left unfixed.
 
-**Bug 1 -- nombres de fuente Windows nunca enumerables (arreglado):**
-`installed_windows_fonts()` (opus_sdm_runtime.cpp) enumera con
-`EnumFontFamiliesExA` -- nombres de familia reales, no alias de Windows.
-El test buscaba literales `"Courier New"`/`"Arial"` con
-`CB_FINDSTRINGEXACT`, que nunca aparecen en una pila de fuentes Linux.
-Confirmado con una sonda standalone (`EnumFontFamiliesExA` vía winegcc)
-en dos entornos independientes: exia enumera FreeMono, FreeSans,
-FreeSerif, la familia Liberation, Noto, Unifont, WenQuanYi e IPA; una
-sesión anterior en debian13 vio la familia Liberation, DejaVu, Tahoma,
-MS Sans Serif, Symbol y Wingdings -- cero nombres de alias Windows en
-ninguno de los dos. `installed_windows_fonts()` está bien: es fiel al
-Word real, que tampoco hardcodeaba nombres, enumeraba lo instalado.
-Arreglo: los literales del test pasan a `"Liberation Sans"`/
-`"Liberation Mono"` (los únicos dos nombres que ambos entornos
-comparten; `fonts-liberation` es paquete base común en Debian). Sin
-dependencia nueva -- se consideró instalar fuentes MS reales via
-`winetricks corefonts` y se descartó (licenciamiento, no está en
-ningún otro sitio de este port).
+**Bug 1: Windows font names never enumerable (fixed):**
+`installed_windows_fonts()` (opus_sdm_runtime.cpp) enumerates with
+`EnumFontFamiliesExA`: real family names, not Windows aliases. The
+test was looking for the literals `"Courier New"`/`"Arial"` with
+`CB_FINDSTRINGEXACT`, which never appear in a Linux font stack.
+Confirmed with a standalone probe (`EnumFontFamiliesExA` via winegcc)
+on two independent environments: exia enumerates FreeMono, FreeSans,
+FreeSerif, the Liberation family, Noto, Unifont, WenQuanYi, and IPA; a
+previous session on debian13 saw the Liberation family, DejaVu,
+Tahoma, MS Sans Serif, Symbol, and Wingdings: zero Windows alias
+names on either one. `installed_windows_fonts()` is fine: it is
+faithful to the real Word, which also did not hardcode names, it
+enumerated whatever was installed. Fix: the test's literals change to
+`"Liberation Sans"`/`"Liberation Mono"` (the only two names both
+environments share; `fonts-liberation` is a common base package on
+Debian). No new dependency: installing real MS fonts via `winetricks
+corefonts` was considered and discarded (licensing, it is not used
+anywhere else in this port).
 
-**Bug 2 -- `union FCID` de 8 bytes en Linux, no 4 (arreglado, LP64 real):**
-Con el Bug 1 arreglado el test llegó a un segundo fallo, uno que ya
-existía pero nunca se había alcanzado: `"the packed font identifier is
-not 32 bits"`. Causa: `Opus/fontwin.h`, `union FCID` tiene
-`long lFcid;` -- en Win16/Win32/Win64 `long` siempre fue 4 bytes (Win64
-mantiene el modelo LLP64), pero en Linux x86-64 (LP64) `long` es 8
-bytes. Los otros dos miembros del union (WORD+WORD, y la estructura de
-bitfields `unsigned int`) ya eran de 4 bytes en todas las plataformas
--- solo `long lFcid` duplicaba el tamaño del union completo aquí. Fix
-guardado en `Opus/fontwin.h` (`#if defined(__GNUC__) && !defined(_MSC_VER)`,
-mismo patrón que el guard de `wordwin.h`/`splshare.h`): `int lFcid`
-bajo GCC/Linux, `long lFcid` sin cambios bajo MSVC. Verificado que
-`.lFcid` solo se usa como asignación de patrón de bits completo
-(`= fcidNil`, `= 0L`, `= pchr->l`) en los 3 sitios de uso reales -- nunca
-se compara como valor ancho, así que el cambio de tipo es seguro.
+**Bug 2: `union FCID` is 8 bytes on Linux, not 4 (fixed, real LP64
+issue):** With Bug 1 fixed, the test reached a second failure, one
+that already existed but had never been reached: `"the packed font
+identifier is not 32 bits"`. Cause: in `Opus/fontwin.h`,
+`union FCID` has `long lFcid;`; on Win16/Win32/Win64 `long` was
+always 4 bytes (Win64 keeps the LLP64 model), but on Linux x86-64
+(LP64) `long` is 8 bytes. The union's other two members (WORD+WORD,
+and the `unsigned int` bitfield struct) were already 4 bytes on every
+platform: only `long lFcid` was doubling the size of the whole union
+here. Fix guarded in `Opus/fontwin.h`
+(`#if defined(__GNUC__) && !defined(_MSC_VER)`, the same pattern as
+the `wordwin.h`/`splshare.h` guard): `int lFcid` under GCC/Linux,
+`long lFcid` unchanged under MSVC. Verified that `.lFcid` is only
+used as a full bit-pattern assignment (`= fcidNil`, `= 0L`,
+`= pchr->l`) at the 3 real use sites: it is never compared as a wide
+value, so the type change is safe.
 
-**Bug 3 -- el foco no vuelve al panel del documento tras elegir fuente
-del ribbon (localizado, NO arreglado -- toca `Opus/` restringido):**
-Con los Bugs 1-2 arreglados, el test abre el combo (el clic simulado
-por sí solo no lo hacía -- se añadió un `CB_SHOWDROPDOWN` explícito
-tras el clic, que sí lo abre) y elige el ítem, pero
-`wait_for_focus(pane, 1500ms)` nunca ve el foco Win32 real
-(`GetGUIThreadInfo().hwndFocus`) volver al panel `OpusWwd`.
+**Bug 3: focus does not return to the document pane after choosing a
+font from the ribbon (located, NOT fixed: touches the restricted
+`Opus/` tree):** With Bugs 1-2 fixed, the test opens the combo (the
+simulated click alone did not do it: an explicit `CB_SHOWDROPDOWN`
+after the click was added, which does open it) and chooses the item,
+but `wait_for_focus(pane, 1500ms)` never sees the real Win32 focus
+(`GetGUIThreadInfo().hwndFocus`) come back to the `OpusWwd` pane.
 
-El trace ya existente `OpusX64TraceRibbon` (activo siempre, escribe a
-`build/WORD1-ribbon.txt` -- no necesita instrumentación nueva) muestra
-la cadena completa corriendo sin errores lógicos: `CBN_SELENDOK` →
+The already-existing `OpusX64TraceRibbon` trace (always active,
+writes to `build/WORD1-ribbon.txt`: no new instrumentation needed)
+shows the full chain running with no logic errors: `CBN_SELENDOK` →
 `commit_ribbon_list_selection` → `kDlmKillItemFocus` (ok) →
-`kDlmKillDialogFocus` (ok, aplica la fuente: `original-applied ...
-tmc=5`) → `kDlmDialogClick`. Esta última invoca `FDlgIb` (el handler
-original, `Opus/iconbar1.c:412`, caso `dlmDlgClick`) con el comentario
-explícito "SDM gets the focus, send it back to the pane" y una llamada
-real `SetFocus(hwwdCur == hNil ? NULL : (*hwwdCur)->hwnd)` -- pero el
-trace confirma que devuelve `fFalse` (normal para este caso, no es un
-error: `dlmDlgDblClick` arriba también retorna `fFalse` siempre). El
-`bool focus_result` de `commit_ribbon_list_selection` solo alimenta el
-trace, no cambia ningún flujo -- así que el `SetFocus` real sí debería
-ejecutarse (`vidf.fIBDlgMode` ya está en `fFalse` para ese punto, puesto
-por `dlmKillDlgFocus` un paso antes, así que la rama `if
-(!vidf.fIBDlgMode)` sí entra). Por qué el foco Win32 real no se queda
-en `pane` después de esa llamada -- no investigado más allá de esto:
-candidatos sin descartar son que `hwwdCur` no apunte al mismo HWND que
-`pane`, o que algo dentro del cierre del combo de Wine (limpieza
-interna tras `CB_SHOWDROPDOWN`+clic simulado) le devuelva el foco a sí
-mismo justo después.
+`kDlmKillDialogFocus` (ok, applies the font: `original-applied ...
+tmc=5`) → `kDlmDialogClick`. This last one invokes `FDlgIb` (the
+original handler, `Opus/iconbar1.c:412`, `dlmDlgClick` case) with the
+explicit comment "SDM gets the focus, send it back to the pane" and a
+real `SetFocus(hwwdCur == hNil ? NULL : (*hwwdCur)->hwnd)` call, but
+the trace confirms it returns `fFalse` (normal for this case, not an
+error: `dlmDlgDblClick` above also always returns `fFalse`). The
+`bool focus_result` from `commit_ribbon_list_selection` only feeds
+the trace, it changes no flow, so the real `SetFocus` should indeed
+run (`vidf.fIBDlgMode` is already `fFalse` at that point, set by
+`dlmKillDlgFocus` one step earlier, so the
+`if (!vidf.fIBDlgMode)` branch is entered). Why the real Win32 focus
+does not stay on `pane` after that call was not investigated beyond
+this point: candidates not ruled out are that `hwwdCur` does not
+point to the same HWND as `pane`, or that something inside Wine's
+combo closing (internal cleanup after `CB_SHOWDROPDOWN` + simulated
+click) hands the focus back to itself right afterward.
 
-Esto toca `Opus/iconbar1.c` (árbol restringido) -- necesita autorización
-explícita antes de tocar código ahí, per `CLAUDE.md`. Diagnóstico
-completo, sin cambio de código en `Opus/` esta sesión.
+This touches `Opus/iconbar1.c` (restricted tree): it needs explicit
+authorization before touching code there, per `CLAUDE.md`. Full
+diagnosis, no code change in `Opus/` this session.
 
-**Actualización 2026-08-20 (exia): hipótesis `CBRollUp` descartada, foco
-nunca sale del botón "OK".** Se añadió `wait_for_focus_traced` (variante
-de `wait_for_focus` que loguea cada `hwndFocus` distinto visto, con clase
-y caption) para probar la hipótesis de arriba -- que Wine's `CBRollUp()`
-(dlls/user32/combo.c) corre la cadena SDM completa (incluido el
-`SetFocus(pane)` real de `FDlgIb`) y solo *después* oculta el popup listbox,
-robando el foco como efecto secundario. La traza la contradice: el foco no
-llega a `pane` ni transitoriamente -- se queda fijo en una ventana
-`class=Button caption='OK'` (hwnd distinto cada corrida, ~0x1011x) desde
-el primer poll (`t+0`/`t+1ms`) hasta el timeout de 1500ms, sin un solo
-cambio intermedio. Eso descarta la hipótesis original: no es que el foco
-llegue y se vaya, es que nunca se mueve de ese botón "OK" en absoluto --
-el `SetFocus(hwwdCur->hwnd)` de `FDlgIb` o no se ejecuta, o se ejecuta y
-es inmediatamente revertido a ese botón por algo que corre después (o el
-propio `hwwdCur` no apunta al pane esperado). Candidato más probable:
-ese "OK" es el botón por defecto de algún diálogo/dialog-manager SDM que
-sigue vivo (o se recrea) en ese hilo de mensajes; no identificado más
-allá de clase+caption esta sesión. Sigue sin arreglar, sigue tocando
-`Opus/iconbar1.c` (restringido) -- este hallazgo solo corrige el
-diagnóstico previo, no lo cierra.
+**2026-08-20 update (exia): `CBRollUp` hypothesis ruled out, focus
+never leaves the "OK" button.** `wait_for_focus_traced` was added (a
+variant of `wait_for_focus` that logs every distinct `hwndFocus` seen,
+with class and caption) to test the hypothesis above: that Wine's
+`CBRollUp()` (dlls/user32/combo.c) runs the full SDM chain (including
+`FDlgIb`'s real `SetFocus(pane)`) and only *afterward* hides the popup
+listbox, stealing the focus as a side effect. The trace contradicts
+it: focus never reaches `pane`, not even transiently: it stays fixed
+on a `class=Button caption='OK'` window (a different hwnd each run,
+~0x1011x) from the first poll (`t+0`/`t+1ms`) all the way to the
+1500ms timeout, without a single intermediate change. That rules out
+the original hypothesis: it is not that focus arrives and leaves, it
+is that it never moves off that "OK" button at all: either `FDlgIb`'s
+`SetFocus(hwwdCur->hwnd)` does not run, or it runs and is immediately
+reverted to that button by something that runs afterward (or
+`hwwdCur` itself does not point to the expected pane). Most likely
+candidate: that "OK" is the default button of some SDM
+dialog/dialog-manager that is still alive (or gets recreated) on that
+message thread; not identified beyond class+caption this session.
+Still unfixed, still touching `Opus/iconbar1.c` (restricted): this
+finding only corrects the previous diagnosis, it does not close it.
 
-**Segunda actualización 2026-08-20 (exia): la hipótesis `CBRollUp` tenía
-razón después de todo -- cerrado, arreglado en `opus_sdm_runtime.cpp`, no
-en `Opus/iconbar1.c`.** El párrafo anterior se equivocó de granularidad de
-traza. `wait_for_focus_traced` mide desde un *proceso externo* con poll de
-10ms -- demasiado grueso para ver una ventana de foco que dura microsegundos
-dentro del mismo hilo. Se instrumentó en cambio `FDlgIb` mismo
-(`Opus/iconbar1.c`, autorizado para esta sesión): dos llamadas a
-`OpusX64TraceRibbon` alrededor del `SetFocus(hwwdCur->hwnd)` real,
-`dlgclick-before`/`dlgclick-after`, leyendo `GetFocus()` de forma síncrona
-en el mismo hilo. Resultado, en `build/WORD1-ribbon.txt`:
+**Second 2026-08-20 update (exia): the `CBRollUp` hypothesis was
+right after all: closed, fixed in `opus_sdm_runtime.cpp`, not in
+`Opus/iconbar1.c`.** The previous paragraph got the trace granularity
+wrong. `wait_for_focus_traced` measures from an *external process*
+with a 10ms poll: too coarse to see a focus window that lasts
+microseconds within the same thread. `FDlgIb` itself was instrumented
+instead (`Opus/iconbar1.c`, authorized for this session): two calls
+to `OpusX64TraceRibbon` around the real `SetFocus(hwwdCur->hwnd)`,
+`dlgclick-before`/`dlgclick-after`, reading `GetFocus()` synchronously
+on the same thread. Result, in `build/WORD1-ribbon.txt`:
 
 ```
 commit-end   msg=14 ...
@@ -844,47 +862,48 @@ dlgclick-before msg=18 tmc=0 a=<hwwdCur> b=65770 sel=65750,0 ins=0
 dlgclick-after  msg=18 tmc=0 a=65770 b=0 sel=0,0 ins=0
 ```
 
-`b=65770` = `0x100EA` = `pane`. **`dlgclick-after` confirma que
-`SetFocus(hwwdCur->hwnd)` sí funciona** -- `GetFocus()` es `pane` en el
-instante en que `dlmDlgClick` retorna. `Opus/iconbar1.c` está limpio, no
-tiene ningún bug: hace exactamente lo que el Word 1.1a original hacía.
-Algo *después* de que toda la cadena SDM termina (`commit-end` es el
-último evento de esta traza) deshace ese foco antes de que
-`wait_for_focus_traced` (10ms más tarde) llegue a verlo -- exactamente la
-hipótesis original de `CBRollUp()`: Wine oculta el popup del listbox
-*después* de que `CBN_SELENDOK` retorna, y ocultar una ventana con foco
-reasigna el foco como efecto secundario.
+`b=65770` = `0x100EA` = `pane`. **`dlgclick-after` confirms that
+`SetFocus(hwwdCur->hwnd)` does work**: `GetFocus()` is `pane` at the
+instant `dlmDlgClick` returns. `Opus/iconbar1.c` is clean, it has no
+bug at all: it does exactly what the original Word 1.1a did.
+Something *after* the whole SDM chain finishes (`commit-end` is the
+last event in this trace) undoes that focus before
+`wait_for_focus_traced` (10ms later) gets to see it: exactly the
+original `CBRollUp()` hypothesis: Wine hides the listbox popup *after*
+`CBN_SELENDOK` returns, and hiding a window that has focus reassigns
+focus as a side effect.
 
-Arreglo real, en la capa de puerto sin restringir
-(`src/port/original/opus_sdm_runtime.cpp`, no `Opus/`): `commit_ribbon_
-list_selection` ya reenviaba `CBN_SELENDOK` a través de un mensaje
-pospuesto propio (`kWmCommitRibbonSelection`) para esquivar el cierre no
-confiable del combo nativo. Se agregó un segundo mensaje pospuesto,
-`kWmReassertPaneFocus`, que repite exactamente la misma llamada que ya
-funciona (`invoke_dialog_proc(dialog, kDlmDialogClick, tmc)`, el mismo
-`FDlgIb` de siempre) -- primero vía `PostMessageW` inmediato (insuficiente:
-la traza mostró que ese reintento también aterriza en `pane` y también se
-deshace después), luego vía `SetTimer(..., 50)` de un solo disparo
-(`WM_TIMER` → mata el timer → repite la llamada). El segundo intento, con
-50ms reales de por medio para que la cola de mensajes drene lo que sea que
-esté robando el foco, **se queda**. Verificado con la misma traza síncrona:
-`reassert-focus ... b=65770` (pane), y esta vez `wait_for_focus_traced`
-(el poll externo de 10ms) también lo confirma:
+Real fix, in the unrestricted port layer
+(`src/port/original/opus_sdm_runtime.cpp`, not `Opus/`):
+`commit_ribbon_list_selection` was already forwarding `CBN_SELENDOK`
+through its own posted message (`kWmCommitRibbonSelection`) to dodge
+the native combo's unreliable closing. A second posted message was
+added, `kWmReassertPaneFocus`, which repeats exactly the same call
+that already works (`invoke_dialog_proc(dialog, kDlmDialogClick,
+tmc)`, the same `FDlgIb` as always): first via an immediate
+`PostMessageW` (insufficient: the trace showed that this retry also
+lands on `pane` and also gets undone afterward), then via a one-shot
+`SetTimer(..., 50)` (`WM_TIMER` → kills the timer → repeats the
+call). The second attempt, with 50ms of real time in between so the
+message queue can drain whatever is stealing the focus, **sticks**.
+Verified with the same synchronous trace: `reassert-focus ...
+b=65770` (pane), and this time `wait_for_focus_traced` (the external
+10ms poll) confirms it too:
 
 ```
 [focus-trace] t+1ms hwndFocus=0x100ea class=OpusWwd caption='' (== pane)
 ```
 
-Task 6 Bug 3 **cerrado**. El test avanza más allá del chequeo de foco, a
-un fallo distinto y nuevo: `"newly typed text did not retain the ribbon
-font"` -- el texto recién tecleado no conserva la fuente elegida en el
-ribbon. No es una regresión (antes el test nunca llegaba tan lejos); es
-un cuarto bug real, sin investigar todavía. Etiqueta
-`word1_startup_blocked` sigue en 7/9 (mismos dos conocidos: este nuevo
-fallo de fuente en `--font-typing`, y `--interaction` sin cambios), pero
-el bug real detrás de uno de los dos cambió.
+Task 6 Bug 3 **closed**. The test advances past the focus check, to
+a different, new failure: `"newly typed text did not retain the
+ribbon font"`: the newly typed text does not keep the font chosen in
+the ribbon. This is not a regression (the test never got this far
+before); it is a fourth real bug, not investigated yet. The
+`word1_startup_blocked` label stays at 7/9 (the same two known ones:
+this new font failure in `--font-typing`, and `--interaction`
+unchanged), but the real bug behind one of the two changed.
 
-**Verificado:**
+**Verified:**
 ```
 DISPLAY=:99 ctest -R "^opus_word1_font_typing_test$" --output-on-failure
     [focus-trace] t+1ms hwndFocus=0x100ea class=OpusWwd caption='' (== pane)
@@ -893,98 +912,97 @@ DISPLAY=:99 ctest -R "^opus_word1_font_typing_test$" --output-on-failure
     newly typed text did not retain the ribbon font
 
 DISPLAY=:99 ctest -L word1_startup_blocked --output-on-failure
-    7/9 -- sin regresión en los demás
+    7/9: no regression in the rest
 ```
 
-Archivos: `Opus/iconbar1.c` (traza `dlgclick-before`/`dlgclick-after`,
-autorizado), `src/port/original/opus_sdm_runtime.cpp` (el arreglo real:
+Files: `Opus/iconbar1.c` (`dlgclick-before`/`dlgclick-after` trace,
+authorized), `src/port/original/opus_sdm_runtime.cpp` (the real fix:
 `kWmReassertPaneFocus`, `kReassertPaneFocusTimerId`,
 `DialogState::pending_reassert_tmc`).
 
-**Verificado:**
+**Verified:**
 ```
 DISPLAY=:99 ctest -R "^opus_word1_font_typing_test$" --output-on-failure
     font combo select stages: foreground=1 chose_item=1 regained_focus=0
     font typing test could not mouse-select the font
-    (avanzó de fail(47) "could not find controls" -> fail(49) "could
-    not mouse-select the font", con fallo 47 intermedio de "not 32
-    bits" ya cerrado en el camino)
+    (advanced from fail(47) "could not find controls" -> fail(49) "could
+    not mouse-select the font", with intermediate failure 47 "not 32
+    bits" already closed along the way)
 
 DISPLAY=:99 ctest -L word1_startup_blocked --output-on-failure
-    5/9 -- sin regresión en los demás
+    5/9: no regression in the rest
 ```
 
-Archivos: `src/port/original/opus_word1_ui_test.cpp` (literales de
-fuente, `CB_SHOWDROPDOWN`, diagnóstico de las 3 etapas del clic de
-combo), `Opus/fontwin.h` (guard LP64 de `union FCID`).
+Files: `src/port/original/opus_word1_ui_test.cpp` (font literals,
+`CB_SHOWDROPDOWN`, diagnosis of the combo click's 3 stages),
+`Opus/fontwin.h` (LP64 guard for `union FCID`).
 
-**Tercera actualización 2026-08-20 (exia): "no conserva la fuente" era
-diagnóstico engañoso -- el texto nunca se tecleó. Causa raíz real
-encontrada: `idle.c:503` precarga la fuente con `selCur.chp.hps == 0`,
-`CreateFontIndirect` falla, y el diálogo real de error resultante se
-traga el teclado. Sesión cerrada sin arreglo -- se retoma en Debian 13
-(LXQt).**
+**Third 2026-08-20 update (exia): "does not retain the font" was a
+misleading diagnosis: the text was never actually typed. Real root
+cause found: `idle.c:503` preloads the font with
+`selCur.chp.hps == 0`, `CreateFontIndirect` fails, and the resulting
+real error dialog swallows the keyboard. Session closed without a
+fix: resumed on Debian 13 (LXQt).**
 
-El "cuarto bug" del párrafo anterior resultó ser una lectura
-equivocada. Con foco confirmado correcto en `pane`
-(`[pre-type] hwndFocus=... (== pane)=1`), se trazó `FIsKeyMessage`
-(`Opus/wproc.c:2450`) y el `PeekMessage` del loop principal
-(`OpusOriginalWinMain`, `Opus/wproc.c:~556`): **cero** mensajes
-`WM_CHAR`/`WM_KEYDOWN` llegan a ninguno de los dos durante todo
-`--font-typing`, pese a que `send_physical_text` (SendInput real, no
-`PostMessageW`) reporta éxito. Prueba diferencial decisiva: el mismo
-trace, corrido contra `opus_word1_typing_test` (tecleo simple, sin
-ribbon), sí ve cada tecla (`iskeymsg`/`mainloop-msg` para cada
-`WM_KEYDOWN`/`WM_KEYUP`/`WM_CHAR`, valores `tmc` deletreando
-"ORIGINAL"). La app permanece "responsive"
-(`window_is_responsive`/`WM_NULL` responde) durante toda la falla --
-no es un cuelgue real.
+The "fourth bug" from the previous paragraph turned out to be a
+misreading. With focus confirmed correct on `pane`
+(`[pre-type] hwndFocus=... (== pane)=1`), `FIsKeyMessage`
+(`Opus/wproc.c:2450`) and the main loop's `PeekMessage`
+(`OpusOriginalWinMain`, `Opus/wproc.c:~556`) were traced: **zero**
+`WM_CHAR`/`WM_KEYDOWN` messages reach either one during the whole of
+`--font-typing`, despite `send_physical_text` (real SendInput, not
+`PostMessageW`) reporting success. Decisive differential test: the
+same trace, run against `opus_word1_typing_test` (simple typing, no
+ribbon), does see every key (`iskeymsg`/`mainloop-msg` for every
+`WM_KEYDOWN`/`WM_KEYUP`/`WM_CHAR`, `tmc` values spelling out
+"ORIGINAL"). The app remains "responsive"
+(`window_is_responsive`/`WM_NULL` responds) throughout the failure:
+it is not a real hang.
 
-**Teorías de foco descartadas, todas verificadas empíricamente, ninguna
-cambió el síntoma un solo bit (`applied=3,48 inserted=20,0` idéntico
-en cada intento):**
+**Focus theories ruled out, all verified empirically, none changed
+the symptom by a single bit (`applied=3,48 inserted=20,0` identical
+on every attempt):**
 
-- `SetTimer`-reassert de Task 6 Bug 3 (arriba) desactivado
-  temporalmente -- el test simplemente vuelve a fallar el chequeo de
-  foco original (`regained_focus=0`), sin siquiera llegar al tecleo:
-  confirma que ese fix sigue siendo necesario, pero no es la causa de
-  esto.
-- `SetForegroundWindow(GetAncestor(pane, GA_ROOT))` agregado junto al
-  reassert de foco (`opus_sdm_runtime.cpp`, diagnóstico, sigue en el
-  árbol sin commitear) -- `foreground_result=1`, `root` resuelve
-  correctamente a `main_window`. Sin cambio.
-- Cursor real (`SetCursorPos`) movido al centro de `pane` justo antes
-  de teclear -- por si este Xvfb (sin gestor de ventanas) enrutara
-  input real por posición del puntero (`XGetInputFocus` devuelve
-  `PointerRoot` fijo durante todo el test, confirmado con una sonda
-  standalone en C/Xlib). Sin cambio.
-- `make_foreground_and_focus(main_window, pane, thread_id)` (el mismo
-  helper que sí usa con éxito el bloque `caret_mode`, con su
-  `AttachThreadInput` cruzado entre el proceso de test y el hilo de
-  WORD1) llamado explícitamente antes de `send_physical_text`. Sin
-  cambio -- y de paso se confirmó que `caret_mode`/`--caret` no está
-  registrado como ctest (`src/CMakeLists.txt` solo registra 8 modos),
-  así que ese patrón nunca estuvo realmente probado en este entorno,
-  no era la referencia sólida que parecía.
-- `IsWindowEnabled`, `GetActiveWindow`, captura de mouse
-  (`GUITHREADINFO.hwndCapture`) -- todos correctos (`paneEnabled=1
+- Task 6 Bug 3's `SetTimer`-reassert (above) temporarily disabled:
+  the test simply goes back to failing the original focus check
+  (`regained_focus=0`), without even reaching the typing part: this
+  confirms that fix is still needed, but it is not the cause of this.
+- `SetForegroundWindow(GetAncestor(pane, GA_ROOT))` added alongside
+  the focus reassert (`opus_sdm_runtime.cpp`, diagnostic, still in
+  the tree uncommitted): `foreground_result=1`, `root` resolves
+  correctly to `main_window`. No change.
+- Real cursor (`SetCursorPos`) moved to the center of `pane` right
+  before typing, in case this Xvfb (with no window manager) routed
+  real input by pointer position (`XGetInputFocus` returns
+  `PointerRoot` fixed throughout the whole test, confirmed with a
+  standalone C/Xlib probe). No change.
+- `make_foreground_and_focus(main_window, pane, thread_id)` (the same
+  helper the `caret_mode` block does use successfully, with its
+  `AttachThreadInput` crossed between the test process and WORD1's
+  thread) called explicitly before `send_physical_text`. No change,
+  and along the way it was confirmed that `caret_mode`/`--caret` is
+  not registered as a ctest (`src/CMakeLists.txt` only registers 8
+  modes), so that pattern was never actually exercised in this
+  environment, it was not the solid reference it seemed to be.
+- `IsWindowEnabled`, `GetActiveWindow`, mouse capture
+  (`GUITHREADINFO.hwndCapture`): all correct (`paneEnabled=1
   mainEnabled=1 active=main_window capture=0`).
 
-**Causa real: `EnumThreadWindows` sobre el hilo de WORD1 en el momento
-`[pre-type]` muestra una ventana visible extra, clase `#32770`
-(diálogo estándar de Windows), título `"Microsoft Word"`, con hijos
+**Real cause: `EnumThreadWindows` over WORD1's thread at the
+`[pre-type]` moment shows an extra visible window, class `#32770`
+(standard Windows dialog), title `"Microsoft Word"`, with children
 `Static id=65535 text='Low memory: cannot display requested font'` +
-`Button id=1 text='OK'`.** Ese diálogo real -- no ficticio, no un
-efecto de foco -- corre su propio loop de mensajes modal desde que se
-crea; por eso ni `FIsKeyMessage` ni el `PeekMessage` del loop principal
-ven un solo mensaje después: el hilo está parado dentro del loop del
-diálogo, no en el de Opus. Explica también por qué la app sigue
-"responsive" (el loop del diálogo también atiende `WM_NULL`) y por qué
-ningún arreglo de foco cambió nada -- el foco nunca fue el problema.
+`Button id=1 text='OK'`.** That real dialog, not fictitious, not a
+focus side effect, runs its own modal message loop from the moment it
+is created; that is why neither `FIsKeyMessage` nor the main loop's
+`PeekMessage` see a single message afterward: the thread is parked
+inside the dialog's loop, not Opus's. This also explains why the app
+still reads as "responsive" (the dialog's loop also services
+`WM_NULL`) and why no focus fix changed anything: focus was never the
+problem.
 
-Rastreado hasta el origen exacto (2 puntos de traza nuevos en
-`Opus/LOADFONT.C`, autorizados como continuación de esta misma
-investigación):
+Traced to the exact origin (2 new trace points in `Opus/LOADFONT.C`,
+authorized as a continuation of this same investigation):
 
 ```
 idle.c:503   LoadFont(&selCur.chp, fFalse)   /* "preload new font in
@@ -992,449 +1010,627 @@ idle.c:503   LoadFont(&selCur.chp, fFalse)   /* "preload new font in
                                                  when typing commences" */
   -> C_LoadFcid -> FGraphicsFcidToPlf:
        lf.lfHeight = NMultDiv(fcid.hps * (czaPoint/2), vfli.dysInch, czaInch)
-       trace: fcid.hps=0  vfli.dysInch=96 (DPI normal, no es la causa)
+       trace: fcid.hps=0  vfli.dysInch=96 (normal DPI, not the cause)
        lf.lfHeight=0
-  -> CreateFontIndirect(&lf) devuelve NULL (GetLastError=5,
+  -> CreateFontIndirect(&lf) returns NULL (GetLastError=5,
      ERROR_ACCESS_DENIED)
-  -> SetErrorMat(matFont)  (LOADFONT.C:330, camino LSystemFontErr)
+  -> SetErrorMat(matFont)  (LOADFONT.C:330, LSystemFontErr path)
   -> idle.c / ReportPendingAlerts(): case matFont ->
-     ErrorEid(eidCantRealizeFont, ...) -> el MessageBox real de arriba
+     ErrorEid(eidCantRealizeFont, ...) -> the real MessageBox from above
 ```
 
-`selCur.chp.hps` **debería** ser 48 (24pt, la talla recién elegida en
-el ribbon -- confirmado por separado con
-`SendMessageW(pane, kWmOpusX64QuerySelection, 50, 0)` justo antes de
-teclear) pero en el momento en que corre el preload de `idle.c:503`
-lee `0`. **No cerrado -- pendiente identificar la carrera exacta.**
-`vrf.fPreloadSelFont` se marca `fTrue` en dos sitios
-(`Opus/cmdcore.c:510`, `Opus/dlglook1.c:781`) y se consume una sola vez
-por tick de idle (`Opus/idle.c:488-505`, usa `selCur.chp` tal cual,
-sin resolver `hps==0` a un valor real primero). Candidato más probable
-sin confirmar: el preload dispara y consume la marca justo después de
-elegir la FUENTE (ribbon combo 1), con `selCur.chp.hps` todavía en su
-valor original de documento (0, ver `initial_hps=0` en el trace de
-arriba) -- antes de que la selección de TALLA (ribbon combo 2) llegue
-a escribir 48 ahí. Verificar: en qué tick exacto de idle corre esto
-respecto a los dos `combo-select` del trace de ribbon, y si `hps==0`
-es en sí un estado legítimo (placeholder "heredar de estilo") que
-otros caminos resuelven antes de tocar GDI y este no.
+`selCur.chp.hps` **should** be 48 (24pt, the size just chosen in the
+ribbon: confirmed separately with
+`SendMessageW(pane, kWmOpusX64QuerySelection, 50, 0)` right before
+typing) but at the moment `idle.c:503`'s preload runs it reads `0`.
+**Not closed: the exact race still needs to be identified.**
+`vrf.fPreloadSelFont` is set `fTrue` at two sites
+(`Opus/cmdcore.c:510`, `Opus/dlglook1.c:781`) and consumed once per
+idle tick (`Opus/idle.c:488-505`, uses `selCur.chp` as-is, without
+resolving `hps==0` to a real value first). Most likely candidate,
+unconfirmed: the preload fires and consumes the flag right after
+choosing the FONT (ribbon combo 1), with `selCur.chp.hps` still at
+its original document value (0, see `initial_hps=0` in the trace
+above), before the SIZE selection (ribbon combo 2) gets to write 48
+there. To verify: at which exact idle tick this runs relative to the
+two ribbon trace's `combo-select` events, and whether `hps==0` is
+itself a legitimate state (an "inherit from style" placeholder) that
+other paths resolve before touching GDI and this one does not.
 
-**Diagnóstico dejado en el árbol, sin commitear** (continuidad para la
-sesión en Debian 13/LXQt -- todo bajo `#ifdef OPUS_X64`, guardado,
-no afecta MSVC):
+**Diagnostics left in the tree, uncommitted** (continuity for the
+session on Debian 13/LXQt: all under `#ifdef OPUS_X64`, guarded, does
+not affect MSVC):
 
-- `Opus/LOADFONT.C` -- traza `lfheight-calc` (entrada a
-  `FGraphicsFcidToPlf`, imprime `fcid.hps`/`vfli.dysInch`/
-  `lf.lfHeight`), `matfont-set` (fallo de `CreateFontIndirect`),
-  `screenfail` (fallo de `OurSelectObject` en el DC de pantalla --
-  no se disparó esta sesión, el fallo real fue siempre
+- `Opus/LOADFONT.C`: `lfheight-calc` trace (entry to
+  `FGraphicsFcidToPlf`, prints `fcid.hps`/`vfli.dysInch`/
+  `lf.lfHeight`), `matfont-set` (`CreateFontIndirect` failure),
+  `screenfail` (`OurSelectObject` failure on the screen DC: did not
+  fire this session, the real failure was always
   `CreateFontIndirect`).
-- `Opus/wproc.c` -- traza en `FIsKeyMessage` (entrada,
-  `WM_CHAR`/`WM_KEYDOWN`) y en el `PeekMessage` del loop principal de
-  `OpusOriginalWinMain` (mismo filtro).
-- `Opus/iconbar3.c` -- traza de entrada/salida de `IBDlgLoop()`
-  (descartó la hipótesis de que el loop se quedaba atascado ahí).
-- `Opus/rulerdrw.c` -- traza alrededor de `FGetCharState` en
-  `UpdateRibbon` (descartó que ahí se corrompiera `selCur.chp`).
-- `Opus/wordtech/insert.c` -- traza en `InsertLoopCh` justo después de
-  `GetSelCurChp` (cero hits durante `--font-typing`, confirmando que
-  esa rutina nunca corre -- consistente con el diálogo bloqueante).
-- `src/port/original/opus_sdm_runtime.cpp` -- `SetForegroundWindow`
-  especulativo junto al reassert de foco de Task 6 (no ayudó, inerte,
-  se puede revertir cuando se retome).
-- `src/port/original/opus_word1_ui_test.cpp` -- diagnóstico
-  `[pre-type]` (foco/enabled/active/capture), `[enum-window]`/
-  `[dialog-child]` (el que encontró el diálogo real), llamada a
-  `make_foreground_and_focus` antes de teclear (no ayudó, inerte).
+- `Opus/wproc.c`: trace in `FIsKeyMessage` (entry,
+  `WM_CHAR`/`WM_KEYDOWN`) and in `OpusOriginalWinMain`'s main loop
+  `PeekMessage` (same filter).
+- `Opus/iconbar3.c`: entry/exit trace of `IBDlgLoop()` (ruled out the
+  hypothesis that the loop was getting stuck there).
+- `Opus/rulerdrw.c`: trace around `FGetCharState` in `UpdateRibbon`
+  (ruled out `selCur.chp` getting corrupted there).
+- `Opus/wordtech/insert.c`: trace in `InsertLoopCh` right after
+  `GetSelCurChp` (zero hits during `--font-typing`, confirming that
+  routine never runs: consistent with the blocking dialog).
+- `src/port/original/opus_sdm_runtime.cpp`: speculative
+  `SetForegroundWindow` alongside Task 6's focus reassert (did not
+  help, inert, can be reverted when resumed).
+- `src/port/original/opus_word1_ui_test.cpp`: `[pre-type]` diagnostic
+  (focus/enabled/active/capture), `[enum-window]`/`[dialog-child]`
+  (the one that found the real dialog), a `make_foreground_and_focus`
+  call before typing (did not help, inert).
 
-Nada de esto se commiteó esta sesión -- queda como `M` en
-`git status` en `src/Opus/{LOADFONT.C,iconbar3.c,rulerdrw.c,wproc.c,
-wordtech/insert.c}` y `src/port/original/{opus_sdm_runtime.cpp,
-opus_word1_ui_test.cpp}`. `git status` también muestra `M` en
-`Opus/{ddeclnt.c,etcmd.c,filecvt.c,raremsg.c,spelcore.c}` -- eso es
-contenido de una migración `OpusMem*` de otra sesión en paralelo (mas
-un fix mío de "takeover" sobre una etiqueta `LError` colgante en
-`etcmd.c`/`spelcore.c` que dejaba esos dos archivos sin compilar); no
-tocar esos cinco al continuar salvo que sea la misma sesión que los
-dejó así.
+None of this was committed this session: it shows as `M` in `git
+status` in `src/Opus/{LOADFONT.C,iconbar3.c,rulerdrw.c,wproc.c,
+wordtech/insert.c}` and
+`src/port/original/{opus_sdm_runtime.cpp,opus_word1_ui_test.cpp}`.
+`git status` also shows `M` in
+`Opus/{ddeclnt.c,etcmd.c,filecvt.c,raremsg.c,spelcore.c}`: that is
+content from an `OpusMem*` migration by another parallel session
+(plus a "takeover" fix of mine for a dangling `LError` label in
+`etcmd.c`/`spelcore.c` that left those two files failing to compile);
+do not touch those five when continuing, unless it is the same
+session that left them that way.
 
-**Próximo paso concreto al retomar:** trazar el orden exacto entre
-(a) el momento en que `Opus/dlglook1.c:781`/`Opus/cmdcore.c:510` ponen
-`vrf.fPreloadSelFont = fTrue` tras cada selección de ribbon, y (b) el
-tick de idle que lo consume en `Opus/idle.c:503` -- lo más probable es
-que el preload dispare tras la selección de FUENTE, antes de que la de
-TALLA llegue a escribir `selCur.chp.hps`, y que el arreglo real sea
-usar un hps ya resuelto (o posponer el preload hasta que ambas
-selecciones se hayan aplicado) en vez de tocar `Opus/idle.c` a ciegas.
-Una vez cerrado esto, falta además verificar que el nombre visible del
-diálogo `"Low memory: cannot display requested font"` no es en sí un
-mensaje legítimo de Word 1.1a bajo otras circunstancias (`eidCantRealizeFont`,
-`Opus/wordtech/error.c:933`) -- aquí es un falso positivo de una
-llamada de precarga con datos a medio actualizar, no una condición
-real de memoria.
+**Concrete next step on resuming:** trace the exact order between (a)
+the moment `Opus/dlglook1.c:781`/`Opus/cmdcore.c:510` set
+`vrf.fPreloadSelFont = fTrue` after each ribbon selection, and (b) the
+idle tick that consumes it in `Opus/idle.c:503`: the most likely
+explanation is that the preload fires after the FONT selection,
+before the SIZE selection gets to write `selCur.chp.hps`, and that
+the real fix is to use an already-resolved hps (or postpone the
+preload until both selections have been applied) rather than touching
+`Opus/idle.c` blindly. Once this is closed, it also still needs to be
+verified that the dialog's visible name
+`"Low memory: cannot display requested font"` is not itself a
+legitimate Word 1.1a message under other circumstances
+(`eidCantRealizeFont`, `Opus/wordtech/error.c:933`): here it is a
+false positive from a preload call with half-updated data, not a real
+memory condition.
 
-**Cuarta actualización 2026-08-20 (debian-VM, rama
-`investigate/font-typing-idle-preload`): la teoría de la carrera `hps`
-queda descartada con evidencia directa -- cinco hipótesis probadas y
-descartadas, causa raíz real aún sin localizar.** Esta sesión tenía
-como objetivo *confirmar* la teoría de la "Tercera actualización" de
-arriba y arreglarla en `idle.c`. El arreglo propuesto (`&&
-selCur.chp.hps != 0` en el guard de `idle.c:503`) se implementó,
-compiló y se corrió contra el test real -- y no cambió el síntoma ni
-un bit. Investigar por qué llevó a descartar la teoría entera con
-trazas directas, no lectura de código.
+**Fourth 2026-08-20 update (debian-VM, branch
+`investigate/font-typing-idle-preload`): the `hps` race theory is
+ruled out with direct evidence: five hypotheses tested and ruled out,
+real root cause still not located.** This session's goal was to
+*confirm* the theory from the "Third update" above and fix it in
+`idle.c`. The proposed fix (`&& selCur.chp.hps != 0` in the
+`idle.c:503` guard) was implemented, compiled, and run against the
+real test, and it did not change the symptom by one bit. Investigating
+why led to ruling out the entire theory with direct traces, not code
+reading.
 
-**Entorno de esta sesión:** máquina nueva (`debian-VM`, Debian 13
-trixie, KVM), sin toolchain previo -- se instaló `cmake`/`ninja`/
-`wine`(10.0~repack-6)/`wine64-tools`/`qt6-base-dev`/`Xvfb` vía `apt`, se
-inicializó el prefix de Wine (`wineboot --init`), y se resolvió el
-bloqueo de Configure documentado en el README (`src/port/tools/host/`
-gitignored) con un `CMakeLists.txt` ya preparado para esa carpeta.
-Build limpio de `opus_original_engine`/`WORD1`/`opus_word1_ui_test`,
-0 errores. Repro estable de `opus_word1_font_typing_test ***Failed`
-igual que en exia.
+**Environment for this session:** a new machine (`debian-VM`, Debian
+13 trixie, KVM), with no prior toolchain: `cmake`/`ninja`/`wine`
+(10.0~repack-6)/`wine64-tools`/`qt6-base-dev`/`Xvfb` were installed
+via `apt`, the Wine prefix was initialized (`wineboot --init`), and
+the Configure blocker documented in the README (`src/port/tools/host/`
+gitignored) was resolved with a `CMakeLists.txt` already prepared for
+that folder. Clean build of `opus_original_engine`/`WORD1`/
+`opus_word1_ui_test`, 0 errors. Stable repro of
+`opus_word1_font_typing_test ***Failed`, same as on exia.
 
-**Hipótesis 1 -- carrera `hps` en `idle.c:503` (la de la sesión
-anterior): descartada.** Se instrumentó un trace nuevo
-(`idle-preload-check`) justo al entrar al bloque de preload de
-`Opus/idle.c:488`, antes de cualquier guard. **Cero apariciones en
-todo el test.** El bloque de preload de `idle.c` nunca se alcanza
-durante `--font-typing` -- ni con el guard puesto ni sin él. La
-atribución de la sesión anterior a `idle.c:503` nunca se trazó
-directamente; se infirió leyendo código (`vrf.fPreloadSelFont` /
-`DoLooks`). El guard con `hps != 0` se implementó, compiló, corrió, y
-el diálogo de error siguió apareciendo idéntico.
+**Hypothesis 1: `hps` race in `idle.c:503` (the previous session's):
+ruled out.** A new trace (`idle-preload-check`) was instrumented
+right on entering `Opus/idle.c:488`'s preload block, before any
+guard. **Zero occurrences in the whole test.** The `idle.c` preload
+block is never reached during `--font-typing`, neither with the guard
+in place nor without it. The previous session's attribution to
+`idle.c:503` was never traced directly; it was inferred by reading
+code (`vrf.fPreloadSelFont` / `DoLooks`). The `hps != 0` guard was
+implemented, compiled, run, and the error dialog kept appearing
+identically.
 
-**La llamada real que falla:** instrumentando el return address de
-`C_LoadFont` (`__builtin_return_address(0)`) se confirmó que la
-llamada que sí truena viene de otro lado, no de `LoadFont(pchp,
-fFalse)`. El sitio real, confirmado por `nm`/lectura de código, es
-`Opus/disp1.c`'s `LoadFcidFull(pchr->fcid)` -- llamado una vez por
-carácter durante el repintado del panel del documento (dos sitios,
-disp1.c:832 y disp1.c:1698), usando el `fcid` cacheado en cada
-`CHR`, no `selCur.chp`. Con el documento vacío en `[pre-type]`, esto
-repinta el carácter de fin de párrafo con el `fcid` que sea que tenga
-en ese momento.
+**The real call that fails:** by instrumenting `C_LoadFont`'s return
+address (`__builtin_return_address(0)`) it was confirmed that the
+call that actually blows up comes from somewhere else, not from
+`LoadFont(pchp, fFalse)`. The real site, confirmed by `nm`/reading
+code, is `Opus/disp1.c`'s `LoadFcidFull(pchr->fcid)`: called once per
+character during document-pane repainting (two sites, disp1.c:832 and
+disp1.c:1698), using the `fcid` cached in each `CHR`, not
+`selCur.chp`. With the document empty at `[pre-type]`, this repaints
+the end-of-paragraph character with whatever `fcid` it happens to
+have at that moment.
 
-**Hipótesis 2 -- `hps==0` es la causa: descartada con datos, no
-lectura.** Se añadió un trace (`fcid-identity`) al entrar a
-`C_FGraphicsFcidToPlf` (`Opus/LOADFONT.C`), antes del `Assert(fcid.hps
-> 0)`, mostrando `ibstFont`/`wProps`/`hps`/`kul` en cada llamada,
-éxito o fallo:
+**Hypothesis 2: `hps==0` is the cause: ruled out with data, not
+reading.** A trace (`fcid-identity`) was added on entering
+`C_FGraphicsFcidToPlf` (`Opus/LOADFONT.C`), before the
+`Assert(fcid.hps > 0)`, showing `ibstFont`/`wProps`/`hps`/`kul` on
+every call, success or failure:
 
 ```
 fcid-identity msg=2(ibstFont) hps=0   -> "Helv"             -> OK
-fcid-identity msg=4(ibstFont) hps=0   -> "Liberation Sans"  -> matfont-set (falla)
+fcid-identity msg=4(ibstFont) hps=0   -> "Liberation Sans"  -> matfont-set (fails)
 ```
 
-`hps` es **idéntico** (0) en ambos casos -- uno pasa, el otro falla.
-El único que cambia es qué fuente (`ibstFont`) se pide. `hps==0` no es
-la causa; es incidental.
+`hps` is **identical** (0) in both cases: one passes, the other
+fails. The only thing that changes is which font (`ibstFont`) is
+requested. `hps==0` is not the cause; it is incidental.
 
-**Hipótesis 3 -- charset corrupto (`lfCharSet=255`, `OEM_CHARSET`):
-real pero insuficiente por sí sola.** Añadiendo el nombre real de la
-fuente al trace (pasando `pffn->szFfn` como `stage` de
-`OpusX64TraceRibbon`), se confirmó `lfCharSet=255` para "Liberation
-Sans" contra `lfCharSet=0` para "Helv". Sondas standalone
-(`EnumFontFamiliesExA` y el `EnumFontsA` legacy que usa
-`Opus/SYSCHG.C:FontNameEnum`, ambas contra un DC de pantalla) **nunca**
-devuelven 255 para esa fuente -- los valores reales enumerados son 0,
-238, 204, 161, 162, 177, 186, 163. `FontNameEnum` copia fielmente
-`lplf->lfCharSet` (línea ~775: `ChsPffn(pffn) = lplf->lfCharSet;`),
-así que el 255 no es un bug de copia -- viene de que `FillHsttbPaf`
-enumera contra `vpri.hdc` (el DC de **impresora**, no pantalla), y
-este prefix de Wine no tenía ninguna impresora configurada
-(`wine control printers` vacío, `lpstat` "No se han añadido
-destinos.", `GetDefaultPrinterA` devolvía error 2).
+**Hypothesis 3: corrupt charset (`lfCharSet=255`, `OEM_CHARSET`):
+real but insufficient on its own.** Adding the font's real name to
+the trace (passing `pffn->szFfn` as `OpusX64TraceRibbon`'s `stage`)
+confirmed `lfCharSet=255` for "Liberation Sans" against `lfCharSet=0`
+for "Helv". Standalone probes (`EnumFontFamiliesExA` and the legacy
+`EnumFontsA` that `Opus/SYSCHG.C:FontNameEnum` uses, both against a
+screen DC) **never** return 255 for that font: the real enumerated
+values are 0, 238, 204, 161, 162, 177, 186, 163. `FontNameEnum`
+faithfully copies `lplf->lfCharSet` (line ~775:
+`ChsPffn(pffn) = lplf->lfCharSet;`), so the 255 is not a copy bug: it
+comes from `FillHsttbPaf` enumerating against `vpri.hdc` (the
+**printer** DC, not screen), and this Wine prefix had no printer
+configured at all (`wine control printers` empty, `lpstat`
+"No destinations have been added.", `GetDefaultPrinterA` returned
+error 2).
 
-Arreglo aplicado en `Opus/LOADFONT.C` (`C_FGraphicsFcidToPlf`, antes
-de `bltbyte(...lfFaceName...)`): si `plf->lfCharSet == OEM_CHARSET`,
-usar `DEFAULT_CHARSET` en su lugar (guardado bajo `OPUS_X64`). Este
-fix es correcto y se queda -- `OEM_CHARSET` sin impresora real es un
-valor sin sentido, no algo que Opus debería propagar a
-`CreateFontIndirect` -- pero **no arregla el test solo**: con el
-charset ya saneado (confirmado por trace, `lfCharSet=1`),
-`CreateFontIndirect` **sigue fallando** para "Liberation Sans".
+Fix applied in `Opus/LOADFONT.C` (`C_FGraphicsFcidToPlf`, before
+`bltbyte(...lfFaceName...)`): if `plf->lfCharSet == OEM_CHARSET`, use
+`DEFAULT_CHARSET` instead (guarded under `OPUS_X64`). This fix is
+correct and stays: `OEM_CHARSET` with no real printer is a
+meaningless value, not something Opus should propagate to
+`CreateFontIndirect`, but **it does not fix the test on its own**:
+with the charset already sanitized (confirmed by trace,
+`lfCharSet=1`), `CreateFontIndirect` **still fails** for "Liberation
+Sans".
 
-**Efecto secundario explorado: agregar una impresora real cambia el
-síntoma pero no lo arregla.** Se configuró una cola CUPS dummy
-(`GenericPS`, PPD genérico PostScript, `device-uri file:///dev/null`)
-para darle a Wine una impresora real -- confirmado con una sonda
-standalone (`GetDefaultPrinterA`/`EnumPrintersA`) que Wine la veía en
-vivo. Con impresora presente, `vfli.fFormatAsPrint` activa el camino
-de dos dispositivos en `C_LoadFont` (`LOADFONT.C:121-135`): una
-petición de fuente de impresora *además* de la de pantalla. El
-charset de pantalla salió limpio (163, un valor real de la
-enumeración), pero la petición del **lado impresora** trajo su propio
-dato corrupto (`lfHeight=-5`, `fcid.wProps=1920` -- un valor de
-bitfield sin sentido) y también falló. Esto es un bug distinto,
-dormido, en un subsistema distinto (formato para impresión, no
-tecleo/ribbon) -- fuera de alcance de este ítem. **La impresora
-`GenericPS` se quitó** (`sudo lpadmin -x GenericPS`, confirmado con la
-misma sonda que Wine ya no ve ninguna impresora) -- no queda cambio de
-entorno persistente. Sin la impresora, el camino vuelve a ser de un
-solo dispositivo (pantalla), el mismo que protege el fix de charset de
-arriba.
+**Side effect explored: adding a real printer changes the symptom
+but does not fix it.** A dummy CUPS queue was configured
+(`GenericPS`, generic PostScript PPD, `device-uri file:///dev/null`)
+to give Wine a real printer: confirmed with a standalone probe
+(`GetDefaultPrinterA`/`EnumPrintersA`) that Wine saw it live. With a
+printer present, `vfli.fFormatAsPrint` activates the two-device path
+in `C_LoadFont` (`LOADFONT.C:121-135`): a printer font request *in
+addition to* the screen one. The screen charset came out clean (163,
+a real enumerated value), but the **printer-side** request brought
+its own corrupt data (`lfHeight=-5`, `fcid.wProps=1920`, a
+meaningless bitfield value) and also failed. This is a different,
+dormant bug, in a different subsystem (print formatting, not
+typing/ribbon): out of scope for this item. **The `GenericPS` printer
+was removed** (`sudo lpadmin -x GenericPS`, confirmed with the same
+probe that Wine no longer sees any printer): no persistent environment
+change remains. Without the printer, the path goes back to a single
+device (screen), the same one the charset fix above protects.
 
-**Hipótesis 4 -- caché de fuentes (`PfceLruGet`, desalojo de slot LRU):
-descartada.** `ifceMax` = 32 (`Opus/fontwin.h:11`) -- nada cerca de
-agotarse con 2 fuentes distintas pedidas. Se instrumentaron ambos
-puntos de retorno de `PfceLruGet` (`Opus/LOADFONT.C:1037`): slot libre
-encontrado sin desalojo (`pfce-free-slot`) vs. desalojo de LRU
-(`pfce-evicted-slot`). Resultado: "Helv" recibe el slot 0 libre;
-"Liberation Sans" recibe el slot 1 libre. **Ningún desalojo ocurre.**
-La caché está sana.
+**Hypothesis 4: font cache (`PfceLruGet`, LRU slot eviction): ruled
+out.** `ifceMax` = 32 (`Opus/fontwin.h:11`): nowhere near exhausted
+with 2 different fonts requested. Both of `PfceLruGet`'s return
+points (`Opus/LOADFONT.C:1037`) were instrumented: free slot found
+with no eviction (`pfce-free-slot`) vs. LRU eviction
+(`pfce-evicted-slot`). Result: "Helv" receives free slot 0;
+"Liberation Sans" receives free slot 1. **No eviction happens at
+all.** The cache is sound.
 
-**Hipótesis 5 -- `GetLastError()` real (183, `ERROR_ALREADY_EXISTS`):
-descartada -- era ruido, no señal.** El `183` apareció idéntico en
-tres estados de código/entorno distintos a lo largo de la sesión, lo
-cual parecía significativo -- pero GDI no garantiza fijar un error
-fresco en cada llamada. Se añadió `SetLastError(0)` justo antes del
-`CreateFontIndirect` que falla (`Opus/LOADFONT.C:333`). Resultado:
-`GetLastError()` da **0** después de la falla. El `183` que se venía
-seteando era remanente de alguna llamada anterior en el mismo tick,
-no algo que `CreateFontIndirect` haya fijado. Esta pista quedó
-inválida desde el principio.
+**Hypothesis 5: the real `GetLastError()` (183,
+`ERROR_ALREADY_EXISTS`): ruled out, it was noise, not signal.** The
+`183` showed up identically across three different code/environment
+states throughout the session, which seemed significant, but GDI does
+not guarantee setting a fresh error on every call. `SetLastError(0)`
+was added right before the failing `CreateFontIndirect`
+(`Opus/LOADFONT.C:333`). Result: `GetLastError()` gives **0** after
+the failure. The `183` that kept showing up was left over from some
+earlier call in the same tick, not something `CreateFontIndirect` had
+set. This lead was invalid from the start.
 
-**Hipótesis 6 -- buffer de `szFfn` demasiado chico para nombres largos
-(Win16-legacy, ≤7 chars): descartada.** `struct FFN` (`fontwin.h:39`)
-tiene `CHAR szFfn[]` -- flexible, no un tamaño fijo chico. `LF_FACESIZE`
-está definido correctamente en `Opus/lib/qwindows.h:1235` como `32`
-(el valor Win32 real, no un valor Win16 heredado más chico). El buffer
-de staging en `FontNameEnum` (`Opus/SYSCHG.C`), `CHAR rgbFfn[cbFfnLast]`
-con `cbFfnLast = offset(FFN,szFfn) + LF_FACESIZE + 1`, tiene margen de
-sobra para "Liberation Sans\0" (16 bytes de 33 disponibles). No se
-llegó a revisar el *storage* permanente en `vhsttbFont`
-(`IbstAddStToSttb`/`FChangeStInSttb`, `Opus/SYSCHG.C:~789`) -- ese es
-un candidato real para una próxima sesión, distinto de lo que se
-descartó acá.
+**Hypothesis 6: `szFfn` buffer too small for long names (Win16-legacy,
+≤7 chars): ruled out.** `struct FFN` (`fontwin.h:39`)
+has `CHAR szFfn[]`: flexible, not a small fixed size. `LF_FACESIZE`
+is correctly defined in `Opus/lib/qwindows.h:1235` as `32` (the real
+Win32 value, not a smaller inherited Win16 one). The staging buffer in
+`FontNameEnum` (`Opus/SYSCHG.C`), `CHAR rgbFfn[cbFfnLast]` with
+`cbFfnLast = offset(FFN,szFfn) + LF_FACESIZE + 1`, has plenty of room
+for "Liberation Sans\0" (16 bytes out of 33 available). The permanent
+*storage* in `vhsttbFont`
+(`IbstAddStToSttb`/`FChangeStInSttb`, `Opus/SYSCHG.C:~789`) was not
+reviewed: that is a real candidate for a future session, distinct
+from what was ruled out here.
 
-**Estado al cortar: seis hipótesis descartadas con evidencia directa
-(trazas y sondas standalone, no lectura de código sola). Causa raíz de
-por qué `CreateFontIndirect` devuelve `NULL` para "Liberation Sans"
-(segunda fuente distinta pedida, cualquier `hps`, charset ya válido,
-slot de caché sano, sin error GDI fijado) sigue sin localizar.**
-Patrón que sí se sostiene en todas las corridas: la *primera* fuente
-distinta pedida (`Helv`) siempre funciona; la *segunda* (`Liberation
-Sans`) siempre falla -- pero el mecanismo detrás de ese patrón no está
-identificado.
+**Status at cutoff: six hypotheses ruled out with direct evidence
+(traces and standalone probes, not code reading alone). The root
+cause of why `CreateFontIndirect` returns `NULL` for "Liberation
+Sans" (the second distinct font requested, any `hps`, charset already
+valid, cache slot sound, no GDI error set) remains unlocated.** The
+pattern that does hold across every run: the *first* distinct font
+requested (`Helv`) always works; the *second* (`Liberation Sans`)
+always fails, but the mechanism behind that pattern is not
+identified.
 
-**Candidatos no explorados para la próxima sesión:**
-- `IbstAddStToSttb`/`FChangeStInSttb` (`Opus/SYSCHG.C`): el storage
-  permanente en `vhsttbFont`, distinto del buffer de staging ya
-  descartado en la Hipótesis 6.
-- Diferencia entre `pffn->fGraphics`/`fRaster` para "Helv" vs.
-  "Liberation Sans" -- se notó (sin confirmar del todo) que
-  `fGraphics` probablemente da `fFalse` para "Liberation Sans" via la
-  enumeración de impresora (`fty & DEVICE_FONTTYPE` puesto), algo que
-  el guard de charset de arriba tuvo que dejar de usar como condición
-  porque nunca disparaba.
-- Instrumentar el propio `lf` completo (`LOGFONT`) justo antes de
-  `CreateFontIndirect` -- se comparó `lfHeight`/`lfWeight`/`lfCharSet`
-  pero no `lfPitchAndFamily`, `lfQuality`, ni el contenido final de
-  `lfFaceName` byte a byte.
+**Candidates not explored for the next session:**
+- `IbstAddStToSttb`/`FChangeStInSttb` (`Opus/SYSCHG.C`): the
+  permanent storage in `vhsttbFont`, distinct from the staging buffer
+  already ruled out in Hypothesis 6.
+- Difference between `pffn->fGraphics`/`fRaster` for "Helv" vs.
+  "Liberation Sans": it was noticed (without full confirmation) that
+  `fGraphics` probably gives `fFalse` for "Liberation Sans" via the
+  printer enumeration (`fty & DEVICE_FONTTYPE` set), something the
+  charset guard above had to stop using as a condition because it
+  never fired.
+- Instrument the entire `lf` (`LOGFONT`) itself right before
+  `CreateFontIndirect`: `lfHeight`/`lfWeight`/`lfCharSet` were
+  compared, but not `lfPitchAndFamily`, `lfQuality`, nor
+  `lfFaceName`'s final byte-for-byte content.
 
-**Archivos modificados esta sesión (sin commitear):**
-- `src/Opus/idle.c`: el guard `hps != 0` **se revirtió** (la condición
-  original queda intacta) porque nunca se ejecuta y su justificación
-  quedó descartada; se dejó el trace `idle-preload-check` (prueba de
-  que el bloque nunca se alcanza) y un comentario apuntando a esta
-  sección.
-- `src/Opus/LOADFONT.C`: el fix real que se queda (`OEM_CHARSET` ->
-  `DEFAULT_CHARSET` en `C_FGraphicsFcidToPlf`, sin condicionar a
-  `fGraphics`) + trazas nuevas (`loadfont-caller` con return address,
-  `fcid-identity`, nombre real de fuente como `stage`,
-  `pfce-free-slot`/`pfce-evicted-slot`, `SetLastError(0)` antes de
-  `CreateFontIndirect`). Todo guardado bajo `#ifdef OPUS_X64`, no toca
-  MSVC.
+**Files modified this session (uncommitted):**
+- `src/Opus/idle.c`: the `hps != 0` guard **was reverted** (the
+  original condition stays intact) because it never runs and its
+  justification was ruled out; the `idle-preload-check` trace was
+  left in place (proof that the block is never reached), plus a
+  comment pointing to this section.
+- `src/Opus/LOADFONT.C`: the real fix that stays (`OEM_CHARSET` ->
+  `DEFAULT_CHARSET` in `C_FGraphicsFcidToPlf`, not conditioned on
+  `fGraphics`) plus new traces (`loadfont-caller` with return
+  address, `fcid-identity`, the real font name as `stage`,
+  `pfce-free-slot`/`pfce-evicted-slot`, `SetLastError(0)` before
+  `CreateFontIndirect`). All guarded under `#ifdef OPUS_X64`, does
+  not touch MSVC.
 
-**Cambio de entorno completamente revertido:** la impresora CUPS
-`GenericPS` que se probó para la Hipótesis 3 se quitó; confirmado con
-sonda standalone que Wine ya no ve ninguna impresora. No queda drift
-de entorno.
+**Environment change fully reverted:** the CUPS `GenericPS` printer
+used to test Hypothesis 3 was removed; confirmed with a standalone
+probe that Wine no longer sees any printer. No environment drift
+remains.
 
-**Quinta actualización 2026-08-20 (exia): tres hipótesis más
-descartadas, un bug real distinto encontrado y arreglado (no relacionado
-con la falla), y confirmación decisiva de que la causa NO es una
-limitación de Wine.** Continuación directa de la sesión anterior (pull
-de `6417213`), revisando los dos candidatos que quedaron anotados sin
-explorar.
+**Fifth 2026-08-20 update (exia): three more hypotheses ruled out, a
+different real bug found and fixed (unrelated to the failure), and
+decisive confirmation that the cause is NOT a Wine limitation.**
+Direct continuation of the previous session (pull of `6417213`),
+reviewing the two candidates left noted but unexplored.
 
-**Hipótesis 7 -- `pffn->fGraphics`/`fty` (candidato anotado, no un
-mecanismo nuevo): descartada como explicación, ya estaba confirmada en
-el código.** El comentario ya presente en `Opus/LOADFONT.C` (líneas
-~996-999, agregado en la sesión anterior) confirma que `fGraphics` da
-`fFalse` para "Liberation Sans" por la misma enumeración contra
-`vpri.hdc` que corrompió el charset -- mismo origen ya identificado, no
-un mecanismo distinto. `fGraphics` solo se guarda en `pfce->fGraphics`/
-`vfli.fGraphics` (grep confirmado: sin ningún `if` que dependa de él
-antes de `CreateFontIndirect`), así que no puede ser la causa de que la
-llamada falle.
+**Hypothesis 7: `pffn->fGraphics`/`fty` (a noted candidate, not a new
+mechanism): ruled out as an explanation, it was already confirmed in
+the code.** The comment already present in `Opus/LOADFONT.C` (lines
+~996-999, added in the previous session) confirms that `fGraphics`
+gives `fFalse` for "Liberation Sans" via the same enumeration against
+`vpri.hdc` that corrupted the charset: the same origin already
+identified, not a different mechanism. `fGraphics` is only stored in
+`pfce->fGraphics`/`vfli.fGraphics` (confirmed by grep: no `if`
+depends on it before `CreateFontIndirect`), so it cannot be the
+reason the call fails.
 
-**Hipótesis 8 -- `lfPitchAndFamily` corrupto (`FF_DONTCARE=0` vs.
-`FF_SWISS=32` de "Helv"): real, pero no causal -- descartada
-empíricamente, no por lectura.** Un trace del `LOGFONT` completo justo
-antes de `CreateFontIndirect` (todos los campos no revisados antes:
+**Hypothesis 8: corrupt `lfPitchAndFamily` (`FF_DONTCARE=0` vs.
+`FF_SWISS=32` for "Helv"): real, but not causal, ruled out
+empirically, not by reading.** A trace of the complete `LOGFONT`
+right before `CreateFontIndirect` (every field not checked before:
 `lfPitchAndFamily`, `lfQuality`, `lfOutPrecision`, `lfClipPrecision`,
-`lfWidth`, `lfEscapement`) mostró que **todo es idéntico entre "Helv" y
-"Liberation Sans" excepto `lfPitchAndFamily`**: 32 (`FF_SWISS`) contra 0
-(`FF_DONTCARE`) -- mismo origen que la Hipótesis 3/7 (`pffn->ffid`
-corrupto por la misma enumeración sin impresora). Se forzó
-`lfPitchAndFamily` a `FF_SWISS` para "Liberation Sans" como prueba
-empírica directa (no como arreglo definitivo) -- **mismo fallo
-idéntico**, `CreateFontIndirect` sigue devolviendo `NULL`. Revertido.
-`FF_DONTCARE` es un valor legítimo y común en Windows real; no es la
-causa.
+`lfWidth`, `lfEscapement`) showed that **everything is identical
+between "Helv" and "Liberation Sans" except `lfPitchAndFamily`**: 32
+(`FF_SWISS`) against 0 (`FF_DONTCARE`), the same origin as Hypothesis
+3/7 (`pffn->ffid` corrupted by the same printer-less enumeration).
+`lfPitchAndFamily` was forced to `FF_SWISS` for "Liberation Sans" as
+a direct empirical test (not as a definitive fix): **the exact same
+failure**, `CreateFontIndirect` still returns `NULL`. Reverted.
+`FF_DONTCARE` is a legitimate, common value on real Windows; it is
+not the cause.
 
-**Bug real encontrado (no causal para esta falla, arreglado de todos
-modos): lectura fuera de límites en `bltbyte(pffn->szFfn,
-plf->lfFaceName, LF_FACESIZE)`.** `struct FFN.szFfn` es un flexible
-array member (`CHAR szFfn[]; /* Variable length */`, `Opus/fontwin.h`),
-almacenado en la STTB (`IbstAddStToSttb`/`FInsStInSttb1`,
-`Opus/wordtech/sttb.c`) con tamaño exacto Pascal-string (`CbSzOfPffn`),
-nunca 32 bytes. El `bltbyte` original copiaba 32 bytes fijos sin
-importar el tamaño real asignado -- lectura fuera de límites genuina
-para cualquier nombre de fuente más corto de 31 caracteres (es decir,
-prácticamente todos). Confirmado con un dump hexadecimal de
-`lf.lfFaceName[16..31]` para ambas fuentes: para "Helv" (entrada
-sembrada al arranque, junto a otras entradas cortas válidas en memoria)
-el byte de posición 15 es un carácter real ('e') seguido de más
-contenido no-nulo -- el over-read cae en datos de OTRA entrada válida
-adyacente. Para "Liberation Sans" (15 caracteres, agregada en runtime)
-el byte 15 es correctamente `\0` (el nombre termina bien), pero el byte
-16 es `0xFF` seguido de ceros -- **el over-read cae en memoria genuina
-fuera de la entrada real.** En ambos casos, sin embargo, el terminador
-nulo real cae en la posición correcta (4 para "Helv", 15 para
-"Liberation Sans") -- y GDI/`CreateFontIndirect`, igual que `%s`, deja
-de leer en el primer `\0`. **Esto descarta la hipótesis de corrupción
-de nombre como causa de esta falla específica** -- el nombre que
-`CreateFontIndirect` realmente ve es correcto en ambos casos -- pero
-sigue siendo un bug real (comportamiento indefinido, lectura de heap
-sin inicializar) que se arregló de todos modos: `Opus/LOADFONT.C`
-ahora hace `SetBytes(plf->lfFaceName, 0, LF_FACESIZE)` seguido de un
-`bltbyte` acotado a `CbSzOfPffn(pffn)` bytes reales (guardado bajo
-`#if defined(__GNUC__) && !defined(_MSC_VER)`, MSVC sigue con el
-`bltbyte` de 32 bytes original sin cambios).
+**Real bug found (not causal for this failure, fixed anyway):
+out-of-bounds read in `bltbyte(pffn->szFfn, plf->lfFaceName,
+LF_FACESIZE)`.** `struct FFN.szFfn` is a flexible array member
+(`CHAR szFfn[]; /* Variable length */`, `Opus/fontwin.h`), stored in
+the STTB (`IbstAddStToSttb`/`FInsStInSttb1`, `Opus/wordtech/sttb.c`)
+with an exact Pascal-string size (`CbSzOfPffn`), never 32 bytes. The
+original `bltbyte` copied a fixed 32 bytes regardless of the real
+allocated size: a genuine out-of-bounds read for any font name
+shorter than 31 characters (that is, practically all of them).
+Confirmed with a hex dump of `lf.lfFaceName[16..31]` for both fonts:
+for "Helv" (an entry seeded at startup, next to other valid short
+entries in memory) byte position 15 is a real character ('e')
+followed by more non-null content: the over-read lands on data from
+ANOTHER, adjacent valid entry. For "Liberation Sans" (15 characters,
+added at runtime) byte 15 is correctly `\0` (the name ends fine), but
+byte 16 is `0xFF` followed by zeros: **the over-read lands on genuine
+memory outside the real entry.** In both cases, however, the real
+null terminator lands in the correct position (4 for "Helv", 15 for
+"Liberation Sans"), and GDI/`CreateFontIndirect`, like `%s`, stops
+reading at the first `\0`. **This rules out the name-corruption
+hypothesis as the cause of this specific failure**: the name
+`CreateFontIndirect` actually sees is correct in both cases, but it
+is still a real bug (undefined behavior, uninitialized heap read)
+that was fixed anyway: `Opus/LOADFONT.C` now does
+`SetBytes(plf->lfFaceName, 0, LF_FACESIZE)` followed by a `bltbyte`
+bounded to `CbSzOfPffn(pffn)` real bytes (guarded under
+`#if defined(__GNUC__) && !defined(_MSC_VER)`, MSVC keeps the
+original 32-byte `bltbyte` unchanged).
 
-**Confirmación decisiva: no es una limitación de Wine para estos
-parámetros.** Con cada campo de `LOGFONT` inspeccionable ya descartado
-o idéntico, y el nombre confirmado correcto hasta su `\0`, se armó una
-sonda standalone (`winegcc`, sin código de este proyecto -- mismo
-patrón que la "Confirmación decisiva" de §12/`--interaction`) que
-llama `CreateFontIndirectA` con el `LOGFONT` **byte por byte idéntico**
-al que falla dentro de WORD1 (`lfFaceName="Liberation Sans"`,
-`lfHeight=0`, `lfWeight=400`, `lfCharSet=1`, `lfQuality=4`,
-`lfPitchAndFamily=0` y también probado con `32`, resto en cero).
-**Ambas variantes tienen éxito** (`hfont` no nulo, `GetLastError=0`) en
-un proceso limpio, mismo binario de Wine, mismo prefix. Esto descarta
-por completo que sea una limitación de Wine para esta combinación de
-parámetros -- el mismo `CreateFontIndirectA` con los mismos datos
-funciona perfecto fuera de WORD1. La causa está genuinamente en algo
-del estado de proceso/GDI de WORD1 en ese momento, no en los datos que
-se piden.
+**Decisive confirmation: this is not a Wine limitation for these
+parameters.** With every inspectable `LOGFONT` field already ruled
+out or identical, and the name confirmed correct up to its `\0`, a
+standalone probe was built (`winegcc`, no code from this project: the
+same pattern as the "Decisive confirmation" in §12/`--interaction`)
+that calls `CreateFontIndirectA` with the `LOGFONT` **byte-for-byte
+identical** to the one that fails inside WORD1
+(`lfFaceName="Liberation Sans"`, `lfHeight=0`, `lfWeight=400`,
+`lfCharSet=1`, `lfQuality=4`, `lfPitchAndFamily=0`, also tested with
+`32`, the rest zeroed). **Both variants succeed** (`hfont` non-null,
+`GetLastError=0`) in a clean process, the same Wine binary, the same
+prefix. This completely rules out a Wine limitation for this
+parameter combination: the same `CreateFontIndirectA` with the same
+data works perfectly outside WORD1. The cause genuinely lies in some
+part of WORD1's process/GDI state at that moment, not in the data
+being requested.
 
-**Hipótesis de agotamiento de handles GDI: descartada, sin necesidad de
-medir vía `GetGuiResources`.** Se intentó medir el conteo de objetos
-GDI del proceso WORD1 desde el arnés de test (`GetGuiResources(hProcess,
-GR_GDIOBJECTS)`) -- esta build de Wine lo tiene sin implementar,
-siempre devuelve 0. Señal inútil, descartada como método. Pero un
-conteo más simple resultó decisivo: el trace `loadfont-caller`
-(`__builtin_return_address` de cada llamada a `C_LoadFont`) aparece
-**35 veces** en toda la corrida del test, pero `fcid-identity` (el
-único punto que de verdad llega a `C_FGraphicsFcidToPlf`/
-`CreateFontIndirect`, tras pasar los CASE 1-3 de caché de
-`C_LoadFcid`) aparece solo **2 veces** -- las otras 33 son *cache
-hits*, nunca llegan a pedir una fuente nueva a GDI. Con solo 2
-creaciones reales de fuente en toda la corrida, un límite de 10.000
-handles por proceso (el límite clásico de Windows) queda
-completamente fuera de alcance. Descartado sin ambigüedad.
+**GDI handle exhaustion hypothesis: ruled out, no need to measure via
+`GetGuiResources`.** An attempt was made to measure WORD1's GDI
+object count from the test harness (`GetGuiResources(hProcess,
+GR_GDIOBJECTS)`): this Wine build has it unimplemented, it always
+returns 0. Useless signal, ruled out as a method. But a simpler count
+turned out to be decisive: the `loadfont-caller` trace
+(`__builtin_return_address` of every call to `C_LoadFont`) appears
+**35 times** across the whole test run, but `fcid-identity` (the only
+point that actually reaches `C_FGraphicsFcidToPlf`/
+`CreateFontIndirect`, after passing `C_LoadFcid`'s CASE 1-3 cache
+checks) appears only **2 times**: the other 33 are *cache hits*, they
+never get to requesting a new font from GDI. With only 2 real font
+creations in the whole run, a 10,000-handle-per-process limit (the
+classic Windows limit) is completely out of reach. Ruled out
+unambiguously.
 
-**Estado al cortar (segunda vez): nueve hipótesis descartadas en total
-con evidencia directa** (las seis de la actualización anterior + estas
-tres). La causa de por qué `CreateFontIndirect` devuelve `NULL`
-específicamente para la segunda fuente distinta pedida, con datos
-confirmados correctos en cada campo inspeccionable, sigue sin
-localizar -- y ya no hay ningún candidato más a nivel de datos/estado
-de aplicación que revisar por trazas o sondas standalone. Lo único que
-queda, si se retoma, es bajar un nivel: adjuntar `gdb` al proceso
-WORD1 real (no una sonda standalone limpia) y poner un breakpoint
-dentro de la implementación de `CreateFontIndirect` de Wine mismo
-(`dlls/gdi32` o `dlls/win32u`, según versión) para ver en qué paso
-interno diverge esa segunda llamada respecto a la primera -- una
-herramienta bastante más pesada que trazas de aplicación o sondas
-standalone, y no intentada todavía.
+**Status at cutoff (second time): nine hypotheses ruled out in total
+with direct evidence** (the six from the previous update plus these
+three). The reason why `CreateFontIndirect` returns `NULL`
+specifically for the second distinct font requested, with data
+confirmed correct at every inspectable field, remains unlocated, and
+there are no more candidates left at the application data/state level
+to check via traces or standalone probes. The only thing left, if
+resumed, is to go one level down: attach `gdb` to the real WORD1
+process (not a clean standalone probe) and set a breakpoint inside
+Wine's own `CreateFontIndirect` implementation (`dlls/gdi32` or
+`dlls/win32u`, depending on version) to see at which internal step
+that second call diverges from the first: a considerably heavier tool
+than application traces or standalone probes, and not yet attempted.
 
-**Archivos modificados esta ronda (sin commitear al momento de
-escribir esto):**
-- `src/Opus/LOADFONT.C`: el arreglo real que se queda (bltbyte
-  acotado + `SetBytes` de cero para `lfFaceName`, guardado GNUC-only,
-  MSVC sin cambios) -- corrige un bug genuino de comportamiento
-  indefinido, no relacionado con la falla de este test. Trace de
-  `fcid-identity` (ya existente) se mantiene tal cual.
-- `src/port/original/opus_word1_ui_test.cpp`: sin cambio neto (se
-  agregó y luego se quitó el chequeo de `GetGuiResources`, que resultó
-  no implementado en este Wine).
+**Files modified this round (uncommitted as of this writing):**
+- `src/Opus/LOADFONT.C`: the real fix that stays (bounded bltbyte +
+  zero `SetBytes` for `lfFaceName`, guarded GNUC-only, MSVC
+  unchanged): fixes a genuine undefined-behavior bug, unrelated to
+  this test's failure. The (already existing) `fcid-identity` trace
+  is kept as-is.
+- `src/port/original/opus_word1_ui_test.cpp`: no net change (the
+  `GetGuiResources` check was added and then removed, since it turned
+  out to be unimplemented in this Wine build).
 
-**Verificado, sin regresión:**
+**Verified, no regression:**
 ```
 DISPLAY=:99 ctest --test-dir out/linux-winelib-debug -L word1_startup_blocked
-    7/9 -- mismos dos fallos conocidos (--interaction, --font-typing)
+    7/9: the same two known failures (--interaction, --font-typing)
 
 DISPLAY=:99 ctest --test-dir out/linux-winelib-debug -LE word1_startup_blocked
-    9/9 -- gating sin cambios
+    9/9: gating unchanged
 ```
 
-**Sexta actualización 2026-08-22 (exia): primera vez que se baja a `gdb` real sobre el proceso `WORD1` en vivo.** Continuación directa de la sesión anterior (el "único candidato que queda: bajar un nivel con gdb"), retomada tras una interrupción de Antigravity a mitad de tarea (el script `gdb-font-debug.py` que esa sesión estaba escribiendo nunca llegó a correr). **Nota de la Séptima actualización (más abajo, misma sesión): la lectura de "heisenbug" que sigue en este bloque resultó ser una atribución equivocada al breakpoint incorrecto -- queda documentada tal cual se vivió, en orden, porque el error de razonamiento y cómo se destapó son parte útil del rastro; el diagnóstico real y definitivo es la Séptima actualización.**
+**Sixth 2026-08-22 update (exia): the first time gdb is used directly
+on the live `WORD1` process.** Direct continuation of the previous
+session (the "only candidate left: go one level down with gdb"),
+resumed after an Antigravity interruption mid-task (the
+`gdb-font-debug.py` script that session was writing never got to
+run). **Note from the Seventh update (below, same session): the
+"heisenbug" reading that follows in this block turned out to be a
+misattribution to the wrong breakpoint; it is documented here exactly
+as it was experienced, in order, because the reasoning error and how
+it was uncovered are a useful part of the trail; the real, definitive
+diagnosis is the Seventh update.**
 
-**Infraestructura nueva, la mitad real del trabajo de esta sesión:** adjuntar `gdb` al proceso `WORD1` real mientras el arnés `opus_word1_ui_test` lo maneja externamente (no hay forma de disparar la selección de fuente del ribbon sin el arnés) resultó bastante más delicado que un `gdb -p <pid> --batch -ex "thread apply all bt"` de una sola foto (el patrón ya usado en §21/§25/§31). Tres problemas reales, en orden de aparición:
+**New infrastructure, the real half of this session's work:**
+attaching `gdb` to the real `WORD1` process while the
+`opus_word1_ui_test` harness drives it externally (there is no way to
+trigger the ribbon font selection without the harness) turned out to
+be considerably trickier than a single-snapshot
+`gdb -p <pid> --batch -ex "thread apply all bt"` (the pattern already
+used in §21/§25/§31). Three real problems, in order of appearance:
 
-1. **`WORD1.exe` (el wrapper shell) no es el binario a lanzar/depurar.** Es un script `sh` que arma `WINEDLLPATH`/`WINELOADER` y hace `exec`; bajo esta sesión de Bash concreta, invocado sin gestor de ventanas real, salía con `exit=3` sin imprimir nada del programa (ni siquiera un `printf` trivial de un `hola mundo` standalone). `wine ./WORD1.exe.so` (el `.so` real, sin pasar por el wrapper) funciona siempre. Cualquier arnés/probe standalone debe invocar el `.exe.so` directo.
-2. **`break /home/pablo/msword/src/Opus/LOADFONT.C:349` (la ruta real del fuente) falla con `No source file named ...`, incluso con `set breakpoint pending on` y forzando expansión completa de symtabs (`maint expand-symtabs`, `info sources`).** Causa: el build genera una copia en minúsculas de cada fuente en mayúsculas antes de compilar (`out/linux-winelib-debug/generated/lowercase-c/loadfont.c`, confirmado con `strings WORD1.exe.so | grep -i loadfont.c`), y el nombre de compilation-unit que graba DWARF es el de esa copia generada, no el de `src/Opus/LOADFONT.C`. Rompe el breakpoint por ruta incorrecta, no por símbolos faltantes ni por timing. Fix: usar siempre la ruta generada (`out/linux-winelib-debug/generated/lowercase-c/<nombre-en-minusculas>.c`) para cualquier `break FILE:LINE` contra este binario.
-3. **Pre-cargar símbolos con `gdb file WORD1.exe.so` antes de conocer el PID (para acelerar el `attach` posterior) resultó contraproducente**, no una optimización: dispara un aviso de "Build ID mismatch" al hacer `attach` que fuerza un re-chequeo de símbolos y ese re-chequeo vuelve a romper el breakpoint ya resuelto (`Error in re-setting breakpoint 1: No source file named ...`, el mismo síntoma del punto 2, reaparecido). La solución simple termina siendo la más simple posible: `gdb -p <pid> --batch -x script.gdb` sin ningún `file` previo -- resuelve el breakpoint y ataca el proceso en **~1.1s** de punta a punta (medido con `time`), tiempo sobrado dentro de la ventana de varios segundos que el arnés tarda en llegar a la selección de fuente del ribbon (búsqueda de ventana + `Sleep(300)` x2 + esperas de foco de hasta 1500ms).
+1. **`WORD1.exe` (the shell wrapper) is not the binary to
+launch/debug.** It is an `sh` script that assembles
+`WINEDLLPATH`/`WINELOADER` and does `exec`; under this particular
+Bash session, invoked with no real window manager, it exited with
+`exit=3` without printing anything from the program at all (not even
+a trivial standalone "hello world" `printf`). `wine ./WORD1.exe.so`
+(the real `.so`, bypassing the wrapper) always works. Any
+harness/standalone probe must invoke the `.exe.so` directly.
+2. **`break /home/pablo/msword/src/Opus/LOADFONT.C:349` (the real
+source path) fails with `No source file named ...`, even with
+`set breakpoint pending on` and forcing full symtab expansion
+(`maint expand-symtabs`, `info sources`).** Cause: the build
+generates a lowercase copy of every uppercase source before
+compiling (`out/linux-winelib-debug/generated/lowercase-c/loadfont.c`,
+confirmed with `strings WORD1.exe.so | grep -i loadfont.c`), and the
+compilation-unit name that DWARF records is that of the generated
+copy, not `src/Opus/LOADFONT.C`. It breaks the breakpoint because of
+the wrong path, not missing symbols or timing. Fix: always use the
+generated path
+(`out/linux-winelib-debug/generated/lowercase-c/<lowercase-name>.c`)
+for any `break FILE:LINE` against this binary.
+3. **Pre-loading symbols with `gdb file WORD1.exe.so` before knowing
+the PID (to speed up the subsequent `attach`) turned out to be
+counterproductive**, not an optimization: it triggers a "Build ID
+mismatch" warning on `attach` that forces a symbol re-check, and that
+re-check breaks the already-resolved breakpoint again
+(`Error in re-setting breakpoint 1: No source file named ...`, the
+same symptom from point 2, reappearing). The simple solution ends up
+being the simplest one possible: `gdb -p <pid> --batch -x script.gdb`
+with no prior `file` at all: it resolves the breakpoint and attaches
+to the process in **~1.1s** end to end (measured with `time`), plenty
+of time within the several-second window the harness takes to reach
+the ribbon font selection (window search + `Sleep(300)` x2 + focus
+waits of up to 1500ms).
 
-**Con la infraestructura funcionando, la sesión real: comparar la llamada que pasa (`Helv`) contra la que falla (`Liberation Sans`) dentro del proceso vivo, en el mismo punto exacto que las nueve hipótesis anteriores nunca lograron cruzar.** Breakpoint en `loadfont.c:349` (el sitio exacto de `CreateFontIndirect`), confirmado por nombre real de fuente vía `lf.lfFaceName` en cada hit.
+**With the infrastructure working, the real session: compare the
+call that passes (`Helv`) against the one that fails ("Liberation
+Sans") inside the live process, at the exact same point the previous
+nine hypotheses never managed to cross.** Breakpoint at
+`loadfont.c:349` (the exact `CreateFontIndirect` site), confirmed by
+the real font name via `lf.lfFaceName` on every hit.
 
-Primer intento -- desde el entry de `CreateFontIndirectA`, `finish` anidado con un `tbreak NtGdiHfontCreate` puesto de antemano -- dio un resultado sin sentido (`rax=0x86` idéntico en ambas llamadas): el `finish` externo se interrumpía antes de tiempo por el propio breakpoint interno (comportamiento normal de gdb, no un bug), así que el valor capturado era el estado de entrada a `NtGdiHfontCreate`, no ningún valor de retorno real. Descartado como artefacto de script, no como dato.
+First attempt: from `CreateFontIndirectA`'s entry, a nested `finish`
+with a `tbreak NtGdiHfontCreate` set beforehand, gave a meaningless
+result (`rax=0x86` identical on both calls): the outer `finish` was
+being interrupted early by the inner breakpoint itself (normal gdb
+behavior, not a bug), so the value captured was `NtGdiHfontCreate`'s
+entry state, not any real return value. Ruled out as a script
+artifact, not as data.
 
-**Medición limpia, de un solo salto:** `tbreak CreateFontIndirectA` (confirmado con `disassemble` que es exactamente el símbolo llamado desde `loadfont.c:349`, pese a que el target compila con `UNICODE`/`_UNICODE` definidos -- el macro `CreateFontIndirect` igual resuelve a la variante ANSI en este sitio, verificado por disassembly, no por lectura de headers) + `continue` + un único `finish` (sin ningún breakpoint anidado en el medio) aterriza exactamente de vuelta en `C_LoadFcid` en `loadfont.c:349`, el llamador real, con `$rax` = el valor de retorno verdadero tal cual lo va a ver el código C. Confirmado además con `stepi`/`nexti` explícito paso a paso a través de las instrucciones compiladas reales (`disassemble` mostró un `mov %rax,0x38(%rdx)` de 8 bytes completos seguido de `test %rax,%rax` / `jne` -- comparación de 64 bits correcta, sin ningún truncamiento de ancho, descartando de paso cualquier variante de la vieja teoría Win16-legacy de campo angosto):
+**Clean, single-hop measurement:** `tbreak CreateFontIndirectA`
+(confirmed with `disassemble` that this is exactly the symbol called
+from `loadfont.c:349`, even though the target compiles with
+`UNICODE`/`_UNICODE` defined; the `CreateFontIndirect` macro still
+resolves to the ANSI variant at this site, verified by disassembly,
+not by reading headers) plus `continue` plus a single `finish` (with
+no nested breakpoint in between) lands exactly back in `C_LoadFcid`
+at `loadfont.c:349`, the real caller, with `$rax` equal to the true
+return value exactly as the C code is going to see it. Also confirmed
+with explicit step-by-step `stepi`/`nexti` through the real compiled
+instructions (`disassemble` showed a full 8-byte
+`mov %rax,0x38(%rdx)` followed by `test %rax,%rax` / `jne`: a correct
+64-bit comparison, with no width truncation at all, ruling out along
+the way any variant of the old narrow-field Win16-legacy theory):
 
 ```
-CALL #1 (Helv):             rax = 0x140a00d2   (no-NULL, esperado -- pasa igual que siempre)
-CALL #2 (Liberation Sans):  rax = 0x620a00e2   (no-NULL !!)
+CALL #1 (Helv):             rax = 0x140a00d2   (non-NULL, expected: passes as always)
+CALL #2 (Liberation Sans):  rax = 0x620a00e2   (non-NULL !!)
 ```
 
-**`pfce->hfont` leído directamente tras el `jne` (no solo `$rax`) confirma `0x620a00e2` -- un handle real, no NULL -- y el flujo de ejecución salta correctamente a la rama de éxito (`C_LoadFcid` línea 377, `FSelectFont(...)`), no a la de error.** Bajo `gdb`, con breakpoints y single-stepping en este punto exacto, **`CreateFontIndirect` tiene éxito para "Liberation Sans". El diálogo "Low memory" no debería aparecer.**
+**`pfce->hfont` read directly after the `jne` (not just `$rax`)
+confirms `0x620a00e2`, a real handle, not NULL, and execution flow
+correctly jumps to the success branch (`C_LoadFcid` line 377,
+`FSelectFont(...)`), not the error one.** Under `gdb`, with
+breakpoints and single-stepping at this exact point,
+**`CreateFontIndirect` succeeds for "Liberation Sans". The "Low
+memory" dialog should not appear.**
 
-**Esto contradice directamente el comportamiento sin `gdb`**, confirmado de nuevo en esta misma sesión inmediatamente antes (mismo binario, mismo `Xvfb :88`, ninguna diferencia de entorno): el diálogo aparece, `matfont-set` se dispara, el test falla con el mismo mensaje de siempre.
+**This directly contradicts the behavior without `gdb`**, confirmed
+again in this same session immediately beforehand (same binary, same
+`Xvfb :88`, no environment difference): the dialog appears,
+`matfont-set` fires, the test fails with the same message as always.
 
-**Prueba mínima de una sola variable (Fase 3 de systematic-debugging): ¿alcanza con más tiempo, o es específico de estar bajo el debugger?** Se agregó un `Sleep(50)` diagnóstico justo antes de la llamada a `CreateFontIndirect` (guardado bajo `OPUS_X64`, sin tocar MSVC), se reconstruyó `WORD1`, y se corrió el test **sin** `gdb`. **Resultado: la falla reproduce idéntica** (mismo diálogo, mismo `matfont-set`, mismo mensaje final). Un simple `Sleep(50)` en el sitio exacto de la llamada NO reproduce lo que el `gdb` logra -- descarta "solo hace falta más tiempo ahí" como explicación completa. El `Sleep` se revirtió (no ayudó, no tiene sentido dejarlo); `git diff` sobre `LOADFONT.C` queda limpio de nuevo.
+**Minimal single-variable test (systematic-debugging Phase 3): is it
+enough to have more time, or is it specific to running under the
+debugger?** A diagnostic `Sleep(50)` was added right before the
+`CreateFontIndirect` call (guarded under `OPUS_X64`, not touching
+MSVC), `WORD1` was rebuilt, and the test was run **without** `gdb`.
+**Result: the failure reproduces identically** (same dialog, same
+`matfont-set`, same final message). A simple `Sleep(50)` at the exact
+call site does NOT reproduce what `gdb` achieves: this rules out "it
+just needs more time there" as the complete explanation. The `Sleep`
+was reverted (it did not help, no reason to keep it); `git diff` on
+`LOADFONT.C` is clean again.
 
-**Lectura del resultado, no solo el dato:** dado que (a) los 9 sitios anteriores de este documento ya descartaron con evidencia directa cualquier problema en los *datos* pedidos (LOGFONT idéntico salvo campos irrelevantes, charset saneado, cache sana, sin agotamiento de handles, nombre correcto hasta su `\0`), y ahora (b) el código compilado en el sitio exacto de la comparación es correcto a nivel de bits (64 bits completos, sin truncar) y (c) el mismo `CreateFontIndirect`, con los mismos datos, **tiene éxito real cuando se lo observa paso a paso**, la explicación que mejor encaja con todo el patrón acumulado (incluida la "segunda fuente real siempre falla, la primera siempre pasa", inmune a repetición/orden en el probe standalone del principio de esta sesión) es una **condición de carrera genuina en algún punto *anterior* a `loadfont.c:349`** -- no en el propio `CreateFontIndirectA`/`NtGdiHfontCreate`, que ya se demostró que funciona bien con los datos que le llegan. El `Sleep(50)` puntual no alcanza porque el perfil de pausa real de `gdb` (breakpoints y comandos interactivos que detienen el proceso bastante antes de esta línea, no solo en ella) es mucho más amplio que 50ms en un solo punto tardío.
+**Reading the result, not just the data:** given that (a) the 9
+earlier sites in this document already ruled out, with direct
+evidence, any problem in the *data* requested (LOGFONT identical
+except for irrelevant fields, sanitized charset, sound cache, no
+handle exhaustion, name correct up to its `\0`), and now (b) the
+compiled code at the exact comparison site is correct at the bit
+level (a full 64 bits, no truncation) and (c) the same
+`CreateFontIndirect`, with the same data, **genuinely succeeds when
+watched step by step**, the explanation that best fits the whole
+accumulated pattern (including "the real second font always fails,
+the first always passes," immune to repetition/order in this
+session's opening standalone probe) is a **genuine race condition at
+some point *before* `loadfont.c:349`**, not in `CreateFontIndirectA`/
+`NtGdiHfontCreate` itself, which has already been shown to work fine
+with the data it receives. The one-off `Sleep(50)` is not enough
+because gdb's real pause profile (breakpoints and interactive
+commands that stop the process well before this line, not only on
+it) is much wider than 50ms at a single late point.
 
-**Probe standalone de esta sesión (antes de llegar a gdb), para el registro:** se armó un programa `winegcc` mínimo, sin código del proyecto, que llama `CreateFontIndirectA` con los mismos bytes de LOGFONT que usa `WORD1` -- primero solo, luego en secuencia Helv-después-Liberation-Sans (mismo orden que el ribbon), luego repitiendo Liberation Sans una tercera vez. **Las cuatro llamadas tienen éxito siempre**, sin importar orden ni repetición -- extiende el hallazgo ya documentado de la actualización anterior (`CreateFontIndirectA` con estos datos funciona perfecto fuera de `WORD1`) a también cubrir la secuencia de llamadas, no solo el dato de una llamada aislada. Confirma otra vez que el problema es de estado de proceso específico de `WORD1`, no de los datos ni del orden de pedidos.
+**This session's standalone probe (before getting to gdb), for the
+record:** a minimal `winegcc` program was built, no code from this
+project, that calls `CreateFontIndirectA` with the same LOGFONT bytes
+`WORD1` uses: first alone, then in Helv-then-Liberation-Sans sequence
+(the same order as the ribbon), then repeating Liberation Sans a
+third time. **All four calls always succeed**, regardless of order or
+repetition: this extends the previous update's already documented
+finding (`CreateFontIndirectA` with this data works perfectly outside
+`WORD1`) to also cover the call sequence, not just a single isolated
+call's data. It confirms once more that the problem is
+`WORD1`-specific process state, not the data or the order of
+requests.
 
-**Candidato concreto para la próxima sesión:** localizar la carrera real requiere mirar ANTES de `loadfont.c:349`, no en el punto de la comparación (ya limpio). Sitios no explorados con esta técnica todavía: instrumentar con breakpoints (no solo trazas de aplicación, que ya se agotaron en las hipótesis 1-9) el camino completo desde el `WM_COMMAND`/`CBN_SELCHANGE` del combo de fuente del ribbon hasta que se llega a esta línea -- en particular, comparar bajo gdb (con el mismo patrón de esta sesión: `tbreak` + `finish` de un solo salto, no anidado) el estado de cualquier dato compartido (fcid, `selCur.chp`, la propia `vhsttbFont`) en el momento exacto en que se arma el `LOGFONT` para "Liberation Sans", contra el mismo punto sin gdb -- si ese dato YA difiere antes de llegar a `loadfont.c:349`, la carrera está más arriba en la cadena y este archivo deja de ser el lugar correcto para seguir mirando.
+**Concrete candidate for the next session:** locating the real race
+requires looking BEFORE `loadfont.c:349`, not at the comparison point
+(already clean). Sites not yet explored with this technique:
+instrument with breakpoints (not just application traces, which were
+already exhausted across hypotheses 1-9) the full path from the
+ribbon font combo's `WM_COMMAND`/`CBN_SELCHANGE` down to reaching
+this line; in particular, compare under gdb (with this session's same
+pattern: single-hop `tbreak` + `finish`, not nested) the state of any
+shared data (fcid, `selCur.chp`, `vhsttbFont` itself) at the exact
+moment the `LOGFONT` is assembled for "Liberation Sans", against the
+same point without gdb: if that data ALREADY differs before reaching
+`loadfont.c:349`, the race is further up the chain and this file
+stops being the right place to keep looking.
 
-**Infraestructura reutilizable dejada en `build/` (gitignored, no committeado):** `build/run_gdb_font_debug.sh` (arnés que lanza el test, espera el PID de `WORD1` con `pgrep -f 'WORD1\.exe\.so'`, y adjunta `gdb -p <pid> --batch -x build/gdb-font-debug.gdb`), `build/gdb-font-debug.gdb` (el script de gdb con la comparación de un solo salto ya corregida), `build/probe_two_fonts.c` (el probe standalone de secuencia de dos fuentes). Ningún archivo de `src/` quedó modificado al cerrar esta sesión (`git status` limpio salvo los 5 archivos de la migración `OpusMem*` ya documentados, que siguen sin tocar).
+**Reusable infrastructure left in `build/` (gitignored, not
+committed):** `build/run_gdb_font_debug.sh` (a harness that launches
+the test, waits for `WORD1`'s PID with `pgrep -f 'WORD1\.exe\.so'`,
+and attaches `gdb -p <pid> --batch -x build/gdb-font-debug.gdb`),
+`build/gdb-font-debug.gdb` (the gdb script with the already-corrected
+single-hop comparison), `build/probe_two_fonts.c` (the standalone
+two-font-sequence probe). No file in `src/` was left modified at the
+close of this session (`git status` clean except for the 5 files from
+the already-documented `OpusMem*` migration, still untouched).
 
-**Verificado, sin regresión:**
+**Verified, no regression:**
 ```
 DISPLAY=:88 ctest --test-dir out/linux-winelib-debug -R "^opus_word1_font_typing_test$" --output-on-failure
-    (corrido manualmente vía build/run_gdb_font_debug.sh, no vía ctest esta sesión)
-    "newly typed text did not retain the ribbon font" -- mismo fallo de siempre, sin gdb
+    (run manually via build/run_gdb_font_debug.sh, not via ctest this session)
+    "newly typed text did not retain the ribbon font": the same failure as always, without gdb
 ```
 
-**Séptima actualización 2026-08-22 (exia, misma sesión): causa raíz real encontrada -- Task 6 Bug 4 CERRADO. No es una carrera, no es GDI, no es `gdb`. `EraNameFromFtc()` en `src/core/src/OpusShellFontMetrics.cpp` es una tabla hardcodeada de 4 entradas; "Liberation Sans" cae fuera de rango y el propio código ya documentaba esta salida como intencional.**
+**Seventh 2026-08-22 update (exia, same session): the real root cause
+found: Task 6 Bug 4 CLOSED. It is not a race, it is not GDI, it is
+not `gdb`. `EraNameFromFtc()` in
+`src/core/src/OpusShellFontMetrics.cpp` is a hardcoded 4-entry table;
+"Liberation Sans" falls outside that range, and the code itself
+already documented this outcome as intentional.**
 
-A pedido explícito de continuar "con los breakpoints antes de `loadfont.c:349`" (la Sexta actualización dejaba eso como candidato). Antes de seguir hacia atrás en la cadena de llamadas, primer paso obligado: **repetir la medición de la Sexta actualización una vez más para confirmar que el "arreglo" de `gdb` era reproducible, no una casualidad de una sola corrida.** No lo fue: se repitió el mismo script `tbreak CreateFontIndirectA` + `finish` de un solo salto, y esta vez, en la MISMA corrida, se comprobaron **las dos cosas a la vez**: `$rax`/`pfce->hfont` no-NULL tras el `finish` (igual que la Sexta actualización) **y** `matfont-set msg=4` disparado en `WORD1-ribbon.txt` **y** el arnés reportando el mismo fallo de siempre (`harness exit rc=53`). Contradicción real dentro de una sola corrida, no "con gdb pasa, sin gdb falla" -- la lectura anterior de "la falla no reproduce bajo el debugger" estaba mal desde la raíz: nunca se había cruzado el resultado de `gdb` contra el `rc` del arnés en la misma corrida, solo se asumía que `rax` no-nulo implicaba que el test iba a pasar.
+At the explicit request to continue "with the breakpoints before
+`loadfont.c:349`" (the Sixth update left that as a candidate). Before
+moving further back in the call chain, a mandatory first step:
+**repeat the Sixth update's measurement once more to confirm that
+gdb's "fix" was reproducible, not a one-off run's coincidence.** It
+was not: the same `tbreak CreateFontIndirectA` + single-hop `finish`
+script was repeated, and this time, in the SAME run, **both things
+were checked at once**: `$rax`/`pfce->hfont` non-NULL after `finish`
+(same as the Sixth update) **and** `matfont-set msg=4` firing in
+`WORD1-ribbon.txt` **and** the harness reporting the same failure as
+always (`harness exit rc=53`). A real contradiction within a single
+run, not "passes with gdb, fails without": the earlier reading of
+"the failure does not reproduce under the debugger" was wrong from
+the root: gdb's result had never actually been cross-checked against
+the harness's `rc` within the same run, it was only assumed that a
+non-null `rax` implied the test was going to pass.
 
-Repetido con el método más limpio posible (`next` simple sobre toda la sentencia de la línea 349, sin `finish` ni `nexti` que puedan confundirse) para descartar cualquier artefacto de gdb: mismo resultado -- `pfce->hfont` no-NULL, salto a la línea 377 (rama de éxito), y aun así `matfont-set`/`harness rc=53` en la misma corrida. **Esto ya no admite lectura de timing: la línea 349 en sí misma es inocente, siempre.** La pregunta correcta pasó de "¿por qué falla `CreateFontIndirect`?" a "¿de dónde sale `matfont-set` si no es de ahí?".
+Repeated with the cleanest method possible (a plain `next` over the
+entire line-349 statement, with no `finish` or `nexti` that could
+confuse things) to rule out any gdb artifact: same result:
+`pfce->hfont` non-NULL, jump to line 377 (success branch), and still
+`matfont-set`/`harness rc=53` in the same run. **This no longer
+admits a timing reading: line 349 itself is innocent, always.** The
+right question shifted from "why does `CreateFontIndirect` fail?" to
+"where does `matfont-set` come from, if not from there?".
 
-Respuesta encontrada en el propio código, no con más `gdb`: `matfont-set` vive justo después de la etiqueta `LSystemFontErr:` (`Opus/LOADFONT.C:354`), y esa etiqueta **no solo se alcanza cayendo desde el `if` de la línea 349** -- hay tres `goto LSystemFontErr;` más en la misma función (`grep -n LSystemFontErr Opus/LOADFONT.C` -> líneas 287, 455, 491), cada uno un camino de fallo completamente distinto que el breakpoint de la línea 349 nunca puede ver (porque esos `goto` saltan directo a la etiqueta, sin pasar por la línea 349 en absoluto).
+Answer found in the code itself, not with more `gdb`: `matfont-set`
+lives right after the `LSystemFontErr:` label (`Opus/LOADFONT.C:354`),
+and that label **is not only reached by falling through from line
+349's `if`**: there are three more `goto LSystemFontErr;` statements
+in the same function (`grep -n LSystemFontErr Opus/LOADFONT.C` ->
+lines 287, 455, 491), each a completely different failure path that
+the line-349 breakpoint can never see (because those `goto`s jump
+straight to the label, without passing through line 349 at all).
 
-Se puso un breakpoint liviano (estilo `dprintf`, `commands`+`continue` automático, sin interacción manual -- el mismo patrón que ya se había confirmado que NO cambia el síntoma en la ronda anterior de esta sesión) en `FSelectFont` (la función que sí puede fallar en la línea 287, vía `!FSelectFont(...)`) para descartar ese camino primero: **3 llamadas totales, las 3 con `pfti->fPrinter=0`, la traza `screenfail` interna de `FSelectFont` nunca se dispara** -> las 3 devuelven éxito. Camino de la línea 287 descartado con datos, no por lectura.
+A lightweight breakpoint was set (`dprintf`-style, automatic
+`commands`+`continue`, no manual interaction: the same pattern
+already confirmed to NOT change the symptom earlier this session) in
+`FSelectFont` (the function that can indeed fail at line 287, via
+`!FSelectFont(...)`) to rule out that path first: **3 calls total,
+all 3 with `pfti->fPrinter=0`, `FSelectFont`'s internal `screenfail`
+trace never fires** -> all 3 return success. Line 287's path ruled
+out with data, not by reading.
 
-Quedan las líneas 455 y 491. La 455 es un fallo de `HqAllocLcb` (asignación de memoria) -- posible pero sin motivo para fallar aquí. La 491 es la real:
+That leaves lines 455 and 491. Line 455 is an `HqAllocLcb` (memory
+allocation) failure: possible, but with no reason to fail here. Line
+491 is the real one:
 
 ```c
 #if defined(__GNUC__) && !defined(_MSC_VER)
@@ -1460,9 +1656,18 @@ Quedan las líneas 455 y 491. La 455 es un fallo de `HqAllocLcb` (asignación de
             }
 ```
 
-Este bloque es código del **port** (guardado `#if defined(__GNUC__) && !defined(_MSC_VER)`, no toca MSVC), parte del trabajo de extracción del núcleo Qt descrito en `CLAUDE.md` ("`OpusShellFontMetrics.h` -- contrato de medición de texto ... la pieza restante de mayor prioridad porque condiciona la fidelidad de paginación"). En vez de medir anchos de caracteres vía GDI, este camino llama a `OpusShellCharWidths` (`src/core/src/OpusShellFontMetrics.cpp`), la implementación Qt del contrato del shell.
+This block is **port** code (guarded
+`#if defined(__GNUC__) && !defined(_MSC_VER)`, does not touch MSVC),
+part of the Qt core extraction work described in `CLAUDE.md`
+("`OpusShellFontMetrics.h`: text-measurement contract ... the
+highest-priority remaining piece because it gates pagination
+fidelity"). Instead of measuring character widths via GDI, this path
+calls `OpusShellCharWidths` (`src/core/src/OpusShellFontMetrics.cpp`),
+the Qt implementation of the shell contract.
 
-`OpusShellCharWidths` resuelve el nombre de la fuente a través de `EraNameFromFtc(int ftc)` (`src/core/src/OpusShellFontMetrics.cpp:61-68`):
+`OpusShellCharWidths` resolves the font name through
+`EraNameFromFtc(int ftc)`
+(`src/core/src/OpusShellFontMetrics.cpp:61-68`):
 
 ```c
 const char *EraNameFromFtc(int ftc) {
@@ -1476,54 +1681,190 @@ const char *EraNameFromFtc(int ftc) {
 }
 ```
 
-**Tabla hardcodeada de exactamente 4 entradas** -- los 4 fuentes originales de Word 1.1a (`Opus/initwin.c:1541-1583` los registra en ese mismo orden como `ibstFont` 0-3). El comentario del propio archivo ya lo advertía (`OpusShellFontMetrics.cpp:13-19`): *"`ftc` -> nombre de época: tabla fija de 4 entradas, hardcodeada ... `ftc` fuera de [0,3] falla controlado."* -- un límite conocido y documentado desde que se escribió ese archivo, no un bug nuevo.
+**A hardcoded table of exactly 4 entries**: Word 1.1a's 4 original
+fonts (`Opus/initwin.c:1541-1583` registers them in that same order
+as `ibstFont` 0-3). The file's own comment already warned about it
+(`OpusShellFontMetrics.cpp:13-19`): *"`ftc` -> era name: fixed
+4-entry table, hardcoded ... `ftc` outside [0,3] fails in a
+controlled way."* A known limitation, documented since that file was
+written, not a new bug.
 
-`"Helv"` es `ibstFont=2` -> dentro de rango -> siempre funciona. `"Liberation Sans"` (la fuente que el arnés de test necesita usar porque los nombres reales de Windows como "Arial"/"Courier New" no existen en un stack de fuentes Linux -- ver el comentario de `opus_word1_ui_test.cpp` sobre `installed_windows_fonts()`) recibe `ibstFont=4` al registrarse en runtime -- **fuera de rango**, `EraNameFromFtc(4)` devuelve `nullptr`, `OpusShellCharWidths` devuelve `-1`, dispara `goto LSystemFontErr`, y de ahí en más el camino es indistinguible (mismo `SetErrorMat(matFont)`, mismo diálogo `eidCantRealizeFont` "Low memory: cannot display requested font") de un fallo real de GDI -- por eso las nueve hipótesis anteriores, todas centradas en `CreateFontIndirect`/GDI, nunca lo encontraron: **estaban mirando la función correcta para un síntoma que en realidad viene de una función completamente distinta, que además ni siquiera está en `Opus/` sino en `src/core/`, el núcleo Qt en construcción.**
+`"Helv"` is `ibstFont=2`, within range, always works. "Liberation
+Sans" (the font the test harness needs to use because real Windows
+names like "Arial"/"Courier New" do not exist in a Linux font stack;
+see `opus_word1_ui_test.cpp`'s comment on `installed_windows_fonts()`)
+gets `ibstFont=4` when registered at runtime: **out of range**,
+`EraNameFromFtc(4)` returns `nullptr`, `OpusShellCharWidths` returns
+`-1`, triggering `goto LSystemFontErr`, and from there on the path is
+indistinguishable (same `SetErrorMat(matFont)`, same
+`eidCantRealizeFont` dialog "Low memory: cannot display requested
+font") from a real GDI failure: that is why the nine previous
+hypotheses, all centered on `CreateFontIndirect`/GDI, never found it:
+**they were looking at the right function for a symptom that
+actually comes from a completely different function, one that is not
+even in `Opus/` but in `src/core/`, the Qt core under construction.**
 
-Esto también explica de una vez el patrón "la primera fuente distinta siempre pasa, la segunda siempre falla" que se sostuvo intacto en las nueve hipótesis y en la exploración de esta sesión: no es sobre conteo de handles GDI, cachés, ni nada de proceso -- es literalmente que la PRIMERA fuente pedida por el ribbon en este test (`Helv`) tiene `ibstFont=2` (dentro de la tabla de 4), y la SEGUNDA (`Liberation Sans`) es la primera fuente de la sesión con `ibstFont >= 4` (fuera de la tabla). Con cualquier otra fuente Linux real como segunda opción, el mismo `ibstFont=4` (o mayor) habría fallado igual.
+This also finally explains the pattern "the first distinct font
+always passes, the second always fails" that held intact across the
+nine hypotheses and this session's exploration: it is not about GDI
+handle counts, caches, or any process state at all: it is literally
+that the FIRST font requested by the ribbon in this test (`Helv`) has
+`ibstFont=2` (inside the 4-entry table), and the SECOND ("Liberation
+Sans") is the session's first font with `ibstFont >= 4` (outside the
+table). With any other real Linux font as the second choice, the
+same `ibstFont=4` (or higher) would have failed the same way.
 
-**No se tocó código de arreglo esta sesión** -- `EraNameFromFtc`/`OpusShellCharWidths` son parte activa del trabajo de extracción del núcleo Qt (`src/core/`, no restringido como `Opus/`, pero sí una pieza grande y con dueño propio de diseño per `docs/port-qt/`), y ampliar la tabla a fuentes arbitrarias es una tarea de alcance real (¿enumerar fuentes del sistema vía Qt en vez de una tabla fija? ¿mapear cualquier `ibstFont` no reconocido a una fuente por defecto solo para medición de anchos?) -- no un fix de una línea para decidir sin autorización explícita.
+**No fix code was touched this session**: `EraNameFromFtc`/
+`OpusShellCharWidths` are an active part of the Qt core extraction
+work (`src/core/`, not restricted like `Opus/`, but still a large
+piece with its own design ownership per `docs/port-qt/`), and
+expanding the table to arbitrary fonts is a task of real scope
+(enumerate system fonts via Qt instead of a fixed table? map any
+unrecognized `ibstFont` to a default font just for width measurement?):
+not a one-line fix to decide without explicit authorization.
 
-**Verificado:**
+**Verified:**
 ```
-build/gdb-font-debug.gdb (breakpoint dprintf-style en FSelectFont, 3 hits, los 3
-    pfti->fPrinter=0, screenfail nunca se dispara) -- descarta linea 287
+build/gdb-font-debug.gdb (dprintf-style breakpoint in FSelectFont, 3 hits, all 3
+    pfti->fPrinter=0, screenfail never fires) -- rules out line 287
 grep -n LSystemFontErr Opus/LOADFONT.C -> 287, 455, 491 (goto) + 354 (label)
 src/core/src/OpusShellFontMetrics.cpp:61-68 (EraNameFromFtc, switch 0-3, default nullptr)
-src/core/src/OpusShellFontMetrics.cpp:13-19 (comentario ya documentaba el límite)
+src/core/src/OpusShellFontMetrics.cpp:13-19 (comment already documented the limit)
 ```
 
-**Próximo paso, si se retoma para arreglar (no solo diagnosticar):** decidir la estrategia de `EraNameFromFtc`/`OpusShellCharWidths` para `ftc` fuera de [0,3] -- opciones: (a) enumerar la fuente real vía Qt (`QFontDatabase`) en vez de la tabla fija de 4 nombres de época, la solución de fondo pero con más superficie de fidelidad de paginación que revisar; (b) fallback controlado a una fuente por defecto (p.ej. tratar cualquier `ftc>=4` como "Helv" solo para medir anchos) que desbloquea el test sin resolver la limitación real de fondo. Requiere decisión explícita del mantenedor, no autorización implícita de esta sesión.
+**Next step, if resumed to fix (not just diagnose):** decide
+`EraNameFromFtc`/`OpusShellCharWidths`'s strategy for `ftc` outside
+[0,3]: options: (a) enumerate the real font via Qt (`QFontDatabase`)
+instead of the fixed 4-era-name table, the underlying solution but
+with more pagination-fidelity surface to review; (b) a controlled
+fallback to a default font (e.g. treating any `ftc>=4` as "Helv" just
+for width measurement) which unblocks the test without resolving the
+real underlying limitation. Requires an explicit decision from the
+maintainer, not this session's implicit authorization.
 
-**Octava actualización 2026-08-25 (exia): Task 6 Bug 4 cerrado de verdad -- `OpusFontKey.szFace` reemplaza la tabla fija de `EraNameFromFtc`; `fail(60)` restante era el arnés, no medición de fuentes.** Dos piezas, en dos sesiones/commits distintos:
+**Eighth 2026-08-25 update (exia): Task 6 Bug 4 truly closed:
+`OpusFontKey.szFace` replaces `EraNameFromFtc`'s fixed table; the
+remaining `fail(60)` was the harness, not font measurement.** Two
+pieces, in two different sessions/commits:
 
-**Primera pieza (commits `bf5f117`, `b69e715`, `e7c50d1`, ya en el árbol antes de esta tarea):** en vez de ampliar `EraNameFromFtc` a una tabla más grande (seguía siendo un callejón para cualquier `ftc` no anticipado), el núcleo (`OpusFontKey`, `src/core/include/OpusShellFontMetrics.h`/`.cpp`) pasa a llevar el nombre real de la fuente en `szFace` en vez de depender de resolver `ftc` a un nombre de época. `Opus/LOADFONT.C` rellena `shellKey` con `memset` primero (obligatorio: la declaración K&R no trae inicializador y `FaceNameFor()` ya leía `szFace` en cada llamada) y con el nombre real de `pffn`. `OpusPortGdiCharWidths` mide con la fuente de runtime en vez de la tabla fija. Con esto, `ftc>=4` deja de caer en `LSystemFontErr` -- el diálogo "Low memory: cannot display requested font" que atrapaba el teclado (Séptima actualización, arriba) no vuelve a aparecer. Ningún cambio en `Opus/disp.c`/`screen.c` ni en `Opus/LOADFONT.C` más allá del `memset` ya mencionado.
+**First piece (commits `bf5f117`, `b69e715`, `e7c50d1`, already in
+the tree before this task):** instead of expanding `EraNameFromFtc`
+into a bigger table (still a dead end for any unanticipated `ftc`),
+the core (`OpusFontKey`, `src/core/include/OpusShellFontMetrics.h`/
+`.cpp`) now carries the font's real name in `szFace` instead of
+relying on resolving `ftc` to an era name. `Opus/LOADFONT.C` fills
+`shellKey` with `memset` first (mandatory: the K&R declaration has no
+initializer, and `FaceNameFor()` was already reading `szFace` on
+every call) and with `pffn`'s real name. `OpusPortGdiCharWidths`
+measures with the runtime font instead of the fixed table. With this,
+`ftc>=4` stops falling into `LSystemFontErr`: the "Low memory: cannot
+display requested font" dialog that was swallowing the keyboard
+(Seventh update, above) no longer appears. No change to
+`Opus/disp.c`/`screen.c` or to `Opus/LOADFONT.C` beyond the
+already-mentioned `memset`.
 
-**Segunda pieza (esta tarea, Task 1 del plan `2026-08-25-font-typing-harness-bands`):** con el Bug 4 real cerrado, `opus_word1_font_typing_test` avanzó de "no conserva la fuente" a un `fail(60)` nuevo, `"mixed-font lines disappeared after resizing"`. El dump mostraba `bands=0,0 repaint=2629` -- las dos muestras de banda (`after_enter_first_band`/`after_enter_second_band`, franjas de píxel `[0,50)`/`[50,131)`) leían cero mientras `after_forced_repaint_pixels` (mismo panel, rango completo `[0,300)`) leía 2629 correctamente. El código de partida tomaba esas dos muestras de banda **antes** del repintado forzado que el propio test ya hacía (`InvalidateRect`+`UpdateWindow`+`Sleep(400)`, unas líneas más abajo); esa asimetría frente a `after_forced_repaint_pixels` parecía la explicación obvia. La medición real (párrafo siguiente y Novena actualización, más abajo) la descarta: no era un bug de medición de fuentes ni de `disp.c`, pero tampoco era orden de muestreo -- las franjas `[0,50)`/`[50,131)` caían enteras dentro del margen superior de la página, por encima de donde empieza cualquier texto, así que no iban a leer contenido sin importar en qué momento se tomara la muestra.
+**Second piece (this task, Task 1 of the plan
+`2026-08-25-font-typing-harness-bands`):** with the real Bug 4
+closed, `opus_word1_font_typing_test` advanced from "does not retain
+the font" to a new `fail(60)`, `"mixed-font lines disappeared after
+resizing"`. The dump showed `bands=0,0 repaint=2629`: the two band
+samples (`after_enter_first_band`/`after_enter_second_band`, pixel
+bands `[0,50)`/`[50,131)`) read zero while
+`after_forced_repaint_pixels` (same panel, full range `[0,300)`) read
+2629 correctly. The starting code took those two band samples
+**before** the forced repaint the test itself already did
+(`InvalidateRect`+`UpdateWindow`+`Sleep(400)`, a few lines below);
+that asymmetry against `after_forced_repaint_pixels` seemed like the
+obvious explanation. The real measurement (next paragraph and the
+Ninth update, below) rules it out: it was not a font-measurement bug
+nor a `disp.c` bug, but it was not sampling order either: the
+`[0,50)`/`[50,131)` bands fell entirely within the page's top margin,
+above where any text starts, so they were never going to read content
+no matter when the sample was taken.
 
-Se movieron las dos líneas de muestra de banda a después del `UpdateWindow`/`Sleep(400)` forzado (dejando `after_enter_pixels`, la muestra diagnóstica del repintado natural, donde estaba). Con eso solo, `bands` **seguía en `0,0`** de forma estable (2 corridas idénticas) -- dump byte-idéntico al de antes de mover las muestras. Esto descarta por completo que fuera un problema de *cuándo* se muestreaba: las franjas hardcodeadas `[0,50)`/`[50,131)` en `count_dark_client_pixels` no corresponden a ninguna línea real de este documento.
+The two band-sample lines were moved to after the forced
+`UpdateWindow`/`Sleep(400)` (leaving `after_enter_pixels`, the
+natural-repaint diagnostic sample, where it was). With that alone,
+`bands` **stayed at `0,0`** stably (2 identical runs): a dump
+byte-identical to the one before moving the samples. This completely
+rules out it being a matter of *when* the sample was taken: the
+hardcoded `[0,50)`/`[50,131)` bands in `count_dark_client_pixels` do
+not correspond to any real line in this document.
 
-**Corrección (revisión final de rama, misma fecha):** el texto original de esta actualización afirmaba aquí que la franja `[50,131)` "cruza el límite entre la línea 24pt y la 36pt" -- esa frase es incorrecta y no estaba verificada contra un dump real; sugiere un problema de límite/orden de línea que nunca existió. Una medición directa (barrido de `count_dark_client_pixels` en pasos de 5px sobre `[120,240)`, tomada en este mismo punto del test) muestra que el contenido oscuro no empieza hasta el `y` de cliente 140 (`sweep5=…135:0 140:21 145:14…`, detalle completo en la Novena actualización, más abajo). Es decir, `[0,50)` y `[50,131)` caen **enteras** dentro del margen superior de la página -- por encima de donde empieza cualquier texto -- así que ninguna de las dos toca una línea, y mucho menos cruza el límite entre dos. Con la reubicación sola las bandas seguían siendo un rango que no correspondía al layout real, así que -- siguiendo la salida explícita que el plan preveía para este caso -- se quitó solo la cláusula `after_enter_first_band == 0 || after_enter_second_band == 0 ||` de la condición de `fail(60)`, dejando intactas todas las demás (`applied_ftc`, `second_inserted_*`, `large_inserted_hps==144`, `formatted_chp_hps`, `fetch_bytes_match`, `after_forced_repaint_pixels`, `large_line_band_pixels`, `large_line_pixels`, `cache_pages_separate`). Dicho con precisión: el commit `38686d2` no arregló un bug de *timing* de muestreo -- quitó una comprobación cuyos rangos literales nunca podían satisfacerse para este documento, sin importar cuándo se tomara la muestra. El diagnóstico `bands=` se mantuvo en el `std::cerr` para visibilidad futura, aunque en ese momento ya no bloqueaba el test (la comprobación por línea se restauró después, con rangos medidos -- ver Novena actualización).
+**Correction (final branch review, same date):** this update's
+original text claimed here that the `[50,131)` band "crosses the
+boundary between the 24pt line and the 36pt line": that statement is
+incorrect and was not verified against a real dump; it suggests a
+line boundary/order problem that never existed. A direct measurement
+(a `count_dark_client_pixels` sweep in 5px steps over `[120,240)`,
+taken at this exact point in the test) shows that dark content does
+not start until client `y` 140 (`sweep5=…135:0 140:21 145:14…`, full
+detail in the Ninth update, below). That is, `[0,50)` and `[50,131)`
+fall **entirely** within the page's top margin, above where any text
+starts, so neither one touches a line, let alone crosses the boundary
+between two. With the relocation alone the bands were still a range
+that did not correspond to the real layout, so, following the
+explicit escape hatch the plan had provided for this case, only the
+`after_enter_first_band == 0 || after_enter_second_band == 0 ||`
+clause was removed from the `fail(60)` condition, leaving all the
+others intact (`applied_ftc`, `second_inserted_*`,
+`large_inserted_hps==144`, `formatted_chp_hps`, `fetch_bytes_match`,
+`after_forced_repaint_pixels`, `large_line_band_pixels`,
+`large_line_pixels`, `cache_pages_separate`). Stated precisely: commit
+`38686d2` did not fix a sampling *timing* bug: it removed a check
+whose literal ranges could never be satisfied for this document, no
+matter when the sample was taken. The `bands=` diagnostic was kept in
+the `std::cerr` for future visibility, even though at that point it
+no longer blocked the test (the per-line check was restored later,
+with measured ranges: see the Ninth update).
 
-Con ese cambio, `opus_word1_font_typing_test` pasa de forma estable (2/2 corridas), y la etiqueta `word1_startup_blocked` queda en **8/9** -- el único fallo restante es `opus_word1_interaction_test` (arrastre de caption, limitación de entorno Xvfb/Wine documentada en §12, no un bug del proyecto). Ningún archivo de `Opus/` ni `src/core/` tocado en esta pieza -- solo `src/port/original/opus_word1_ui_test.cpp`.
+With that change, `opus_word1_font_typing_test` passes stably (2/2
+runs), and the `word1_startup_blocked` label sits at **8/9**: the
+only remaining failure is `opus_word1_interaction_test` (caption
+drag, the Xvfb/Wine environment limitation documented in §12, not a
+project bug). No file in `Opus/` or `src/core/` was touched in this
+piece: only `src/port/original/opus_word1_ui_test.cpp`.
 
-**Verificado:**
+**Verified:**
 ```
 DISPLAY=:91 ctest --test-dir out/linux-winelib-debug -R "^opus_word1_font_typing_test$" --output-on-failure
     Passed (x2) -- visualPixels=2705->2599->2629->11061 bands=0,0 repaint=2629
     largeBand=7497 fetch=1/1@-1:13/13 displayLines=3
 
 DISPLAY=:91 ctest --test-dir out/linux-winelib-debug -L word1_startup_blocked --output-on-failure
-    8/9 -- único fallo: opus_word1_interaction_test (documentado, §12)
+    8/9: only failure: opus_word1_interaction_test (documented, §12)
 ```
 
-Task 6 (`--font-typing`) queda **cerrado**: los 4 bugs originales (nombres de fuente enumerables, `union FCID` LP64, foco tras selección de ribbon, `EraNameFromFtc`/tabla de época) arreglados, más este ítem de arnés que no era un bug de producto.
+Task 6 (`--font-typing`) is now **closed**: the 4 original bugs
+(enumerable font names, `union FCID` LP64, focus after ribbon
+selection, `EraNameFromFtc`/era table) fixed, plus this harness item
+that was not a product bug.
 
-**Novena actualización 2026-08-25 (exia, revisión final de rama): banda por línea restaurada con offset medido; corrige un hallazgo de la Octava actualización.**
+**Ninth 2026-08-25 update (exia, final branch review): per-line band
+restored with a measured offset; corrects a finding from the Eighth
+update.**
 
-Una revisión final de `fix/font-typing-szface` (todavía sin mergear a `main`) encontró dos hallazgos "Important" sobre esta sección: (1) la frase "cruza el límite entre la línea 24pt y la 36pt" de la Octava actualización era incorrecta -- corregida in situ en los dos párrafos de arriba; (2) la comprobación por línea (`after_enter_first_band`/`after_enter_second_band`) se había quitado de `fail(60)` en vez de arreglarse. Lo segundo era plan-sanctioned -- el plan (Task 1, Step 4) autorizaba explícitamente esa salida una vez confirmado que las franjas seguían en 0 tras el repintado forzado -- pero dejaba el test sin su única comprobación de "cada línea de fuente distinta realmente se pintó"; solo quedaban el conteo de todo el panel y la banda combinada `[131,292)`.
+A final review of `fix/font-typing-szface` (not yet merged into
+`main`) found two "Important" findings about this section: (1) the
+Eighth update's phrase "crosses the boundary between the 24pt line
+and the 36pt line" was incorrect: corrected in place in the two
+paragraphs above; (2) the per-line check
+(`after_enter_first_band`/`after_enter_second_band`) had been removed
+from `fail(60)` instead of being fixed. The second was plan-sanctioned:
+the plan (Task 1, Step 4) explicitly authorized that escape hatch once
+it was confirmed the bands stayed at 0 after the forced repaint, but
+it left the test without its only check that "each distinct font line
+was actually painted"; only the whole-panel count and the combined
+`[131,292)` band remained.
 
-Se restauró la comprobación con rangos derivados de una medición real, no adivinados ni copiados de una estimación aproximada. Con un barrido temporal de `count_dark_client_pixels` (pasos de 5px sobre `[120,240)`) insertado en el mismo punto exacto donde se toman las muestras de banda, más una consulta de la geometría de línea real en ese instante (los mismos códigos de `kWmOpusX64QuerySelection` -- 30/32/33 -- que ya usa el diagnóstico `displayLines` unas líneas más abajo en el bloque), se midió:
+The check was restored with ranges derived from a real measurement,
+not guessed or copied from a rough estimate. With a temporary
+`count_dark_client_pixels` sweep (5px steps over `[120,240)`)
+inserted at the exact same point where the band samples are taken,
+plus a query of the real line geometry at that instant (the same
+`kWmOpusX64QuerySelection` codes, 30/32/33, that the `displayLines`
+diagnostic already uses a few lines further down in the block), the
+measurement was:
 
 ```
 sweep5=120:0 125:0 130:0 135:0 140:21 145:14 150:29 155:169 160:140 165:112
@@ -1532,1044 +1873,281 @@ sweep5=120:0 125:0 130:0 135:0 140:21 145:14 150:29 155:169 160:140 165:112
 probeLines=3 [0 y=0 h=36] [1 y=36 h=54] [2 y=90 h=16]
 ```
 
-El contenido oscuro empieza en `y` de cliente 140, y el hueco entre línea 0 y línea 1 cae en `y` de cliente 175-180 -- ambos coinciden con exactitud con `y=0/h=36` (línea 0) y `y=36/h=54` (línea 1) bajo un offset constante de 140px: línea 0 -> cliente `[140,176)`, línea 1 -> cliente `[176,230)`. Un segundo barrido, independiente, tomado más tarde en el mismo test (tras escribir la línea grande de 144hps) reproduce la misma forma `[140,220)` para estas dos líneas y sitúa el inicio del contenido de la línea grande en `y` de cliente 230 -- exactamente `layout y=90 + 140`. El offset de 140px queda confirmado por dos muestras independientes tomadas en dos instantes distintos del mismo test, no por una sola lectura.
+The dark content begins at client `y` 140, and the gap between line 0
+and line 1 falls at client `y` 175-180: both match exactly with
+`y=0/h=36` (line 0) and `y=36/h=54` (line 1) under a constant 140px
+offset: line 0 -> client `[140,176)`, line 1 -> client `[176,230)`. A
+second, independent sweep, taken later in the same test (after
+writing the large 144hps line) reproduces the same shape `[140,220)`
+for these two lines and places the large line's content start at
+client `y` 230, exactly `layout y=90 + 140`. The 140px offset is
+confirmed by two independent samples taken at two different instants
+in the same test, not by a single reading.
 
-El código final calcula las dos bandas dinámicamente a partir de esa geometría -- `kPageTopMarginY = 140` más los `y`/`h` reales de línea 0 y línea 1, consultados en caliente vía los mismos códigos de mensaje que el diagnóstico ya usaba -- en vez de hardcodear una segunda pareja de literales de píxel. Así la comprobación sigue midiendo lo que dice medir aunque el layout de este documento varíe ligeramente entre corridas. Se repuso la cláusula `after_enter_first_band == 0 || after_enter_second_band == 0 ||` en la condición de `fail(60)`, sin tocar ninguna otra cláusula.
+The final code computes the two bands dynamically from that geometry
+(`kPageTopMarginY = 140` plus line 0 and line 1's real `y`/`h`,
+queried live via the same message codes the diagnostic already used)
+instead of hardcoding a second pair of pixel literals. This way the
+check keeps measuring what it claims to measure even if this
+document's layout shifts slightly between runs. The
+`after_enter_first_band == 0 || after_enter_second_band == 0 ||`
+clause was restored in the `fail(60)` condition, with no other clause
+touched.
 
-**Verificado:**
+**Verified:**
 ```
 DISPLAY=:91 ctest --test-dir out/linux-winelib-debug -R "^opus_word1_font_typing_test$" -V
-    Passed (x3) -- bands=582,1975 (estable, idéntico en las 3 corridas)
+    Passed (x3) -- bands=582,1975 (stable, identical across all 3 runs)
 
 DISPLAY=:91 ctest --test-dir out/linux-winelib-debug -L word1_startup_blocked --output-on-failure
-    8/9 -- único fallo: opus_word1_interaction_test (documentado, §12)
+    8/9: only failure: opus_word1_interaction_test (documented, §12)
 ```
 
-Plan de esta pieza: `docs/superpowers/plans/2026-08-25-font-typing-harness-bands.md` (Task 1; commiteado en esta misma revisión, ver convención en `bf5f117`). Ningún archivo de `Opus/` ni `src/core/` tocado -- solo `src/port/original/opus_word1_ui_test.cpp`.
+Plan for this piece: `docs/superpowers/plans/2026-08-25-font-typing-harness-bands.md` (Task 1; committed in this same revision, see the convention in `bf5f117`). No file in `Opus/` or `src/core/` touched: only `src/port/original/opus_word1_ui_test.cpp`.
 
-## 9. `--clipboard`: "Ctrl+A did not execute Select All" -- confirmado, verify-only, cierra Task 7
+## 9. `--clipboard`: "Ctrl+A did not execute Select All": confirmed, verify-only, closes Task 7
 
-**Task 7, 2026-08-19 en exia.** El plan (Step 1) pedía correr
-`opus_word1_clipboard_shortcut_test` aislado como primer paso. Igual
-que Task 4, ya venía pasando en cada corrida completa de la etiqueta
-de esta sesión -- se verificó aislado para confirmarlo formalmente:
+**Task 7, 2026-08-19 on exia.** The plan (Step 1) called for running
+`opus_word1_clipboard_shortcut_test` in isolation as a first step.
+Same as Task 4, it had already been passing on every complete run of
+this session's label: it was verified in isolation to confirm this
+formally:
 
 ```
 ctest -R "^opus_word1_clipboard_shortcut_test$" --output-on-failure
     Passed    3.61 sec
 ```
 
-Mismo patrón que Task 4 (File > New): comparte causa raíz con Task 3
-(`_setjmp`/`longjmp` ABI). Sin cambios de código -- commit de
-documentación solamente.
+Same pattern as Task 4 (File > New): shares its root cause with Task
+3 (`_setjmp`/`longjmp` ABI). No code changes: documentation commit
+only.
 
-Rama `fix/winelib-startup-blocked` (no está en `main`). Plan:
-`docs/superpowers/plans/2026-08-15-terminar-winelib.md`. Ledger SDD:
+Branch `fix/winelib-startup-blocked` (not on `main`). Plan:
+`docs/superpowers/plans/2026-08-15-terminar-winelib.md`. SDD ledger:
 `.superpowers/sdd/2026-08-15-terminar-winelib/progress.md`.
 
-Build/test solo en debian13 contra `/home/pablo/build-debian13-verify`,
-`DISPLAY=:59`. No usar el `--preset` del host. **Este build dir es
-compartido con al menos otra sesión** (visto en vivo el 2026-08-15, ver
-§4 arriba) — antes de fiarse de un resultado de `ctest` rojo, confirmar
-que no hay otro proceso `cmake`/`ninja`/`ctest` corriendo ahí al mismo
-tiempo (`ps aux | grep -E 'cmake|ninja|ctest'` dentro del contenedor).
+Build/test only on debian13 against
+`/home/pablo/build-debian13-verify`, `DISPLAY=:59`. Do not use the
+host's `--preset`. **This build dir is shared with at least one other
+session** (seen live on 2026-08-15, see §4 above): before trusting a
+red `ctest` result, confirm there is no other `cmake`/`ninja`/`ctest`
+process running there at the same time (`ps aux | grep
+-E 'cmake|ninja|ctest'` inside the container).
 
-Task 3 **cerrada** en Fix round 3 + cierre de revisión (ambas rondas de
-review, clean): el AV era `_setjmp` con ABI Microsoft-x64 pisando
-`*vhpllbs`. Las dos mitades del par (`_setjmp` y `longjmp`) están fijadas
-a System V por definición, con guard de build que lo verifica.
-`opus_word1_about_test` pasa; la etiqueta llegó a 5/9. Tasks 1–2 hechas.
-11 hallazgos menores quedaron diferidos a la revisión final de toda la
-rama (lista completa en el ledger SDD).
+Task 3 **closed** at Fix round 3 plus review closure (both review
+rounds clean): the AV was `_setjmp` with Microsoft-x64 ABI stomping
+on `*vhpllbs`. Both halves of the pair (`_setjmp` and `longjmp`) are
+pinned to System V by definition, with a build guard that verifies
+it. `opus_word1_about_test` passes; the label reached 5/9. Tasks 1-2
+done. 11 minor findings were deferred to the final review of the
+whole branch (full list in the SDD ledger).
 
-Task 4 **cerrada** 2026-08-19 en exia (§6 arriba) — verify-only,
-confirma la hipótesis de §4: `opus_word1_ui_test` (modo base, ejercita
-File > New) pasa limpio y aislado, sin ningún cambio de código. Mismo
-root cause que About (Task 3). El fallo de §4 fue el entorno
-compartido de esa sesión en debian13, no un bug independiente de
-File > New.
+Task 4 **closed** 2026-08-19 on exia (§6 above): verify-only, confirms
+§4's hypothesis: `opus_word1_ui_test` (base mode, exercises File >
+New) passes clean and isolated, with no code changes. Same root
+cause as About (Task 3). §4's failure was that session's shared
+debian13 environment, not an independent File > New bug.
 
-Task 5 (Save As) **no empezada** — el único de los 4 tests que ya
-fallaba con mensaje propio (no el AV genérico) antes de esta sesión;
-candidato a causa raíz independiente, ver la nota del brief sobre
-`run_word95_common_file_dialog`.
+Task 5 (Save As) **not started**: the only one of the 4 tests that
+was already failing with its own message (not the generic AV) before
+this session; a candidate for an independent root cause, see the
+brief's note on `run_word95_common_file_dialog`.
 
-Tasks 6–10 **no empezadas**.
+Tasks 6-10 **not started**.
 
-Aparte y sin relación con Task 3/4: `opus_x64_runtime_test` (gating)
-se cuelga sin imprimir nada, confirmado pre-existente (binario de un
-día antes, sin símbolo `setjmp`, se cuelga igual). Sigue sin
-investigar.
+Separate and unrelated to Task 3/4: `opus_x64_runtime_test` (gating)
+hangs without printing anything, confirmed preexisting (a binary from
+a day earlier, with no `setjmp` symbol, hangs the same way). Still
+not investigated.
 
-Sesión cerrada 2026-08-15 a pedido del usuario tras ~2 h de trabajo
-(no por límite de uso). Sin trabajo a medias sin commitear — árbol
-limpio en `25325c0`.
+Session closed 2026-08-15 at the user's request after ~2 h of work
+(not because of a usage limit). No uncommitted half-finished work:
+tree clean at `25325c0`.
 
-**Actualización 2026-08-19 (exia, revisión independiente de Task 3 a
-Task 9):** ver §5-§11 arriba. 4 hallazgos de fidelidad corregidos y
-verificados (Task 3), Task 4 cerrada verify-only, Task 5 (Save As) con
-causa raíz independiente real encontrada y arreglada (señuelo
-`OpusSdmDialog` sin conexión al diálogo real `GetSaveFileNameA`),
-Task 6 (`--font-typing`) con 2 de 3 bugs reales arreglados (nombres de
-fuente Windows nunca enumerables; `union FCID` de 8 bytes en Linux por
-LP64) y un tercero localizado sin cerrar (el foco no vuelve al panel
-tras elegir fuente del ribbon -- toca `Opus/iconbar1.c` restringido,
-necesita autorización), Task 7 (Ctrl+A) cerrada verify-only, Task 8
-(`--selection`) con 3 bugs de arnés encadenados encontrados y
-arreglados (falta de foco real, mensajes sintéticos en vez de input
-real, constante de píxel obsoleta que asumía margen izquierdo cero),
-Task 9 (`--typing`) con el mismo bug de foco real que Task 8, arreglado
-igual. **7/9** en la etiqueta, subiendo de 5/9 al empezar esta sesión.
-Reproducido en un segundo entorno (exia, no debian13/hp-15). Árbol
-limpio, 11 commits nuevos sobre `16145b6`, pusheados a
+**2026-08-19 update (exia, independent review of Task 3 through Task
+9):** see §5-§11 above. 4 fidelity findings fixed and verified (Task
+3), Task 4 closed verify-only, Task 5 (Save As) with a real
+independent root cause found and fixed (`OpusSdmDialog` decoy with no
+connection to the real `GetSaveFileNameA` dialog), Task 6
+(`--font-typing`) with 2 of 3 real bugs fixed (Windows font names
+never enumerable; 8-byte `union FCID` on Linux due to LP64) and a
+third located but not closed (focus does not return to the pane after
+choosing a ribbon font: touches the restricted `Opus/iconbar1.c`,
+needs authorization), Task 7 (Ctrl+A) closed verify-only, Task 8
+(`--selection`) with 3 chained harness bugs found and fixed (missing
+real focus, synthetic messages instead of real input, an obsolete
+pixel constant that assumed a zero left margin), Task 9 (`--typing`)
+with the same real-focus bug as Task 8, fixed the same way. **7/9** on
+the label, up from 5/9 at the start of this session. Reproduced in a
+second environment (exia, not debian13/hp-15). Clean tree, 11 new
+commits on top of `16145b6`, pushed to
 `origin/fix/winelib-startup-blocked`.
 
-## 10. `--selection`: "sentence-end click produced an invalid selection" -- 3 bugs de arnés encadenados, arreglados
+## 10. `--selection`: "sentence-end click produced an invalid selection": 3 chained harness bugs, fixed
 
-**Task 8, 2026-08-19 en exia.** El plan esperaba `"typing did not leave
-a canonical insertion selection"` (fail 38); esa parte ya pasaba (Task
-2 no la rompió). El fallo real, más adelante, era fail 39. **Los 3
-bugs son del arnés de test, no de WORD1** -- verificado con
-`kWmOpusX64QuerySelection` en cada paso antes de tocar nada.
+**Task 8, 2026-08-19 on exia.** The plan expected `"typing did not
+leave a canonical insertion selection"` (fail 38); that part was
+already passing (Task 2 did not break it). The real failure, further
+along, was fail 39. **The 3 bugs belong to the test harness, not to
+WORD1**: verified with `kWmOpusX64QuerySelection` at every step
+before touching anything.
 
-**Bug A -- clic sintético sin foco real:** `selection_mode` era el
-único bloque de este archivo que hacía clics posicionales
-(`WM_LBUTTONDOWN`/`UP` con coordenadas) sin llamar antes
-`make_foreground_and_focus` -- cada otro bloque con input real de este
-mismo archivo sí lo hace (grep confirma 9 sitios). Sin foco/activación
-real, cualquier clic (sintético o real) resolvía siempre a `cp=0` sin
-importar `x`. Fix: añadir la llamada, mismo patrón que el resto.
+**Bug A: synthetic click with no real focus:** `selection_mode` was
+the only block in this file doing positional clicks
+(`WM_LBUTTONDOWN`/`UP` with coordinates) without first calling
+`make_foreground_and_focus`: every other block with real input in
+this same file does (grep confirms 9 sites). Without real
+focus/activation, any click (synthetic or real) always resolved to
+`cp=0` regardless of `x`. Fix: add the call, same pattern as the
+rest.
 
-**Bug B -- mensajes sintéticos en vez de input real:** incluso con
-foco, `SendMessageW(pane, WM_LBUTTONDOWN, ...)` entrega directo al
-window proc sin pasar por la cola de mensajes real -- se cambió a
-`SetCursorPos`+`SendInput` (`send_mouse_button`), el patrón ya probado
-en este mismo archivo para el caso idéntico "clic cerca del final de
-la oración" (`interaction_mode`, ~línea 1853).
+**Bug B: synthetic messages instead of real input:** even with
+focus, `SendMessageW(pane, WM_LBUTTONDOWN, ...)` delivers directly to
+the window proc without going through the real message queue: it was
+changed to `SetCursorPos`+`SendInput` (`send_mouse_button`), the
+pattern already proven in this same file for the identical
+"click near the end of the sentence" case (`interaction_mode`, ~line
+1853).
 
-**Bug C -- constante de píxel obsoleta:** con A y B arreglados, el
-mapeo `x=10..250` reveló un margen izquierdo real de ~185-190px antes
-del primer carácter (`x=180` seguía en `cp=0`; recién en `x=190`
-`cp=1`) -- la constante hardcodeada `x=250` para "cerca del final de
-la oración" (32 caracteres, ~7px cada uno) solo alcanzaba `cp=12`, no
-los `>=15` que pide la aserción. Fix: en vez de adivinar un nuevo
-píxel fijo, el bucle de mapeo ahora extiende su rango (10-450) y
-guarda el primer `x` real que alcanza `cp >= sentence_length/2` --
-usado como blanco del clic final, sin asumir ningún margen.
+**Bug C: obsolete pixel constant:** with A and B fixed, the
+`x=10..250` mapping revealed a real left margin of ~185-190px before
+the first character (`x=180` was still at `cp=0`; only at `x=190`
+does `cp=1`): the hardcoded `x=250` constant for "near the end of the
+sentence" (32 characters, ~7px each) only reached `cp=12`, not the
+`>=15` the assertion requires. Fix: instead of guessing a new fixed
+pixel, the mapping loop now extends its range (10-450) and saves the
+first real `x` that reaches `cp >= sentence_length/2`, used as the
+final click's target, with no assumed margin.
 
-**Efecto secundario del Bug B, encontrado y arreglado en el camino:**
-el bucle de mapeo con `SendInput` real, 24 clics seguidos con solo
-20ms entre down/up, disparaba detección de doble-clic real de Wine/
-Win32 justo antes del clic final (`clicked_double=1` en vez de `0`,
-rompiendo esa aserción por separado). Fix: `Sleep(60)` entre cada
-probe del bucle, y `Sleep(GetDoubleClickTime()+150)` antes del clic
-final dedicado.
+**Side effect of Bug B, found and fixed along the way:** the mapping
+loop with real `SendInput`, 24 clicks in a row with only 20ms between
+down/up, was triggering real Wine/Win32 double-click detection right
+before the final click (`clicked_double=1` instead of `0`, breaking
+that assertion separately). Fix: `Sleep(60)` between each loop probe,
+and `Sleep(GetDoubleClickTime()+150)` before the dedicated final
+click.
 
-**Verificado:**
+**Verified:**
 ```
 DISPLAY=:99 ctest -R "^opus_word1_selection_test$" --output-on-failure
     Passed    9.85 sec
 
 DISPLAY=:99 ctest -L word1_startup_blocked --output-on-failure
-    6/9 -- sin regresión en los demás
+    6/9: no regression in the rest
 ```
 
-Archivo: `src/port/original/opus_word1_ui_test.cpp` únicamente --
-ningún cambio en `Opus/` ni `opus_sdm_runtime.cpp` para esta tarea.
+File: `src/port/original/opus_word1_ui_test.cpp` only: no change in
+`Opus/` or `opus_sdm_runtime.cpp` for this task.
 
-## 11. `--typing`: "typed text was not painted in the document pane" -- mismo patrón que Task 8, arreglado
+## 11. `--typing`: "typed text was not painted in the document pane": same pattern as Task 8, fixed
 
-**Task 9, 2026-08-19 en exia.** El plan esperaba salidas 13/15 con
-variabilidad entre corridas (§27 de `01-diagnostico...`); esta sesión
-el fallo real ya llegaba consistentemente hasta el último check, fail
-16, sin variar entre corridas -- Task 2's fix del crash movió el punto
-de fallo más allá de donde el plan lo dejó.
+**Task 9, 2026-08-19 on exia.** The plan expected exit codes 13/15
+with variability between runs (§27 of
+`01-heap-corruption-startup-diagnosis.md`); this session the real
+failure was already consistently reaching the last check, fail 16,
+with no variation between runs: Task 2's crash fix moved the failure
+point further along than where the plan left it.
 
-**Causa raíz:** `typing_mode` era el único modo interactivo de este
-archivo que **nunca** buscaba explícitamente el panel `OpusWwd` ni
-llamaba `make_foreground_and_focus` -- confiaba ciegamente en lo que
-`GetGUIThreadInfo` reportara como ya enfocado al arrancar. El check de
-`fail(13)` solo verificaba `hwndFocus != nullptr`, nunca que fuera
-*el panel correcto*. Si otra ventana tenía el foco por accidente del
-orden de creación, los `WM_CHAR` posteados con
-`post_keyboard_character` se encolaban sin error (`fail(15)` nunca
-dispara) pero no llegaban a ningún sitio visible -- exactamente el
-síntoma: el test llega hasta el último check (`fail(16)`, conteo de
-píxeles oscuros) y falla ahí, nunca antes.
+**Root cause:** `typing_mode` was the only interactive mode in this
+file that **never** explicitly looked for the `OpusWwd` pane nor
+called `make_foreground_and_focus`: it blindly trusted whatever
+`GetGUIThreadInfo` reported as already focused at startup. The
+`fail(13)` check only verified `hwndFocus != nullptr`, never that it
+was *the correct pane*. If some other window happened to have focus
+by accident of creation order, the `WM_CHAR` messages posted with
+`post_keyboard_character` queued without error (`fail(15)` never
+fires) but never reached anywhere visible: exactly the symptom: the
+test reaches the last check (`fail(16)`, dark-pixel count) and fails
+there, never earlier.
 
-**Fix:** buscar `OpusWwd` explícitamente y llamar
-`make_foreground_and_focus` antes de postear, mismo patrón que Task 8
-(§10) estableció como el requerido para todo bloque de este archivo
-que depende del foco real.
+**Fix:** explicitly look for `OpusWwd` and call
+`make_foreground_and_focus` before posting, the same pattern Task 8
+(§10) established as required for every block in this file that
+depends on real focus.
 
-**Verificado:**
+**Verified:**
 ```
 DISPLAY=:99 ctest -R "^opus_word1_typing_test$" --output-on-failure
     Passed   14.78 sec
 
 DISPLAY=:99 ctest -L word1_startup_blocked --output-on-failure
-    7/9 -- sin regresión en los demás
+    7/9: no regression in the rest
 ```
 
-Archivo: `src/port/original/opus_word1_ui_test.cpp` únicamente.
+File: `src/port/original/opus_word1_ui_test.cpp` only.
 
-## 12. `--interaction`: "dragging the caption did not move the WORD1 window" -- limitación de entorno confirmada, no bug del proyecto
+## 12. `--interaction`: "dragging the caption did not move the WORD1 window": confirmed environment limitation, not a project bug
 
-**Task 10, 2026-08-19 en exia -- último ítem del plan.** El plan (Step
-2) ya anticipaba esta posibilidad: "check whether this is a Wine/
-window-manager limitation similar in kind to the `CreateProcessW`
-zero-PID precedent (§25)". Lo es, confirmado con una réplica
-independiente, sin código del proyecto.
+**Task 10, 2026-08-19 on exia: last item in the plan.** The plan
+(Step 2) already anticipated this possibility: "check whether this is
+a Wine/window-manager limitation similar in kind to the
+`CreateProcessW` zero-PID precedent (§25)". It is, confirmed with an
+independent replica, with no project code.
 
-**Descartado primero (ninguno de los dos era la causa):**
-- **Sin window manager:** `:99` (el Xvfb compartido de esta sesión) no
-  tenía ninguno corriendo. Se instaló `openbox` (via `apt`, con
-  autorización) y se levantó un Xvfb propio y aislado (`:77`, no
-  toca el `:99` compartido) -- mismo resultado exacto.
-- **Salto de cursor único en vez de arrastre incremental:**
-  `SetCursorPos` de una sola vez entre el down y el up podría no
-  disparar el umbral de arrastre (`SM_CXDRAG`/`SM_CYDRAG`) que el
-  loop de `SC_MOVE` de Wine espera. Se cambió a 8 pasos incrementales
-  con `Sleep(15)` entre cada uno -- mismo resultado exacto.
+**Ruled out first (neither was the cause):**
+- **No window manager:** `:99` (this session's shared Xvfb) had none
+  running. `openbox` was installed (via `apt`, with authorization)
+  and a separate, isolated Xvfb was started (`:77`, does not touch
+  the shared `:99`): the exact same result.
+- **Single cursor jump instead of incremental drag:** a one-shot
+  `SetCursorPos` between down and up might not trigger the drag
+  threshold (`SM_CXDRAG`/`SM_CYDRAG`) that Wine's `SC_MOVE` loop
+  expects. It was changed to 8 incremental steps with `Sleep(15)`
+  between each: the exact same result.
 
-**Confirmación decisiva:** una sonda standalone (`winegcc`, sin código
-de este proyecto) contra `wine notepad` -- el builtin de Wine, la
-misma referencia "conocida-buena" que ya usa `01-diagnostico-heap-
-corruption-arranque.md` en otros puntos -- con la *misma* secuencia
-exacta (`WM_NCHITTEST` confirma `HTCAPTION`, `SetCursorPos`+`SendInput`
-incremental, `MOUSEEVENTF_LEFTDOWN`/`LEFTUP`) bajo el mismo `:77`+
-`openbox`: **tampoco se mueve** (`before=0,0 after=0,0`, idéntico al
-síntoma de WORD1). Si ni siquiera notepad puede arrastrarse así en
-este entorno, no es un bug de WORD1 ni de `Opus/wproc.c` -- es una
-limitación de cómo Wine/este `winex11.drv` maneja el loop `SC_MOVE`
-frente a input sintetizado vía `SendInput`, en este entorno
-específico.
+**Decisive confirmation:** a standalone probe (`winegcc`, no code
+from this project) against `wine notepad`, the Wine builtin, the same
+"known-good" reference that
+`01-heap-corruption-startup-diagnosis.md` already uses elsewhere,
+with the *exact same* sequence (`WM_NCHITTEST` confirms `HTCAPTION`,
+incremental `SetCursorPos`+`SendInput`,
+`MOUSEEVENTF_LEFTDOWN`/`LEFTUP`) under the same `:77`+`openbox`: **it
+does not move either** (`before=0,0 after=0,0`, identical to WORD1's
+symptom). If not even notepad can be dragged this way in this
+environment, it is not a WORD1 bug nor an `Opus/wproc.c` bug: it is a
+limitation of how Wine/this `winex11.drv` handles the `SC_MOVE` loop
+against input synthesized via `SendInput`, in this specific
+environment.
 
-Se revisó también si `Opus/wproc.c` intercepta `WM_NCLBUTTONDOWN` con
-lógica propia que pudiera estar interfiriendo -- no lo hace; la única
-mención de ese mensaje en ese archivo es una tabla de logging bajo
-`#ifdef RSH` (build de investigación, no activa aquí), no un handler
-real. Confirma que el mensaje cae directo a `DefWindowProc`, igual que
-en `notepad`.
+It was also checked whether `Opus/wproc.c` intercepts
+`WM_NCLBUTTONDOWN` with its own logic that could be interfering: it
+does not; the only mention of that message in that file is a logging
+table under `#ifdef RSH` (an investigation build, not active here),
+not a real handler. This confirms the message falls straight through
+to `DefWindowProc`, just like in `notepad`.
 
-**Sin cambio de comportamiento -- se mantiene el arrastre incremental
-en el test** (más fiel a un arrastre real de usuario que el salto
-único original, aunque no fue la causa) y se agregó un diagnóstico
-(`before=`/`after=`/`caption_point=`) para que una futura sesión no
-tenga que re-derivar esto. Test sigue fallando, documentado como
-limitación de entorno, no bug -- mismo tratamiento que §25.
+**No behavior change: incremental drag is kept in the test** (more
+faithful to a real user drag than the original single jump, even
+though it was not the cause), and a diagnostic
+(`before=`/`after=`/`caption_point=`) was added so a future session
+does not have to re-derive this. The test keeps failing, documented
+as an environment limitation, not a bug: same treatment as §25.
 
-**Verificado:**
+**Verified:**
 ```
 DISPLAY=:99 ctest -L word1_startup_blocked --output-on-failure
-    7/9 -- sin regresión (--interaction seguía fallando antes y
-    después, por la razón ahora documentada, no una nueva)
+    7/9: no regression (--interaction kept failing before and after,
+    for the now-documented reason, not a new one)
 ```
 
-Archivo: `src/port/original/opus_word1_ui_test.cpp` (arrastre
-incremental + diagnóstico). Dependencias del sistema instaladas esta
-sesión (`apt`, con autorización): `twm` (descartado, crashea sin
-`xfonts-base` que también se instaló), `openbox` (usado para la
-réplica).
-
-## 13. `--roundtrip`: proceso 2 abre el diálogo real, pero el `.doc` que Word 1.1a acaba de guardar no lo puede reabrir -- bloqueado, causa fuera del arnés
-
-**Task 2 del plan `docs/superpowers/plans/2026-08-25-doc-roundtrip.md`,
-2026-08-25 en `/home/pablo/mswordrt` (worktree `doc-roundtrip`),
-`DISPLAY=:91`.** Continúa el mismo bloque `if (roundtrip_mode)` que
-Task 1 dejó con un `TODO`: lanzar un segundo proceso `WORD1` contra el
-`.doc` que el primero acaba de guardar y comparar `cpMac`, el
-contenido byte a byte (consulta 69), `ftc0`, `hps0` y `dypLine`
-(consulta 55) contra la instantánea tomada antes de guardar. **No
-pasa** -- pero no por el arnés: el propio `WORD1` no puede reabrir un
-`.doc` que acaba de escribir con su propio Save As, ni por línea de
-comando ni por el diálogo real. Ver "Causa raíz" abajo.
-
-**Qué se implementó (funciona correctamente hasta donde llega):**
-
-- **Paso 1 -- lanzar el proceso 2.** Mismo `CreateProcessW` que el
-  proceso 1, con `wide_path` (la ruta que el Paso 3 de Task 1 generó)
-  como segundo argumento. **Deliberadamente sin comillas**, a
-  diferencia del ejemplo literal del brief: `Opus/initwin.c`
-  (`FInitPart1`) parte `lpszCmdLine` por espacios en blanco sin
-  entender comillas en absoluto, así que un argumento entrecomillado
-  sin espacios internos se cuela con las comillas literales pegadas al
-  nombre de archivo -- confirmado probando ambas formas, mismo
-  resultado en las dos (ver "Causa raíz"). Se recupera el PID desde la
-  ventana con el mismo workaround que el proceso 1 (PID cero de
-  `CreateProcessW` para binarios Winelib externos, documentado en
-  §25 de `01-heap-corruption-startup-diagnosis.md`).
-- **Detección de apertura por línea de comando:** se espera hasta 8 s
-  a que la ventana de clase `OpusApp` (no clase `nullptr`: un intento
-  fallido deja un `MessageBoxA` -- también clase `#32770`, también con
-  caption `"Microsoft Word"`, el mismo `szAppTitle` que usa
-  `CreateWindow` para `vhwndApp` -- que una búsqueda sin filtro de
-  clase puede confundir con la ventana real) tenga en su título tanto
-  `"Microsoft Word"` como el nombre base del archivo sin extensión
-  (`oprtNNNN`, extraído de `wide_path`). **No ocurre**: la apertura por
-  línea de comando no tuvo efecto en ninguna de las corridas.
-- **Fallback a File > Open:** al fallar la línea de comando, queda un
-  `MessageBoxA` modal "Cannot open document" (`Opus/open.c`,
-  `DocOpenStDof`, `eidCantOpen`) trabado en pantalla -- aparece durante
-  `FInitPart2`/`FInitArgs`, antes de que `vfInitializing` se limpie y
-  antes de que `ElNewFile` cree el documento en blanco, así que nada
-  del arranque posterior a ese punto ha corrido todavía. Se lo
-  descarta (`WM_COMMAND`/`IDOK` a su botón OK, id 1) y se espera a que
-  la app llegue al estado ocioso normal `"Microsoft Word - Document1"`
-  antes de mandar `File > Open`. Con eso resuelto, el diálogo real
-  `#32770` aparece, se localiza el campo de nombre (`ComboBoxEx32`
-  `cmb13`/`0x047C`, igual que Task 1 en Save As -- mismo `OFN_EXPLORER`,
-  confirmado también del lado de `kIddOpen` en
-  `run_word95_common_file_dialog`), se fija la ruta con `WM_SETTEXT` y
-  se verifica con `read_control_text_ansi` (lee de vuelta la ruta
-  completa correcta), y se acepta con `IDOK`. **Todo este mecanismo de
-  automatización funciona**: el diálogo aparece, el campo se rellena y
-  se lee correctamente, el `IDOK` se entrega. El fallo ocurre después,
-  dentro de Word mismo.
-- **Paso 2 (comparación) y Paso 3 (limpieza):** implementados
-  completos -- reenfoque de `OpusWwd` vía `make_foreground_and_focus`,
-  relectura de las consultas 41/69/51/52/55, comparación campo por
-  campo contra `cp_mac`/`snapshot_bytes`/`ftc0`/`hps0`/`dyp0`
-  guardados por Task 1, con un código de fallo distinto por campo
-  (`cpMac`=103, `byte@N`=104, `ftc`=105, `hps`=106, `dypLine`=107) y
-  `TerminateProcess` + `DeleteFileA` en cada camino de salida. No se
-  llega a ejercitar en una corrida exitosa porque el Paso 1 nunca
-  entrega un documento cargado -- el fallo real (código 100, "roundtrip
-  File Open did not load the target document") ocurre antes.
-
-**Causa raíz (no es un bug del arnés):** tanto la apertura por línea
-de comando como el diálogo interactivo terminan en el mismo
-`MessageBoxA` "Cannot open document" -- el propio Word 1.1a rechaza el
-archivo que su propio Save As acaba de escribir, exactamente igual sin
-importar el mecanismo usado para pedir la apertura. Se investigó con
-tres líneas de evidencia:
-
-1. **Reproducción cruzada:** se probó la línea de comando con
-   `wide_path` entre comillas (como muestra el brief) y sin comillas
-   (la forma final, elegida porque el parser de `initwin.c` no quita
-   comillas). Ambas formas fallan igual, descartando el formato del
-   argumento como causa.
-2. **Rastreo del código:** `Opus/open.c` `DocOpenStDof` llama a
-   `Opus/create.c` `FnOpenSt`, que inicializa `*pfose = foseCantOpenAny`
-   al entrar y solo lo cambia a otro valor en ramas específicas
-   (creación de archivo, `FAccessFn`, `fOstNativeOnly`). Ninguna de
-   esas ramas aplica para una apertura simple sin esas flags, así que
-   cualquier fallo dentro de `FnOpenSt` que no toque `*pfose`
-   explícitamente dejo el valor por defecto, y
-   `fose <= foseBadFile` en `DocOpenStDof` salta directo a
-   `eidCantOpen` sin pasar por el fallback de `dofCmdNewOpen`
-   (`DocDoCmdNewOpen`) -- consistente con lo observado.
-3. **Inspección del archivo guardado:** se capturó una copia del
-   `.doc` de 2417 bytes antes de que el propio test lo borrara
-   (interceptando el archivo en
-   `~/.wine/drive_c/users/pablo/AppData/Local/Temp/` mientras corría
-   el test). Los primeros bytes:
-
-   ```
-   9b a5 00 00 21 00 00 00 b1 20 00 00 02 00 00 00
-   ```
-
-   Decodificando `struct FIB` (`Opus/wordtech/file.h`) con `int`
-   (4 bytes en este build) para `wIdent`/`nFib`/`nProduct`/`nLocale`:
-   `wIdent=0xa59b` (correcto, `wMagic`) y `nFib=33` -- coincide
-   exactamente con `nFibCurrent` (`#define nFibCurrent 33`,
-   `Opus/wordtech/file.h:94`). Pero `Opus/wordtech/word.h` declara
-   `typedef long CP;` y `typedef long FC;`, y en este build nativo
-   x86-64 (LP64) `long` mide 8 bytes -- 4 bytes más que en el Win16/
-   Win32 original para el que se diseñó el formato de archivo. Mezclar
-   campos `int`/`unsigned` de 4 bytes con campos `FC`/`CP` de 8 bytes
-   (que además exigen alineación de 8 bytes en x86-64) produce un
-   `struct FIB` cuyo layout en memoria -- y por lo tanto en disco, si
-   la escritura vuelca la estructura tal cual -- no coincide con el
-   formato empaquetado del Word 1.x original. Esto es coherente con
-   que la ruta de apertura falle más adelante, al leer las tablas PLC
-   (`fcPlcfbteChpx`/`cbPlcfbteChpx` vía `HplcReadPlcf`, dentro de la
-   rama "native format" de `FnOpenSt`) con desplazamientos corridos
-   por el padding de alineación.
-
-   Se intentó confirmar el punto exacto de fallo con `gdb` (breakpoints
-   en `FnOpenSt`/`FNativeFormat`, arrancando `WORD1.exe.so` con un
-   argumento de archivo), pero el proceso recibe un `SIGSEGV` real
-   antes de llegar a los breakpoints incluso con
-   `handle SIGSEGV nostop noprint pass` -- Wine parece depender de
-   señales para su propia inicialización de forma incompatible con
-   correr el binario desde el arranque bajo un debugger nativo. No se
-   insistió más: la evidencia de (1) y (2) ya converge en una causa
-   consistente sin necesitar el punto exacto de la línea.
-
-**Por qué esto queda fuera del alcance de Task 2:** arreglar esto
-requeriría tocar código de formato de archivo bajo `src/Opus/`
-(árbol restringido, cambios necesitan autorización explícita según
-`CLAUDE.md`) -- probablemente `Opus/wordtech/word.h` (los `typedef`
-de `CP`/`FC`/`PN`) y/o la lógica de lectura/escritura de FIB en
-`Opus/create.c`/`Opus/save.c`, no el arnés de UI
-(`opus_word1_ui_test.cpp`). Esto también cae directo en el criterio de
-parada del brief de Task 2: "command-line file-open genuinely doesn't
-work AND driving #32770 'Open' also doesn't" -- ambos caminos fallan,
-y no por cómo el arnés maneja la UI (el diálogo se abre, el campo se
-rellena y se lee correctamente, `IDOK` se entrega) sino por algo
-interno a Word mismo.
-
-**Los cuatro números capturados antes de guardar** (instantánea de
-Task 1, nunca confirmados contra una relectura porque la reapertura no
-llega a completarse): `cpMac=21`, `ftc0=20`, `hps0=0`, `dyp0=16`. El
-archivo guardado midió 2417 bytes en todas las corridas. **Esto no es
-una comparación de fidelidad de paginación byte-a-byte contra un build
-MSVC de Windows** -- ese no es el objetivo de este test en absoluto,
-que compara el mismo binario `WORD1` contra sí mismo, dos veces; y en
-el estado actual, ni siquiera esa comparación consigo mismo se puede
-completar.
-
-**Verificado (corrida reproducible, tres veces):**
-```
-$ DISPLAY=:91 ctest --test-dir /home/pablo/mswordrt/out/linux-winelib-debug \
-    -R '^opus_word1_roundtrip_test$' --output-on-failure
-...
-roundtrip snapshot cpMac=21 ftc0=20 hps0=0 dyp0=16
-roundtrip target path='C:\users\pablo\AppData\Local\Temp\oprt0120.doc' wideLength=46
-roundtrip found save_dialog=0x10128 caption='Save As'
-roundtrip filename field=0x1013e reads back 'C:\users\pablo\AppData\Local\Temp\oprt0120.doc'
-roundtrip saved 'C:\users\pablo\AppData\Local\Temp\oprt0120.doc' size=2417 bytes
-roundtrip process 2 watching for base name 'oprt0120'
-roundtrip process 2 command-line open did not take effect (title still lacks the base name); falling back to File > Open
-roundtrip dismissing stray dialog hwnd=0x3008e after failed command-line open
-  id=1 hwnd=0x200d4 class='Button' cachedText='OK' wmGetText='OK' visible=1 enabled=1
-  id=65535 hwnd=0x200ca class='Static' cachedText='Cannot open document' wmGetText='Cannot open document' visible=1 enabled=1
-roundtrip open filename field=0x2010e reads back 'C:\users\pablo\AppData\Local\Temp\oprt0120.doc'
-window class='OpusApp' caption='Microsoft Word - Document1' visible=1 enabled=1
-roundtrip leftover #32770 hwnd=0x400d6 caption='Microsoft Word'
-  id=1 hwnd=0x300b6 class='Button' cachedText='OK' wmGetText='OK' visible=1 enabled=1
-  id=65535 hwnd=0x30124 class='Static' cachedText='Cannot open document' wmGetText='Cannot open document' visible=1 enabled=1
-roundtrip File Open did not load the target document
-
-0% tests passed, 1 tests failed out of 1
-```
-
-`opus_word1_save_as_test` sigue pasando (no se tocó ese código), y la
-corrida completa de la etiqueta da **8/10**: los dos fallos son
-`--interaction` (§12, límite de entorno ya documentado) y
-`--roundtrip` (este ítem, bloqueado por la causa de arriba, no por el
-entorno). No quedan archivos `oprt*.doc` sueltos en ninguna corrida:
-`DeleteFileA(ansi_path)` se ejecuta en cada camino de salida del
-bloque, incluidos todos los nuevos códigos de fallo de este ítem.
-
-Archivo: `src/port/original/opus_word1_ui_test.cpp` (Pasos 1-3
-completos del plan, códigos de fallo 92-108).
-
-## 14. `opus_word1_ui_test` (smoke base): "two-document File Exit was not clean" -- reproducible solo en la VM `debian13` de exia, no en este vps, aislado a la fase post-`exit()` de Wine/Winelib
-
-**2026-08-26, en `debian13` (VM libvirt dentro de `exia`, recién
-recompuesta a 6 vCPU/10GB), `DISPLAY=:91`.** El test base sin flags
-(`opus_word1_ui_test WORD1.exe`, sin `--modo`) hace File New (crea
-`Document2`), después File Exit, y falla en el segundo paso con el
-código 12: `GetExitCodeProcess` devuelve éxito pero `exit_code != 0`
-(`src/port/original/opus_word1_ui_test.cpp:3107-3110`). Reproducible
-**3/3** en esta VM. En este vps, mismo binario, mismo commit, el test
-pasa siempre -- diferencia real entre dos entornos Debian 13
-"soportados", no ruido.
-
-**Dos hipótesis descartadas por evidencia directa, no por suposición:**
-
-- **No es la cookie xauth / WM de `:0`.** La sospecha inicial era
-  razonable -- esta VM tiene una sesión gráfica real en `:0`, y una
-  conexión SSH sin forwarding de X11 no tiene el cookie de esa sesión
-  (`opus_x64_runtime_test` sí falló ahí con
-  `Authorization required, but no authorization protocol specified`).
-  Pero el test que nos ocupa se corrió, como todos los demás en esta
-  sesión, contra un Xvfb propio en `:91` (headless, sin gestor de
-  ventanas, sin sesión de usuario) -- ahí es donde falla 3/3. `:0`
-  nunca estuvo en la ecuación de este fallo en particular.
-- **No es timeout del arnés.** El código de fallo es el 12 ("was not
-  clean"), no el 11 ("timed out"): `WaitForSingleObject(process.hProcess,
-  5000)` devuelve `WAIT_OBJECT_0` dentro de tiempo, es decir, `WORD1`
-  cierra rápido y limpio en el sentido de que el proceso termina --
-  simplemente termina con un código de salida distinto de 0.
-  Instrumentado con un `std::cerr` temporal antes de la
-  comparación (revertido después, no quedó en el árbol): `got_exit_code=1
-  exit_code=1 GetLastError=6`. No es un código de excepción/crash
-  (`0xC0000005` y similares) -- es literalmente `exit_code=1`.
-
-**Hipótesis del bucle modal SDM -- descartada por instrumentación
-directa.** La sospecha inicial (recogida en una revisión previa de
-esta sección): había un segundo sitio que llama `PostQuitMessage` en
-todo el árbol compilado, `src/port/original/opus_sdm_runtime.cpp:2660-2666`,
-el bucle modal propio de un diálogo SDM "nativo"
-(`dialog->native_modal`):
-
-```cpp
-MSG message{};
-while (!dialog->dying) {
-    const int status = GetMessageA(&message, nullptr, 0, 0);
-    if (status <= 0) {
-        if (status == 0) {
-            PostQuitMessage(static_cast<int>(message.wParam));
-        }
-        ...
-```
-
-`materialize_new_template` (`opus_sdm_runtime.cpp:844-871`, el
-diálogo de File New que este test usa) fija `dialog.native_modal =
-true`, así que el diálogo de File New sí pasa por este bucle modal.
-Se instrumentó con `std::cerr` (temporal, revertido) tanto ese
-`PostQuitMessage` como `Opus/quit.c:311` y el punto de lectura en
-`QuitExit()` (`quit.c:332`). Resultado, corrida real contra
-`DISPLAY=:91` en `debian13`:
-
-```
-[DEBUG QuitExit] wParam=0, calling exit() now -- C++ static dtors run inside it
-two-document File Exit was not clean
-```
-
-`[DEBUG PostQuitMessage SDM]` **nunca imprime** -- ese bucle modal no
-está activo en el momento del cierre, se descarta la condición de
-carrera propuesta. Y `vmsgLast.wParam` es `0` exactamente, como debe
-ser: la lógica de `Opus/quit.c` es correcta, `exit(0)` limpio desde
-el motor C. El proceso reportado por el arnés (`exit_code=1`) **no es
-el valor que el motor pasa a `exit()`**.
-
-**Hipótesis de destructores estáticos C++ globales -- también
-descartada por instrumentación directa.** Se revisó `src/port/` en
-busca de `atexit()` y de globales con destructor no trivial. Único
-candidato que toca una API Win32 real durante el apagado:
-`Win95AliasCleanup::~Win95AliasCleanup()`
-(`opus_sdm_runtime.cpp:155-165`, instancia global
-`g_win95_alias_cleanup`), que llama `DeleteFileA` sobre
-`g_win95_save_alias.legacy_path` y sobre las claves de
-`g_win95_saved_aliases`. Instrumentado con 5 puntos `std::cerr`
-(entrada con volcado de estado, antes/después de cada `DeleteFileA`,
-salida limpia), misma corrida:
-
-```
-[DEBUG Win95AliasCleanup] enter dtor, created=0 legacy_path='' saved_aliases=0
-[DEBUG Win95AliasCleanup] exit dtor cleanly
-```
-
-Entra y sale limpio -- `created=0`, este test nunca guarda nada, así
-que ninguna rama de `DeleteFileA` se ejecuta siquiera. Ningún otro
-global de `src/port/` (`g_dialogs`, `g_win95_saved_aliases`,
-`g_page_snapshots`, `searches`) tiene destructor no trivial que
-llame Win32; son contenedores planos que solo liberan memoria.
-
-**Conclusión de esta investigación:** el `exit_code=1` que reporta
-`GetExitCodeProcess` en el arnés **no se genera dentro de `msword`**.
-Confirmado por evidencia directa, no por descarte: el motor C
-(`Opus/quit.c`) llama `exit(0)` limpio (`wParam=0` verificado en el
-punto exacto de la llamada), y la capa C++ del puerto no tiene
-ninguna rutina de apagado (bucle modal SDM, destructor estático) que
-altere ese valor antes de que el proceso termine. El origen del `1`
-observado por el padre está en la fase **post-`exit()`**, fuera del
-código de este proyecto: en la plomería propia de Wine/Winelib
-(descarga interna de DLLs tras el `exit()` de libc, o la captura de
-código de salida de `GetExitCodeProcess`/`CreateProcessW` para
-binarios winelib lanzados externamente como proceso hijo) -- ya hay
-precedente documentado de comportamiento no estándar de Wine en este
-punto exacto, ver `01-heap-corruption-startup-diagnosis.md`
-§25-26. Investigarlo de aquí en más ya no es depurar código de
-`msword`, es depurar Wine mismo; no se continúa en esta sesión.
-
-**Estado:** `opus_word1_ui_test` (smoke base) tratado como fallo
-**dependiente del entorno GUI de `debian13` / plomería de
-Wine-Winelib**, no del código de esta sesión ni de los fixes de
-FIB/PLC o `ccpEop` -- no bloquea el trabajo de guardado. Etiqueta
-`word1_startup_blocked` en esa VM: **7/10** (este ítem, más
-`--interaction` y `--roundtrip`, ya documentados en §12 y §13). En
-este vps sigue en **8/10** (§ Resumen). Investigación cerrada; ambos
-árboles (vps y `debian13`) quedaron limpios tras revertir toda la
-instrumentación temporal.
-
-## 15. `kCcpEop` 1→2: arregla `--roundtrip`, y `--font-typing` resultó tener la expectativa calibrada contra el bug viejo -- ambos en verde a la vez
-
-**2026-08-26, en este vps, `DISPLAY=:91`, rama `fix/ccpeop-2` (no
-fusionada a `main`).** Punto de partida: `Opus/ch.h` define
-`ccpEop=2` bajo CRLF (el único modo que este puerto compila), pero
-`src/port/original/opus_asm_resn_core.cpp` reimplementaba
-`CpMacDoc`/`CpMac1Doc`/`CpMacDocEdit` (la version C de
-`Opus/asm/resn2.asm`, fiel a los comentarios de esa fuente
-ensamblador) con una constante propia `kCcpEop` hardcodeada en `1`.
-Esto producía dos síntomas documentados por separado antes de esta
-sesión: el drift de `cpMac +2` por ciclo de guardado/reapertura en
-`opus_word1_roundtrip_test` (ver CLAUDE.md, sección de estado del
-26-08), y -- según una investigación previa parqueada en la rama
-`wip/ccpeop-font-typing-regression` -- que corregir la constante
-"reproduciblemente rompe" `opus_word1_font_typing_test`, sin causa
-localizada.
-
-**Cambio base:** `kCcpEop` 1→2 en `opus_asm_resn_core.cpp` (con
-comentario que cita `Opus/ch.h`), y las expectativas hardcodeadas de
-`opus_x64_runtime_test.cpp:260` (`CpMacDoc(1)`/`CpMacDocEdit(1)` sobre
-un `dod` de prueba con `cpMac=103`) actualizadas de `101/100` a
-`99/97` -- consistente con la fórmula `-2*ccpEop`/`-3*ccpEop` ahora
-usando el valor correcto.
-
-**La regresión de `--font-typing` se confirmó real** (no ruido): con
-`kCcpEop=2`, `display_line_count` final da `2` en vez de `3`, y el
-test fallaba con "mixed-font lines disappeared after resizing".
-Se investigó con el proceso de `systematic-debugging` (instrumentación
-real, no suposición), probando y **descartando tres hipótesis
-concretas antes de encontrar la real**:
-
-1. **Invalidación/extensión de `pdr->cpLim` obsoleta tras insertar
-   cerca del final del documento** (`wordtech/editspec.c`, la función
-   `AdjustCp`/`C_AdjustCp` que ajusta cada `DR` de cada `WWD` cuando
-   el documento crece o encoge). Se instrumentó `AdjustCp` y
-   `disp2.c`/`FUpdateDr` (el punto donde `pdr->cpLim == cpNil`
-   dispara un recálculo vía `CpMacDoc(doc)`) con trazas `fprintf`
-   temporales. **Descartada:** `pdr->cpLim` se mantiene correctamente
-   sincronizado con `cpMac` en cada ciclo de inserción/recorte
-   observado; nunca se queda "atrás" del punto de edición.
-2. **`FReplace` rechazando el bloque "speeder" de inserción
-   (`cchInsertMax`=32 bytes, `wordtech/insert.c` `BeginInsert`) al
-   posicionarse justo en el borde `CpMacDocEdit(doc)`.** Se
-   instrumentó `BeginInsert` para capturar `cpInsert`,
-   `CpMacDoc`/`CpMacDocEdit` y el resultado de `FReplace` en cada
-   llamada. **Descartada:** `fReplaceOk=1` en las 9 llamadas
-   observadas durante la corrida completa del test; nunca falla.
-3. **El catch de "fin de documento" dentro del fetch de
-   `FormatLine`** (`wordtech/format.c:1717`, `LFetch`:
-   `if (cpNext >= caPara.cpLim || cpNext >= CpMacDoc(doc) || ...)
-   { vfli.chBreak = chEop; goto LEndBreakCp; }`, el candidato más
-   directo dado que acota exactamente con `CpMacDoc`). Se instrumentó
-   ese punto exacto. **Descartada:** la rama se alcanza 3478 veces
-   durante la corrida (`LFetch` es el bucle normal de fetch de runs),
-   pero la condición de corte por `CpMacDoc` nunca se cumple ni una
-   sola vez -- todo corte de línea real ocurre por `caPara.cpLim` o
-   por un carácter excepcional dentro del propio `switch`, no por este
-   catch.
-
-**Causa real, encontrada por comparación A/B directa** (mismo test,
-mismas pulsaciones, solo cambiando `kCcpEop` 1↔2 y volcando el estado
-de líneas con las consultas 30-34 justo después del Enter, antes de
-escribir "largeline"): bajo `kCcpEop=1` (el valor viejo, con el que
-el test venía pasando), el párrafo 1 (`"fonttest"` + `" secondfont"`,
-un run en cada fuente/tamaño) mostraba **23 caracteres reales**
-repartidos en 2 líneas envueltas (`n=10`+`n=13`) antes de la línea
-vacía del nuevo párrafo. Bajo `kCcpEop=2` (el valor correcto), el
-mismo párrafo mostraba **21 caracteres reales en una sola línea, sin
-envolver**. Ninguno de los dos números coincide con las pulsaciones
-reales enviadas (`"fonttest"`=8 + `" secondfont"`=11 = 19,
-confirmado `cp_before=0`, documento nuevo) -- ambas builds tienen un
-excedente sobre el conteo real (+4 la vieja, +2 la nueva) en lo que
-`edl.dcp` (consulta 34, el conteo de caracteres por línea de
-despliegue) reporta, no en el contenido del documento en sí (que se
-verificó completo y correcto por separado: los 9 caracteres de
-`"largeline"` se anexan al buffer de inserción en dos tandas,
-confirmado carácter por carácter vía instrumentación de
-`InsertLoopCh`). Es decir: el párrafo 1 **nunca envolvió a 2 líneas
-por ancho real de texto** -- el "envoltorio" que el test viejo
-observaba bajo `kCcpEop=1` era un artefacto del conteo de caracteres
-por línea bajo la constante incorrecta, no maquetación genuina. La
-aserción `display_line_count < 3` de `opus_word1_ui_test.cpp` estaba,
-sin saberlo, calibrada contra ese artefacto.
-
-**No se investigó más a fondo qué hace exactamente que `edl.dcp`
-reporte un excedente sobre el conteo real de pulsaciones bajo
-cualquiera de las dos constantes** (no es `LFetch`, según el punto 3
-de arriba; queda abierto si alguna vez importa para otro test que
-dependa de `edl.dcp` como conteo exacto de caracteres). Para este
-test, no hacía falta: el contenido y el formato (negrita/cursiva/`jc`,
-ver `opus_word1_formatting_test`) ya se verifican por otras vías
-(consultas CHP/PAP directas, comparación byte a byte cp por cp), y
-`display_line_count` solo necesitaba reflejar la maquetación real
-(2 líneas, no 3) para dejar de fallar por una razón que no era un bug.
-
-**Arreglo aplicado (arnés, no motor):**
-`src/port/original/opus_word1_ui_test.cpp`, bloque `--font-typing`:
-`display_line_count < 3` → `< 2`; se retira `after_enter_second_band
-== 0` de la condición de fallo (esa franja se mide justo después del
-Enter, antes de escribir "largeline" -- bajo la maquetación correcta
-es la línea 1, el párrafo nuevo aún vacío, y legítimamente da ~0
-píxeles oscuros en ese instante). Comentario ampliado documentando
-que el sweep de píxeles original (§8) quedó calibrado bajo el
-`kCcpEop` viejo.
-
-**Verificado:**
-```
-$ DISPLAY=:91 ctest --test-dir out/linux-winelib-debug -LE word1_startup_blocked
-100% tests passed, 0 tests failed out of 9
-
-$ DISPLAY=:91 ctest --test-dir out/linux-winelib-debug -L word1_startup_blocked
-91% tests passed, 1 tests failed out of 11
-  (único fallo: opus_word1_interaction_test, §12, límite de entorno ya documentado)
-```
-
-`opus_word1_roundtrip_test` y `opus_word1_font_typing_test` en verde
-**simultáneamente** -- el trade-off que había bloqueado la rama
-`wip/ccpeop-font-typing-regression` no era tal: no había que elegir
-entre los dos, había que corregir una aserción de arnés que llevaba
-calibrada contra el bug del motor desde que se escribió. Rama
-`wip/ccpeop-font-typing-regression` queda obsoleta, no se fusiona
-(su diff revierte los query codes 82-84 de `opus_word1_formatting_test`,
-que no existían cuando se creó); el trabajo real quedó en
-`fix/ccpeop-2`, sobre `main` actual.
-
-## 16. Verificación 2026-09-01 en este vps: gating 9/9 y `--roundtrip` en verde; `--font-typing` cae antes de llegar a la aserción de líneas
-
-Sesión de verificación del trabajo de §15 (consolidación de
-`kCcpEop = 2`). Estado del árbol al empezar: los tres cambios ya
-estaban en `main` (`011feae`, fusionado en `b01e51a`) --
-`kCcpEop = 2` en `src/port/original/opus_asm_resn_core.cpp:19`,
-`99/97` en `src/port/original/opus_x64_runtime_test.cpp:260`, y
-`display_line_count < 2` / `early_display_line_count >= 2` en la
-sección `--font-typing` de `opus_word1_ui_test.cpp`. No hubo nada
-que modificar.
-
-El entorno pedido (VM `debian13`) no era alcanzable: `exia`, el
-salto SSH intermedio, figuraba `offline, last seen 2h ago` en
-`tailscale status`. La verificación se hizo en este vps con Xvfb.
-
-### Resultado
-
-- **Gating: 9/9 en verde** (`opus_original_strtbl_test`,
-  `opus_x64_runtime_test`, `opus_original_sttb_test`,
-  `opus_original_plc_test`, `opus_sdm_cab_test`,
-  `opus_original_command_test`, `opus_shell_memory_foreign_test`,
-  `opus_shell_config_test`, `opus_shell_font_substitution_test`).
-- **`ctest -E 'opus_word1_font_typing_test|opus_word1_interaction_test'`:
-  18/18 en verde**, incluidos `opus_word1_roundtrip_test` (6.66 s) y
-  `opus_word1_formatting_test` (8.41 s).
-- **`--font-typing`: falla, 4/4 intentos**, en tres formas distintas
-  entre corridas: `could not mouse-select the font`,
-  `could not mouse-select point size`, y cuelgue hasta el TIMEOUT de
-  ctest. **Nunca llega a la aserción de recuento de líneas de §15**:
-  muere en `choose_combo_item_with_mouse`, es decir en la
-  interacción de ratón con los combos de la cinta, muy por delante
-  de cualquier código de maquetación.
-
-### Efecto cascada en la suite completa (importante para leer un `ctest` global)
-
-En la primera corrida completa aparecieron 6 fallos (14, 16, 17, 18,
-19, 20). Cinco de esos son artefacto: cuando `--font-typing` se
-cuelga, deja vivo un `WORD1.exe.so` residual consumiendo 80-100 % de
-CPU, y los tests siguientes (`--about`, `--save-as`, `--roundtrip`,
-`--formatting`) reportan `Timeout` aunque **pasan sueltos y pasan en
-ctest** una vez que se mata el residuo. Al interpretar una corrida
-global hay que verificar procesos `WORD1` colgados antes de contar
-fallos.
-
-### Diagnóstico del cuelgue
-
-Con el test parado a los 15 s: el proceso de test está en
-`pipe_read` (un `SendMessageW` esperando respuesta vía wineserver) y
-el proceso `WORD1.exe.so` está en estado `R`, en bucle ocupado, no
-en espera de mensajes. `gdb` adjunto no produce símbolos utilizables
-(`Selected architecture i386:x86-64 is not compatible with reported
-target architecture i386:x64-32`).
-
-Experimento descartado, **revertido, no está en `main`**: endurecer
-`choose_combo_item_with_mouse` contra la carrera
-`SetCursorPos` (XWarpPointer) / `SendInput` (XTest) -- gap de 120 ms
-tras posicionar el cursor y sondeo del popup en vez de `Sleep(250)`
-fijo. Efecto medido: el click pasa a aterrizar de verdad y el fallo
-se convierte en cuelgue determinista 4/4 (antes era mezcla de fallo
-rápido y cuelgue). Conclusión: la causa no es la temporización del
-arnés, sino que WORD1 entra en bucle ocupado con el dropdown del
-combo abierto bajo Wine/Xvfb; hacer que el click acierte más
-confiablemente sólo hace el bucle más frecuente.
-
-### Reverificación en `DISPLAY=:91` (mismo día)
-
-Repetida la corrida sobre el Xvfb `:91` (el que lleva activo desde el
-2026-08-26), con `pkill -9 WORD1.exe` previo:
-
-- `ctest` completo: 14/20, con los mismos 6 fallos (14, 16, 17, 18,
-  19, 20) -- otra vez 5 de ellos por cascada.
-- Matando el `WORD1` residuo y relanzando 17-20:
-  `about` 2.22 s, `save_as` 2.66 s, `roundtrip` 4.78 s,
-  `formatting` 6.42 s, **4/4 en verde**.
-- `ctest -E 'font_typing|interaction'`: **18/18 en verde**, gating
-  9/9 incluido, `roundtrip` 6.98 s.
-
-Es decir: el comportamiento es idéntico en `:91` y en servidores
-Xvfb recién arrancados. El único fallo propio es `--font-typing`;
-`--interaction` sigue siendo la limitación de entorno de §12.
-
-### Qué cambió respecto al 2026-08-26 (10/11)
-
-No se identificó el disparador. `wine` sigue siendo
-`wine-10.0 (Debian 10.0~repack-6)`, instalado el 2026-08-10, sin
-actualizaciones desde entonces; el kernel se actualizó el 27 y el 31
-de agosto pero la máquina no se ha reiniciado (uptime 11 días). El
-fallo se reproduce igual en el Xvfb `:91` que llevaba activo desde
-el 2026-08-26 y en servidores Xvfb recién arrancados, con
-`wineserver -k` de por medio. Queda pendiente reproducirlo en la VM
-`debian13` cuando `exia` vuelva a estar en línea, y compararlo con
-`--interaction` (§12), el otro test cuyo fallo es puramente
-interacción de ratón con el chrome de la ventana.
-
-## 17. Validación binaria del `.doc` en disco: `doc_inspector` y `opus_doc_inspector_test` (2026-09-01)
-
-Hasta ahora nada leía el `.doc` que WORD1 escribe. `--roundtrip`
-(§13, §15) comprueba que un segundo proceso WORD1 lo pueda reabrir y
-que el texto coincida, y `--rich-format` compara CHP/PAP vía los
-códigos de consulta 82/83/84 de `wproc.c`, pero ambas verificaciones
-pasan por el propio motor: si el motor escribiera y releyera de forma
-consistente una estructura mal formada, las dos pruebas seguirían en
-verde. El bug de corrupción en disco de `898e499` (la `FIB` nativa de
-768 bytes escrita en una página de sector de 512 -- desbordamiento
-real, no cosmético) es exactamente esa clase de fallo.
-
-`doc_inspector` cierra ese hueco leyendo el archivo por fuera del
-motor.
-
-### La herramienta
-
-`src/port/tools/doc_inspector/doc_inspector.cpp`, commit `a8dd611`.
-C++20 puro: sin `windows.h`, sin Wine, sin GUI. Se construye con gcc
-nativo. Bajo el toolchain Winelib entra en el sub-proyecto de
-`src/port/tools/host/` junto a `mkcmd`/`mkdlg`/`bitapp`/`dibapp`, por
-el mismo motivo que ellos y que está razonado en
-`00-reconnaissance.md`: no depende de Win32 ni del ABI del motor, así
-que pasarla por winegcc no aportaría nada y sí la expondría a los
-modos de fallo de la capa Winelib. Se instala como
-`<build>/host-tools/bin/doc_inspector`.
-
-Qué valida, y de dónde sale cada layout:
-
-- **FIB**: las 105 palabras little-endian de 4 bytes en el orden
-  exacto de `CbBltFibPacked()` (`Opus/filewin.c`), con un
-  `static_assert` que ata el enum de índices a `cwFibDisk`. Comprueba
-  `wIdent == wMagic` (0xA59B), `nFib` dentro de
-  `nFibMinDoc..nFibCurrent`, `nFibBack`, `fcMin`/`fcMac`/`cbMac`
-  contra el tamaño real del archivo y, cuando `!fComplex`, que
-  `fcMac - fcMin` sea la suma de los `ccp*`.
-
-- **FKP de CHPX y PAPX**: páginas de `cbSector` alcanzadas por
-  `plcfbteChpx`/`plcfbtePapx`, más el relleno secuencial desde
-  `pnChpFirst`/`pnPapFirst` que hace `FFillMissingBtePns`
-  (`Opus/openrare.c`). Verifica `crun`, monotonía estricta de `rgfc`,
-  los offsets de propiedad -- que son palabras de 16 bits, el
-  `b <<= 1` de `fetch.c`/`inssubs.c`, no offsets de byte -- y la
-  longitud del registro: `cb` en bytes para CHPX, `cw` en palabras
-  para PAPX (`fStoreCw = fPara` en `C_FAddRun`). Exige además
-  continuidad entre páginas y cobertura completa de `fcMin..fcMac`.
-
-- **Las 21 PLC nombradas por el FIB**, descompuestas como en
-  `HplcReadPlcf()` (`Opus/create.c`): `ccp` cp's de `cbCpDisk`
-  seguidos de `ccp-1` registros del tamaño propio de cada tabla, con
-  los mismos `cbSED`/`cbPGD`/`cbFLD`/... que el motor pasa en cada
-  llamada. Marca `MISALIGNED` cuando `cb` no divide en entradas
-  enteras, y revisa monotonía y rango de los cp.
-
-### Dos detalles del formato que quedaron establecidos al escribirla
-
-1. **El FIB de Word 1.x no tiene ranura `plcfed`.** No existe en
-   `struct FIB` ni en el recorrido de `CbBltFibPacked()`. Las tablas
-   vivas más cercanas son las cinco `plcffld*` (foo = `struct FLD`),
-   que la herramienta sí inspecciona; el PLC de EDL de
-   `Opus/wordtech/disp.h` es sólo memoria y nunca se escribe. La
-   salida lo dice explícitamente para que nadie vuelva a buscarlo.
-
-2. **El ancho del FC en disco no es fijo.** El FIB y los arrays de cp
-   van siempre a 4 bytes (`cbCpDisk`), pero `rgfc` de los FKP y los
-   registros foo de las PLC van a **ancho nativo**: 8 bytes en este
-   build Winelib LP64 y 4 en el de MSVC x64, que es justo lo que
-   advierte la nota junto a `cbCpDisk` en `Opus/wordtech/file.h` --
-   un `.doc` de este build no es compatible byte a byte con uno del
-   build MSVC. La herramienta lo autodetecta puntuando ambas
-   hipótesis contra `cbSED` y contra la coherencia de los FKP;
-   `--fc-width=4|8` fuerza. En los archivos de este vps la
-   autodetección da 8 con margen amplio (18 contra -10 en
-   `roundtrip.doc`, 20 contra -10 en `rich_format.doc`).
-
-Dos supuestos iniciales resultaron **falsos** y se corrigieron contra
-el motor antes de fijar las comprobaciones, porque ambos producían
-falsos positivos:
-
-- El archivo **no** se redondea a un múltiplo de sector. No hay
-  ningún `SetEndOfFile` en `Opus/filewin.c`: el archivo termina en el
-  último byte escrito. Los `.doc` de las pruebas miden 2385 bytes,
-  que no es múltiplo de 512.
-- `cbMac` es exactamente el tamaño físico del archivo, no una marca
-  lógica por debajo de un final redondeado. La comprobación correcta
-  es `cbMac == tamaño`; un archivo más largo es holgura de un
-  guardado anterior y sólo merece nota, no problema.
-
-### Cómo llega el archivo a la prueba
-
-Commit `b7a1c7b`. Las dos únicas pruebas que atraviesan el diálogo
-Save As real y producen un `.doc` son `opus_word1_roundtrip_test`
-(`--roundtrip`) y `opus_word1_formatting_test` (`--rich-format`).
-`opus_word1_save_as_test` **no** escribe nada: abre el diálogo y lo
-cancela (`WM_COMMAND` id 2 = IDCANCEL).
-
-Ambas borran su `.doc` en todas sus salidas, así que
-`opus_word1_ui_test.cpp` guarda una copia bajo
-`OPUS_X64_DOC_ARTIFACT_DIR` cuando esa variable está en el entorno
-(`keep_doc_artifact()`/`discard_doc_artifact()`). Guardarla es
-estrictamente un efecto lateral: si `CopyFileA` falla se registra y
-se sigue, nunca convierte en fallo una prueba de guardado que por lo
-demás pasó. Cada modo borra su propio artefacto antes de guardar, de
-modo que nunca se valida uno rancio.
-
-El directorio tiene que ser visible desde Wine, así que bajo el
-toolchain Winelib CTest lo pasa como `"Z:"` más la ruta unix del
-árbol de build, con barras normales -- Win32 las acepta como
-separador y `wineboot` mapea `Z:` a `/` en todo prefijo
-(`~/.wine/dosdevices/z: -> /` en este vps). La rama MSVC ya tiene
-ruta nativa y no lleva prefijo.
-
-El fixture `opus_saved_doc_artifacts` (`FIXTURES_SETUP` en las dos
-pruebas de guardado, `FIXTURES_REQUIRED` en la nueva) es lo que hace
-que `ctest -R opus_doc_inspector` las ejecute primero en vez de
-inspeccionar un artefacto viejo.
-
-`src/cmake/RunDocInspector.cmake` recorre el directorio y corre
-`doc_inspector --verbose` sobre cada `.doc`. Falla si alguno sale con
-código distinto de 0 y **también si no encontró ningún archivo**:
-pasar en silencio convertiría la prueba en un no-op permanente el día
-que las pruebas de guardado dejen de producir archivo. Los dos
-caminos negativos se verificaron a mano -- artefacto con `crun`
-corrupto y directorio vacío, ambos hacen fallar el script.
-
-Queda registrada en `src/CMakeLists.txt`, no en un
-`src/port/original/CMakeLists.txt`: ese archivo no existe,
-`port/original/` no es un subdirectorio de CMake y todas las pruebas
-del proyecto se registran en `src/CMakeLists.txt`.
-
-### Medición en este vps (2026-09-01, `DISPLAY=:91`)
-
-```
-Start 19: opus_word1_roundtrip_test ....... Passed  7.00 sec
-Start 20: opus_word1_formatting_test ...... Passed  8.74 sec
-Start 21: opus_doc_inspector_test ......... Passed  0.04 sec
-```
-
-**0.04 s** es el coste completo de la validación binaria: los dos
-`.doc` leídos, parseados y verificados enteros. No hay Wine, ni
-servidor X, ni proceso WORD1 en ese tramo -- es un binario nativo
-leyendo dos archivos de 2385 bytes. Los 15.7 s restantes son las dos
-pruebas productoras, que ya existían.
-
-Resultado sobre los dos artefactos, ambos `STRUCTURALLY VALID`:
-
-| artefacto | tamaño | `fcMin..fcMac` | `ccpText` | FC detectado |
-|---|---|---|---|---|
-| `roundtrip.doc` | 2385 | 512..532 | 20 | 8 bytes |
-| `rich_format.doc` | 2385 | 512..535 | 23 | 8 bytes |
-
-En ambos: `plcfsed` y `plcfpgd` con cps `0..ccpText`, bin tables con
-cps `fcMin..fcMac`, FKP contiguos y con cobertura completa.
-`rich_format.doc` muestra además 3 runs CHPX en su página con
-compartición de propiedad (dos runs apuntando al mismo offset 508),
-que es el comportamiento de `C_FAddRun` cuando encuentra un CHPX
-idéntico ya almacenado en la página.
-
-### La etiqueta: por qué **no** es gating
-
-`opus_doc_inspector_test` lleva
-`LABELS "word1_startup_blocked;doc_binary_validation"`.
-
-La ejecución de `doc_inspector` es nativa y determinista, y por sí
-sola sería perfectamente gating. Lo que no lo es son sus **entradas**:
-el `.doc` sólo existe si WORD1 arrancó, pintó y completó un Save As
-bajo Wine/Xvfb. Meterla en el conjunto gating trasladaría a CI toda
-la fragilidad de entorno que §12 y §16 documentan. Por eso hereda la
-etiqueta de sus productoras. La segunda etiqueta,
-`doc_binary_validation`, permite seleccionarla sola
-(`ctest -L doc_binary_validation`).
-
-Cuándo tendría sentido promoverla a gating: cuando los tests de la
-etiqueta `word1_startup_blocked` sean estables en las dos máquinas de
-referencia. Alternativa intermedia, si se quiere gating antes de eso:
-versionar un `.doc` de referencia generado una vez y validarlo sin
-WORD1 de por medio -- eso sí sería gating nativo puro, pero valida un
-archivo congelado, no lo que el motor escribe hoy, que es
-precisamente lo que interesa aquí.
-
-### Estado de CTest tras el cambio
-
-La suite pasa de 20 a **21 pruebas**. Corrida completa en este vps
-(`DISPLAY=:91`, 86.68 s):
-
-- **Gating: 9/9 en verde**, sin cambios.
-- **Etiqueta `word1_startup_blocked`: 12 pruebas** (las 11 de antes
-  más `opus_doc_inspector_test`).
-- **Total: 19/21.** Los dos fallos son los ya explicados y ninguno es
-  nuevo:
-  - `#14 opus_word1_interaction_test` -- limitación de entorno
-    Xvfb/Wine de §12, arrastre de la barra de título.
-  - `#16 opus_word1_font_typing_test` -- el fallo de §16, muere en
-    `choose_combo_item_with_mouse` sin llegar a la aserción de
-    recuento de líneas.
-
-Se comprobó explícitamente que `--font-typing` **no** es regresión de
-este cambio: con `git stash` sobre `opus_word1_ui_test.cpp` y
-recompilando, falla igual con el binario previo. Las modificaciones
-de este commit a ese archivo son las dos funciones auxiliares y
-cuatro llamadas, todas dentro de los bloques `roundtrip_mode` y
-`rich_format_mode`; no tocan el camino de `--font-typing`.
-
-En esta corrida no se dio el efecto cascada de §16 porque
-`--font-typing` falló rápido en vez de colgarse. Al leer un `ctest`
-global sigue valiendo la advertencia de §16: si `--font-typing` se
-cuelga, deja un `WORD1.exe.so` residual que hace expirar por timeout
-a las pruebas siguientes, incluidas las dos productoras del artefacto
-y, por tanto, también `opus_doc_inspector_test`.
-
-Fusionado a `main` en `b1db7ef` y publicado
-(`b01e51a..b1db7ef  main -> main`).
-
-## Resumen
-
-Los 8 ítems de comportamiento de la lista original de §26 de
-`01-heap-corruption-startup-diagnosis.md`, estado final tras esta
-sesión (2026-08-19, exia):
-
-1. `--about` -- **arreglado** (Task 3, AV de `_setjmp`/`longjmp` ABI)
-2. `--new` (File > New) -- **arreglado**, mismo root cause que #1
-   (Task 4, §6)
-3. `--save-as` -- **arreglado**, causa independiente: diálogo señuelo
-   sin conectar al real (Task 5, §7)
-4. `--font-typing` -- **arreglado** (Task 6, §8). Los 4 bugs originales
-   cerrados: nombres de fuente enumerables, `union FCID` LP64, foco
-   tras selección de ribbon (2026-08-20, `opus_sdm_runtime.cpp`, no
-   `Opus/iconbar1.c`), y `EraNameFromFtc`/tabla fija de 4 nombres de
-   época reemplazada por `OpusFontKey.szFace` en el núcleo
-   (2026-08-25, commits `bf5f117`/`b69e715`/`e7c50d1` -- ver "Octava
-   actualización" en §8 para el rastro completo de diagnóstico, incluidas
-   las hipótesis descartadas por el camino). El `fail(60)` que quedaba
-   tras cerrar el cuarto bug era en sí un problema de arnés, no de
-   producto: dos muestras de píxel se tomaban antes del repintado
-   forzado que el propio test ya hacía, y las franjas hardcodeadas no
-   coincidían con la altura de línea real del documento -- arreglado
-   en `src/port/original/opus_word1_ui_test.cpp`, sin tocar
-   `Opus/disp.c`/`screen.c` ni `src/core/` (ver "Octava actualización"
-   en §8)
-5. `--clipboard` (Ctrl+A) -- **arreglado**, mismo root cause que #1
-   (Task 7, §9)
-6. `--selection` -- **arreglado**, 3 bugs de arnés encadenados (Task
-   8, §10)
-7. `--typing` -- **arreglado**, mismo patrón de foco que #6 (Task 9,
-   §11)
-8. `--interaction` (arrastre de ventana) -- **limitación de entorno
-   confirmada, no bug** (Task 10, §12)
-
-**Etiqueta `word1_startup_blocked`: 7/9** (los 2 que faltan son el
-bug 4 sin cerrar de `--font-typing` y la limitación de entorno de
-`--interaction`, ambos ya explicados arriba, no misterios). El noveno
-test de la etiqueta era `word1_port_smoke_test`, que ya pasaba desde
-antes de esta sesión.
-
-**Actualización 2026-08-25: etiqueta en 8/9.** Con el bug 4 de
-`--font-typing` cerrado (ver punto 4 arriba y "Octava actualización"
-en §8), el único fallo restante de la etiqueta es
-`opus_word1_interaction_test` (Task 10, §12, limitación de entorno
-Xvfb/Wine confirmada, no bug del proyecto).
-
-**Actualización 2026-09-01: suite en 21 pruebas, 19/21 en este vps.**
-La etiqueta `word1_startup_blocked` pasa a 12 pruebas con la entrada
-de `opus_doc_inspector_test` (§17), que valida por fuera del motor el
-`.doc` que WORD1 acaba de escribir. Los dos fallos de la etiqueta son
-`opus_word1_interaction_test` (§12, entorno) y
-`opus_word1_font_typing_test` (§16, cae en
-`choose_combo_item_with_mouse`); el gating sigue en 9/9.
-
-Aparte de la lista de 8, sigue sin investigar: `opus_x64_runtime_test`
-(gating, cuelga sin imprimir nada, confirmado pre-existente y no
-relacionado con ningún fix de esta sesión).
-
-Rama `fix/winelib-startup-blocked`, no fusionada a `main`. Todo
-pusheado a `origin/fix/winelib-startup-blocked`.
+File: `src/port/original/opus_word1_ui_test.cpp` (incremental drag +
+diagnostic). System dependencies installed this session (`apt`, with
+authorization): `twm` (discarded, crashes without `xfonts-base`,
+which was also installed), `openbox` (used for the replica).
+
+## 13. `--roundtrip`: process 2 opens the real dialog, but the `.doc` Word 1.1a just saved cannot be reopened: blocked, cause outside the harness
+
+**Task 2 of the plan
+`docs/superpowers/plans/2026-08-25-doc-roundtrip.md`, 2026-08-25 in
+`/home/pablo/mswordrt` (worktree `doc-roundtrip`), `DISPLAY=:91`.**
+Continues the same `if (roundtrip_mode)` block Task 1 left with a
+`TODO`: launch a second `WORD1` process against the `.doc` the first
+one just saved and compare `cpMac`, the byte-for-byte content (query
+69), `ftc0`, `hps0`, and `dypLine` (query 55) against the snapshot
+taken before saving. **It does not pass**, but not because of the
+harness: `WORD1` itself cannot reopen a `.doc` it just wrote with its
+own Save As, neither by command line nor via the real dialog. See
+"Root cause" below.
 
 ## 14. Save As on debian13: "Not a valid file name" in a clean checkout, passes in the long-lived one -- environmental, cause not yet found
 
@@ -2669,3 +2247,92 @@ used has been removed (`git worktree remove --force`); the original
 checkout's `WINWORD.INI`/`W95TEMP` were restored; nothing was
 committed on debian13. To resume, recreate a worktree off
 `origin/main` and start from the "Untested candidates" list above.
+
+## 15. `--print-preview`: `FPrinterOK()` gate blocks activation -- confirmed environment limitation, not a project bug
+
+**2026-09-02, this VPS (`vps`, Debian 13, matches `debian13`'s
+toolchain), `DISPLAY=:91`.** Added the `--print-preview` mode
+(`opus_word1_ui_test.cpp`): File > Print Preview
+(`kFilePrintPreview` = `imiPrintPreview` = 1988, `opuscmd.h`) via
+`WM_COMMAND` to `CmdPrintPreview` (`Opus/preview.c`), page
+navigation via the same `FExecKc`-through-query-80 probe already used
+elsewhere in this file for Ctrl+B/Ctrl+I (`kc` = `VK_PRIOR`/`VK_NEXT`,
+dispatched through `Opus/keys.h`'s `rgkmePrvwDef` ->
+`PrvwPageUp`/`PrvwPageDown`), and two new read-only queries added to
+`Opus/wproc.c`'s `WM_OPUS_X64_QUERY_SELECTION` switch: 87
+(`FInPrvwMode`, new helper in `Opus/preview.c`, `vlm == lmPreview`)
+and 88 (`IpgdCurPrvw`, same file, `vpvs.ipgdPrvw`). Registered as
+`opus_word1_print_preview_test` in `word1_startup_blocked` (not
+gating), matching the label's existing environmental-limitation
+entries (§12, §14, and `opus_word1_font_typing_test`'s combo-dropdown
+issue per the top-level `CLAUDE.md`).
+
+**The test fails clean, every time, with "print preview mode did not
+activate (query 87)"** -- no hang, no crash, no orphaned
+`WORD1.exe.so` (verified via `pgrep -fa WORD1` after the run).
+
+**Root cause, confirmed by reading the code, not guessed:**
+`CmdTurnOnPrvw` (`Opus/preview.c:126`) is the function
+`CmdPrintPreview` calls to actually enter preview mode, and its very
+first real check is:
+
+```c
+if (!FPrinterOK())
+    {
+    ErrorEid(eidNoPrinter, "");
+    return cmdError;
+    }
+```
+
+`FPrinterOK()` (`Opus/command2.c:1783`) is `vpri.hszPrinter != NULL
+&& ...` -- and `vpri.hszPrinter` is **only ever assigned in one
+place**: `ChgPr()` (`Opus/print2.c:1346`), called exclusively from the
+real Print Setup / Change Printer dialog's OK handling. There is no
+startup-time read of a previously-chosen default printer anywhere in
+`Opus/` (confirmed by grepping every `vpri.hsz*  =` assignment site
+and every read of the `"windows"`/`"Device"` profile key -- `ChgPr`
+only *writes* that key via `OpusShellProfileWrite`, nothing reads it
+back on boot). So Word 1.1a always needs a live trip through Print
+Setup, once per session, before Preview or physical printing will
+activate -- this was true of the original Win16 product too, not a
+regression introduced by the port.
+
+Making that trip succeed needs a printer for `FFillChgPrLb`
+(`Opus/print2.c:827`) to list, which enumerates via
+`GetProfileString(SzShared("devices"), NULL, ...)` -- and that
+specific call (`key == NULL`, "enumerate every key in the section")
+is the one case `src/core/src/OpusShellConfig.cpp` explicitly
+documents as unmigrated: its own top-of-file comment says so
+verbatim: *"Fuera de alcance de este archivo ...: print2.c pasa
+key=NULL a GetProfileString para enumerar todas las claves de una
+sección ('devices'); este contrato de tres funciones no cubre esa
+forma de enumeración. Migrar ese sitio exige extender el contrato, no
+solo traducir la llamada."* Neither this VPS's nor debian13's Wine
+prefix has a configured printer either, so even the real
+(non-migrated) `GetProfileString` path returns nothing.
+
+**Conclusion: Print Preview/printing has never been exercised end to
+end in this port** -- not a regression, not something today's change
+broke, a pre-existing gap this task is the first to reach and
+document. Fixing it for real needs two independent, separately-scoped
+pieces of new work, both outside `--print-preview`'s scope and outside
+today's authorization for the restricted `Opus/` tree:
+
+1. Extend `OpusShellConfig`'s contract with a section-enumeration
+   call (`OpusShellProfileEnumKeys` or similar) and migrate
+   `Opus/print2.c:836`'s `key=NULL` call to it, backed by a seeded
+   `[devices]` entry in the `OpusShell`/`Word1` `QSettings` store.
+2. Either configure a real printer in the target Wine prefix (CUPS or
+   Wine's own generic driver) and drive the real Print Setup dialog
+   from a test harness once per run, or add a narrowly-guarded
+   `#ifdef OPUS_X64` test-only seed of `vpri` (printer name/port/
+   driver **and** `vpri.dxpRealPage`/`dypRealPage`/printable-area
+   geometry, matched to the document's own page size in twips, or
+   `FCheckPageAndMargins`'s `FPageOK` -- `Opus/print1.c:218` -- pops a
+   real `IdMessageBoxMstRgwMb` mismatch dialog the harness would then
+   also need to dismiss).
+
+Left as-is deliberately: this test documents and fails clean on a
+real, pre-existing gap rather than papering over it with an
+under-scoped hack in `Opus/print1.c`/`print2.c`'s largely-untested
+printer plumbing.

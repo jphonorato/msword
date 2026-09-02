@@ -2,6 +2,7 @@
 #include <windows.h>
 
 #include <array>
+#include <cstdlib>
 #include <cwchar>
 #include <iostream>
 #include <string>
@@ -31,6 +32,25 @@ constexpr WPARAM kFileSaveAs = 1897;
 constexpr WPARAM kFileExit = 2095;
 constexpr WPARAM kHelpAbout = 182;
 constexpr WPARAM kParaCenter = 1355;
+constexpr WPARAM kEditSearch = 2357; /* opuscmd_native.inc "EditSearch" */
+constexpr WPARAM kEditReplace = 2464; /* opuscmd_native.inc "EditReplace" */
+constexpr WPARAM kFormatStyles = 3696; /* opuscmd_native.inc "FormatStyles" */
+/* Search/Replace/Style dialog control ids -- these are Tmc numbers from
+   opus_sdm_runtime.cpp (kTmcSearchText/kTmcReplaceText/kTmcSearchConfirm/
+   kTmcApplyStyle/kTmcOk), used here as plain Win32 control ids the same
+   way 0x047C is used for the Save As filename field below: this test
+   process and WORD1 are separate processes, so the constexpr names on
+   the other side aren't visible here, only their numeric values
+   (kTmcUserMin=0x400). */
+constexpr int kTmcSearchTextId = 0x400;
+constexpr int kTmcReplaceTextId = 0x402;
+constexpr int kTmcSearchConfirmId = 0x40B;
+constexpr int kTmcApplyStyleId = 0x400;
+constexpr int kTmcReplYesId = 0x401; /* confirmr.hs tmcReplYes */
+constexpr int kTmcReplConfirmId = 0x403; /* confirmr.hs tmcReplConfirm */
+constexpr WPARAM kTmcOkId = 1;
+constexpr LRESULT kTmcSearchReady = 0x400; /* wproc.c query 85 / tmcSearch */
+constexpr LRESULT kStcLev1 = 254; /* props.h stcLev1 on WIN */
 constexpr UINT kWmOpusX64QuerySelection = WM_APP + 0x351;
 constexpr int kKcControl = 0x100;
 constexpr LRESULT kEditUndo = 2229;
@@ -38,6 +58,12 @@ constexpr LRESULT kEditCut = 2252;
 constexpr LRESULT kEditCopy = 2274;
 constexpr LRESULT kEditPaste = 2297;
 constexpr LRESULT kEditSelectAll = 5106;
+constexpr WPARAM kFilePrintPreview = 1988; /* opuscmd.h imiPrintPreview */
+/* Opus/keys.h rgkmePrvwDef: kc values are plain Win32 VK_* codes here,
+   dispatched through wproc.c query 80 (FExecKc) -- see PrvwPageUp/
+   PrvwPageDown/CmdPrintPreview in Opus/preview.c. */
+constexpr int kKcPageUp = VK_PRIOR;
+constexpr int kKcPageDown = VK_NEXT;
 
 struct WindowSearch {
     DWORD process_id;
@@ -834,6 +860,302 @@ bool window_is_responsive(const HANDLE process, const HWND window) {
                                2000, &message_result) != 0;
 }
 
+HWND wait_for_dlg_item(const HANDLE process, const HWND dialog, const int id,
+                       const DWORD timeout_ms) {
+    const ULONGLONG deadline = GetTickCount64() + timeout_ms;
+    do {
+        if (WaitForSingleObject(process, 0) == WAIT_OBJECT_0) {
+            return nullptr;
+        }
+        if (const HWND control = GetDlgItem(dialog, id); control != nullptr) {
+            return control;
+        }
+        Sleep(25);
+    } while (GetTickCount64() < deadline);
+    return nullptr;
+}
+
+bool wait_window_enabled(const HANDLE process, const HWND window,
+                         const DWORD timeout_ms) {
+    const ULONGLONG deadline = GetTickCount64() + timeout_ms;
+    do {
+        if (WaitForSingleObject(process, 0) == WAIT_OBJECT_0) {
+            return false;
+        }
+        if (IsWindow(window) && IsWindowEnabled(window) != FALSE) {
+            return true;
+        }
+        Sleep(25);
+    } while (GetTickCount64() < deadline);
+    return false;
+}
+
+bool wait_query_equals(const HANDLE process, const HWND pane,
+                       const WPARAM query, const LRESULT expected,
+                       const DWORD timeout_ms) {
+    const ULONGLONG deadline = GetTickCount64() + timeout_ms;
+    do {
+        if (WaitForSingleObject(process, 0) == WAIT_OBJECT_0) {
+            return false;
+        }
+        if (SendMessageW(pane, kWmOpusX64QuerySelection, query, 0) ==
+            expected) {
+            return true;
+        }
+        Sleep(25);
+    } while (GetTickCount64() < deadline);
+    return false;
+}
+
+std::string read_pane_bytes(const HWND pane) {
+    std::string text;
+    const LRESULT cp_mac =
+        SendMessageW(pane, kWmOpusX64QuerySelection, 41, 0);
+    if (cp_mac < 0) {
+        return text;
+    }
+    for (LRESULT cp = 0; cp < cp_mac; ++cp) {
+        const LRESULT byte_value =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 69, cp);
+        if (byte_value == -1) {
+            break;
+        }
+        text.push_back(static_cast<char>(byte_value));
+    }
+    return text;
+}
+
+bool submit_sdm_ok(const HANDLE process, const DWORD process_id,
+                   const HWND dialog, const HWND main_window) {
+    const HWND ok = GetDlgItem(dialog, static_cast<int>(kTmcOkId));
+    if (!PostMessageW(dialog, kWmCommand, kTmcOkId,
+                      reinterpret_cast<LPARAM>(ok))) {
+        return false;
+    }
+    if (!wait_for_window_to_close(process, process_id, L"OpusSdmDialog",
+                                  8000)) {
+        return false;
+    }
+    if (!wait_window_enabled(process, main_window, 3000)) {
+        return false;
+    }
+    return window_is_responsive(process, main_window);
+}
+
+bool click_pane_origin(const HWND pane) {
+    POINT caret_point{20, 10};
+    return ClientToScreen(pane, &caret_point) &&
+           SetCursorPos(caret_point.x, caret_point.y) &&
+           send_mouse_button(MOUSEEVENTF_LEFTDOWN) &&
+           send_mouse_button(MOUSEEVENTF_LEFTUP);
+}
+
+bool wait_insertion_at(const HANDLE process, const HWND pane,
+                       const LRESULT expected, const DWORD timeout_ms) {
+    const ULONGLONG deadline = GetTickCount64() + timeout_ms;
+    do {
+        if (WaitForSingleObject(process, 0) == WAIT_OBJECT_0) {
+            return false;
+        }
+        const LRESULT first =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 0, 0);
+        const LRESULT lim =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 1, 0);
+        if (first == expected && lim == expected) {
+            return true;
+        }
+        Sleep(25);
+    } while (GetTickCount64() < deadline);
+    return false;
+}
+
+bool dismiss_message_boxes(const HANDLE process, const DWORD process_id,
+                           const DWORD timeout_ms) {
+    const ULONGLONG deadline = GetTickCount64() + timeout_ms;
+    bool dismissed = false;
+    do {
+        if (WaitForSingleObject(process, 0) == WAIT_OBJECT_0) {
+            return false;
+        }
+        const HWND box =
+            find_process_window(process_id, L"#32770", nullptr);
+        if (box == nullptr) {
+            if (dismissed) {
+                return true;
+            }
+        } else {
+            const HWND yes = GetDlgItem(box, IDYES);
+            const HWND ok = GetDlgItem(box, IDOK);
+            const HWND target = yes != nullptr ? yes : ok;
+            const WPARAM id = yes != nullptr ? IDYES : IDOK;
+            if (target != nullptr) {
+                SendMessageTimeoutW(box, kWmCommand, id,
+                                    reinterpret_cast<LPARAM>(target),
+                                    SMTO_ABORTIFHUNG, 2000, nullptr);
+                dismissed = true;
+            } else {
+                PostMessageW(box, WM_CLOSE, 0, 0);
+                dismissed = true;
+            }
+        }
+        Sleep(25);
+    } while (GetTickCount64() < deadline);
+    return dismissed || find_process_window(process_id, L"#32770", nullptr) ==
+                            nullptr;
+}
+
+bool post_pane_text(const HANDLE process, const DWORD thread_id,
+                    const HWND pane, const wchar_t* text) {
+    const int length = lstrlenW(text);
+    for (int index = 0; index < length; ++index) {
+        bool posted = false;
+        for (int attempt = 0; attempt != 20 && !posted; ++attempt) {
+            if (WaitForSingleObject(process, 0) == WAIT_OBJECT_0) {
+                return false;
+            }
+            GUITHREADINFO gui{};
+            gui.cbSize = sizeof(gui);
+            posted = GetGUIThreadInfo(thread_id, &gui) &&
+                     gui.hwndFocus != nullptr &&
+                     post_keyboard_character(gui.hwndFocus, text[index]);
+            if (!posted) {
+                Sleep(25);
+            }
+        }
+        if (!posted) {
+            return false;
+        }
+        Sleep(25);
+    }
+    return true;
+}
+
+bool control_is_class(const HWND control, const wchar_t* expected) {
+    wchar_t class_name[64] = {};
+    return control != nullptr &&
+           GetClassNameW(control, class_name,
+                         static_cast<int>(std::size(class_name))) != 0 &&
+           _wcsicmp(class_name, expected) == 0;
+}
+
+void set_native_checkbox(const HWND checkbox, const bool checked) {
+    if (checkbox == nullptr) {
+        return;
+    }
+    const WPARAM want = checked ? BST_CHECKED : BST_UNCHECKED;
+    if (SendMessageA(checkbox, BM_GETCHECK, 0, 0) !=
+        static_cast<LRESULT>(want)) {
+        SendMessageA(checkbox, BM_CLICK, 0, 0);
+    }
+    SendMessageA(checkbox, BM_SETCHECK, want, 0);
+}
+
+bool complete_replace_modal(const HANDLE process, const DWORD process_id,
+                            const HWND replace_dialog,
+                            const HWND main_window) {
+    const HWND ok = GetDlgItem(replace_dialog, static_cast<int>(kTmcOkId));
+    DWORD_PTR ok_result = 0;
+    if (SendMessageTimeoutW(replace_dialog, kWmCommand, kTmcOkId,
+                            reinterpret_cast<LPARAM>(ok), SMTO_ABORTIFHUNG,
+                            5000, &ok_result) == 0) {
+        std::cerr << "sdm-modals Replace OK did not return err="
+                  << GetLastError() << '\n';
+        if (IsWindow(replace_dialog)) {
+            dump_dialog_tree_diagnostic(replace_dialog);
+        }
+        return false;
+    }
+
+    const ULONGLONG confirm_deadline = GetTickCount64() + 2000;
+    HWND confirm = nullptr;
+    do {
+        if (WaitForSingleObject(process, 0) == WAIT_OBJECT_0) {
+            std::cerr << "sdm-modals WORD1 exited after Replace OK\n";
+            return false;
+        }
+        confirm = find_process_window(process_id, L"OpusSdmDialog", L"Replace");
+        if (confirm != nullptr && confirm != replace_dialog &&
+            control_is_class(GetDlgItem(confirm, kTmcReplYesId), L"Button")) {
+            break;
+        }
+        confirm = nullptr;
+        if ((replace_dialog == nullptr || !IsWindow(replace_dialog)) &&
+            find_process_window(process_id, L"OpusSdmDialog", nullptr) ==
+                nullptr) {
+            break;
+        }
+        Sleep(25);
+    } while (GetTickCount64() < confirm_deadline);
+
+    if (confirm != nullptr) {
+        std::cerr << "sdm-modals nested Confirm dialog hwnd=" << confirm
+                  << '\n';
+        const HWND yes = wait_for_dlg_item(process, confirm, kTmcReplYesId,
+                                           2000);
+        const HWND confirm_check = GetDlgItem(confirm, kTmcReplConfirmId);
+        if (yes == nullptr) {
+            dump_dialog_tree_diagnostic(confirm);
+            return false;
+        }
+        set_native_checkbox(confirm_check, false);
+        DWORD_PTR yes_result = 0;
+        if (SendMessageTimeoutW(confirm, kWmCommand,
+                                MAKEWPARAM(kTmcReplYesId, BN_CLICKED),
+                                reinterpret_cast<LPARAM>(yes),
+                                SMTO_ABORTIFHUNG, 8000, &yes_result) == 0) {
+            std::cerr << "sdm-modals Confirm Yes did not return err="
+                      << GetLastError() << '\n';
+            dump_dialog_tree_diagnostic(confirm);
+            return false;
+        }
+    }
+
+    dismiss_message_boxes(process, process_id, 2000);
+    if (!wait_for_window_to_close(process, process_id, L"OpusSdmDialog",
+                                  8000)) {
+        std::cerr << "sdm-modals SDM dialog still open after Replace\n";
+        log_process_windows(process_id);
+        if (const HWND leftover = find_process_window(
+                process_id, L"OpusSdmDialog", nullptr);
+            leftover != nullptr) {
+            wchar_t caption[256] = {};
+            GetWindowTextW(leftover, caption, static_cast<int>(std::size(caption)));
+            char caption_ansi[256] = {};
+            WideCharToMultiByte(CP_ACP, 0, caption, -1, caption_ansi,
+                                static_cast<int>(sizeof(caption_ansi)),
+                                nullptr, nullptr);
+            std::cerr << "sdm-modals leftover hwnd=" << leftover
+                      << " caption='" << caption_ansi
+                      << "' visible=" << IsWindowVisible(leftover)
+                      << " yesClassButton="
+                      << control_is_class(GetDlgItem(leftover, kTmcReplYesId),
+                                          L"Button")
+                      << '\n';
+            dump_dialog_tree_diagnostic(leftover);
+        }
+        return false;
+    }
+    dismiss_message_boxes(process, process_id, 2000);
+    if (!wait_window_enabled(process, main_window, 3000)) {
+        std::cerr << "sdm-modals main window stayed disabled after Replace\n";
+        log_process_windows(process_id);
+        dismiss_message_boxes(process, process_id, 1000);
+        if (!wait_window_enabled(process, main_window, 2000)) {
+            return false;
+        }
+    }
+    const ULONGLONG responsive_deadline = GetTickCount64() + 8000;
+    while (!window_is_responsive(process, main_window)) {
+        if (WaitForSingleObject(process, 0) == WAIT_OBJECT_0 ||
+            GetTickCount64() >= responsive_deadline) {
+            std::cerr << "sdm-modals WORD1 unresponsive after Replace\n";
+            return false;
+        }
+        Sleep(100);
+    }
+    return true;
+}
+
 int fail(PROCESS_INFORMATION& process, const int code,
          const char* message) {
     std::cerr << message << '\n';
@@ -911,7 +1233,7 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
             "usage: opus_word1_ui_test WORD1.exe "
             "[--typing|--interaction|--selection|--caret|--formatting|--color|"
             "--font-typing|--clipboard|--about|--save-as|--roundtrip|"
-            "--rich-format]\n";
+            "--rich-format|--find-replace|--sdm-modals|--print-preview]\n";
         return 1;
     }
     const bool typing_mode =
@@ -949,10 +1271,20 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
     const bool rich_format_mode =
         argument_count == 3 &&
         lstrcmpW(arguments[2], L"--rich-format") == 0;
+    const bool find_replace_mode =
+        argument_count == 3 &&
+        lstrcmpW(arguments[2], L"--find-replace") == 0;
+    const bool sdm_modals_mode =
+        argument_count == 3 &&
+        lstrcmpW(arguments[2], L"--sdm-modals") == 0;
+    const bool print_preview_mode =
+        argument_count == 3 &&
+        lstrcmpW(arguments[2], L"--print-preview") == 0;
     if (argument_count == 3 && !typing_mode && !interaction_mode &&
         !selection_mode && !caret_mode && !formatting_mode && !color_mode &&
         !font_typing_mode && !clipboard_mode && !about_mode &&
-        !save_as_mode && !roundtrip_mode && !rich_format_mode) {
+        !save_as_mode && !roundtrip_mode && !rich_format_mode &&
+        !find_replace_mode && !sdm_modals_mode && !print_preview_mode) {
         std::cerr << "unknown test mode\n";
         return 1;
     }
@@ -1040,6 +1372,129 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
             return fail(process, 72,
                         "File Save As dialog did not cancel cleanly");
         }
+        TerminateProcess(process.hProcess, 0);
+        WaitForSingleObject(process.hProcess, 2000);
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+        return 0;
+    }
+    if (print_preview_mode) {
+        // Drives File > Print Preview (imiPrintPreview, opuscmd.h) through
+        // the real WM_COMMAND toggle (Opus/preview.c's CmdPrintPreview),
+        // pages through the preview with the same FExecKc probe (query 80)
+        // already used for Ctrl+B/Ctrl+I elsewhere in this file, then
+        // returns to edit mode and confirms the document's edit-mode state
+        // (query 41, CpMacDocEdit -- the same witness --roundtrip uses) is
+        // unchanged, i.e. the layout.c/disp2.c repagination that preview
+        // mode ran against vpvs.docPrvw did not disturb it.
+        Sleep(1000);
+        const HWND pane = find_descendant_by_class(main_window, L"OpusWwd");
+        if (pane == nullptr) {
+            return fail(process, 200,
+                        "print-preview test could not find the document "
+                        "pane");
+        }
+        if (SendMessageW(pane, kWmOpusX64QuerySelection, 87, 0) != 0) {
+            return fail(process, 201,
+                        "print-preview test started already in preview "
+                        "mode");
+        }
+        const LRESULT cp_mac_before =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 41, 0);
+
+        if (!PostMessageW(main_window, kWmCommand, kFilePrintPreview, 0)) {
+            return fail(process, 202,
+                        "could not send File Print Preview");
+        }
+        bool entered_preview = false;
+        for (int attempt = 0; attempt < 20; ++attempt) {
+            Sleep(250);
+            if (SendMessageW(pane, kWmOpusX64QuerySelection, 87, 0) != 0) {
+                entered_preview = true;
+                break;
+            }
+        }
+        if (!entered_preview) {
+            return fail(process, 203,
+                        "print preview mode did not activate (query 87)");
+        }
+
+        const LRESULT page_count =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 73, 0);
+        if (page_count < 1) {
+            return fail(process, 204,
+                        "print preview reported an implausible page count");
+        }
+        const LRESULT ipgd_start =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 88, 0);
+
+        // Next page, then back -- Opus/preview.c's FPrvwPageScroll clamps
+        // at the last page, so this is safe even on Document1's single
+        // default page: ipgd_after_next just stays put in that case.
+        if (execute_control_shortcut(pane, kKcPageDown) == 0) {
+            std::cerr << "print-preview: PrvwPageDown key not bound "
+                         "(FExecKc query 80 returned 0)\n";
+        }
+        Sleep(250);
+        const LRESULT ipgd_after_next =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 88, 0);
+        if (execute_control_shortcut(pane, kKcPageUp) == 0) {
+            std::cerr << "print-preview: PrvwPageUp key not bound "
+                         "(FExecKc query 80 returned 0)\n";
+        }
+        Sleep(250);
+        const LRESULT ipgd_after_prev =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 88, 0);
+        std::cerr << "print-preview page_count=" << page_count
+                  << " ipgd_start=" << ipgd_start
+                  << " ipgd_after_next=" << ipgd_after_next
+                  << " ipgd_after_prev=" << ipgd_after_prev << '\n';
+        if (page_count > 1 && ipgd_after_next <= ipgd_start) {
+            return fail(process, 205,
+                        "PageDown did not advance the preview page index");
+        }
+        if (ipgd_after_prev != ipgd_start) {
+            return fail(process, 206,
+                        "PageUp did not return the preview page index to "
+                        "its starting page");
+        }
+        const LRESULT page_count_after_paging =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 73, 0);
+        if (page_count_after_paging != page_count) {
+            return fail(process, 207,
+                        "page count changed while paging through preview");
+        }
+
+        if (!PostMessageW(main_window, kWmCommand, kFilePrintPreview, 0)) {
+            return fail(process, 208,
+                        "could not send File Print Preview to exit");
+        }
+        bool exited_preview = false;
+        for (int attempt = 0; attempt < 20; ++attempt) {
+            Sleep(250);
+            if (SendMessageW(pane, kWmOpusX64QuerySelection, 87, 0) == 0) {
+                exited_preview = true;
+                break;
+            }
+        }
+        if (!exited_preview) {
+            return fail(process, 209,
+                        "print preview mode did not deactivate (query 87)");
+        }
+        if (!window_is_responsive(process.hProcess, main_window)) {
+            return fail(process, 210,
+                        "main window did not stay responsive after "
+                        "print preview");
+        }
+        const LRESULT cp_mac_after =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 41, 0);
+        if (cp_mac_after != cp_mac_before) {
+            return fail(process, 211,
+                        "CpMacDocEdit changed across the print preview "
+                        "round trip -- edit-mode layout state was "
+                        "disturbed");
+        }
+
         TerminateProcess(process.hProcess, 0);
         WaitForSingleObject(process.hProcess, 2000);
         CloseHandle(process.hThread);
@@ -2219,6 +2674,432 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
             CloseHandle(process2.hProcess);
         }
         DeleteFileA(ansi_path);
+        return 0;
+    }
+    if (find_replace_mode) {
+        // EditReplace (Opus/search.c FDlgSearchRepl) used to have no
+        // on-screen dialog at all -- opus_sdm_runtime.cpp's
+        // create_dialog_host only ever built a real window for a fixed
+        // allowlist of hids, and kIddSearch/kIddReplace weren't in it
+        // (search.sdm/replace.sdm were unpopulated stubs, dltSearch/
+        // dltReplace = { 0 }). Sending WM_COMMAND EditReplace was a
+        // silent no-op. Fixed by populating those two .sdm files and
+        // adding materialize_search_template/materialize_replace_template
+        // there -- this mode drives the resulting real "OpusSdmDialog"
+        // window the same way roundtrip_mode drives the real Save As
+        // dialog: WM_SETTEXT into its native Edit controls, never
+        // simulated typing, so there is no Tab-order/focus guessing that
+        // could stall the dialog's own modal message loop.
+        DWORD ignored_process_id = 0;
+        const DWORD thread_id =
+            GetWindowThreadProcessId(main_window, &ignored_process_id);
+        const HWND pane = find_descendant_by_class(main_window, L"OpusWwd");
+        if (pane == nullptr) {
+            return fail(process, 150,
+                        "find-replace test could not find the document "
+                        "pane");
+        }
+        if (!make_foreground_and_focus(main_window, pane, thread_id)) {
+            return fail(process, 151,
+                        "find-replace test could not focus the document "
+                        "pane");
+        }
+        if (!send_physical_text(L"alpha beta alpha gamma")) {
+            return fail(process, 152,
+                        "find-replace test could not type its paragraph");
+        }
+        Sleep(500);
+
+        const LRESULT cp_mac_before =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 41, 0);
+        if (cp_mac_before < 15) {
+            return fail(process, 153,
+                        "find-replace test typed too little text to "
+                        "snapshot");
+        }
+        std::cerr << "find-replace baseline cpMac=" << cp_mac_before << '\n';
+
+        // Step 1: open Replace and confirm the dialog this port now builds
+        // is real -- not the pre-fix no-op.
+        if (!PostMessageW(main_window, kWmCommand, kEditReplace, 0)) {
+            return fail(process, 154, "could not send Edit Replace");
+        }
+        const HWND replace_dialog = wait_for_window(
+            process.hProcess, process.dwProcessId, L"OpusSdmDialog",
+            L"Replace", 5000);
+        if (replace_dialog == nullptr) {
+            return fail(process, 155, "Replace dialog did not appear");
+        }
+        std::cerr << "find-replace dialog hwnd=" << replace_dialog << '\n';
+
+        const HWND search_field =
+            GetDlgItem(replace_dialog, kTmcSearchTextId);
+        const HWND replace_field =
+            GetDlgItem(replace_dialog, kTmcReplaceTextId);
+        const HWND confirm_check =
+            GetDlgItem(replace_dialog, kTmcSearchConfirmId);
+        if (search_field == nullptr || replace_field == nullptr ||
+            confirm_check == nullptr) {
+            std::cerr << "find-replace dialog tree dump:\n";
+            dump_dialog_tree_diagnostic(replace_dialog);
+            return fail(process, 156,
+                        "Replace dialog is missing an expected control");
+        }
+
+        // Step 2: fill both fields and turn off "Confirm Changes" --
+        // leaving it on would drop into Opus/replace.c's per-match Y/N/A
+        // sub-dialog (FDlgConfirmRepl), which this port does not drive and
+        // which would otherwise stall this test waiting for a keypress
+        // that never comes. Unchecking it makes WReplaceCore's fAll path
+        // replace every match in one pass, matching this test's find-once
+        // Replace All intent.
+        SendMessageA(search_field, WM_SETTEXT, 0,
+                     reinterpret_cast<LPARAM>("alpha"));
+        SendMessageA(replace_field, WM_SETTEXT, 0,
+                     reinterpret_cast<LPARAM>("omega"));
+        set_native_checkbox(confirm_check, false);
+
+        char search_readback[64] = {};
+        read_control_text_ansi(search_field, search_readback,
+                               static_cast<int>(std::size(search_readback)));
+        char replace_readback[64] = {};
+        read_control_text_ansi(replace_field, replace_readback,
+                               static_cast<int>(std::size(replace_readback)));
+        std::cerr << "find-replace search field='" << search_readback
+                  << "' replace field='" << replace_readback << "'\n";
+        if (lstrcmpA(search_readback, "alpha") != 0 ||
+            lstrcmpA(replace_readback, "omega") != 0) {
+            std::cerr << "find-replace dialog tree dump:\n";
+            dump_dialog_tree_diagnostic(replace_dialog);
+            return fail(process, 157,
+                        "find-replace could not set the search/replace "
+                        "fields");
+        }
+
+        // Step 3: submit. Bounded wait for the dialog to close (not an
+        // unbounded one) is the deadlock guard: if unchecking Confirm
+        // above did not actually reach Opus/replace.c's pcab->fConfirm --
+        // wrong tmc, wrong CAB offset, anything -- the per-match confirm
+        // sub-dialog opens instead and this loop times out and fails
+        // loudly here rather than hanging ctest's TIMEOUT.
+        if (!complete_replace_modal(process.hProcess, process.dwProcessId,
+                                    replace_dialog, main_window)) {
+            log_process_windows(process.dwProcessId);
+            return fail(process, 159,
+                        "Replace dialog did not finish -- possibly stuck "
+                        "on a per-match confirm prompt");
+        }
+        Sleep(300);
+
+        // Step 4: the actual assertion directive #3 asked for -- the
+        // string in the document changed as expected. Read through the
+        // same per-cp query 69 the engine already exposes (roundtrip_mode
+        // uses it as ground truth for saved bytes; here it is ground
+        // truth for the in-memory replace).
+        const LRESULT cp_mac_after =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 41, 0);
+        if (cp_mac_after < 0) {
+            return fail(process, 161,
+                        "find-replace could not query cpMac after replace");
+        }
+        std::string after_text;
+        for (LRESULT cp = 0; cp < cp_mac_after; ++cp) {
+            const LRESULT byte_value =
+                SendMessageW(pane, kWmOpusX64QuerySelection, 69, cp);
+            if (byte_value == -1) {
+                break;
+            }
+            after_text.push_back(static_cast<char>(byte_value));
+        }
+        std::cerr << "find-replace document after replace (cpMac="
+                  << cp_mac_after << "): '" << after_text << "'\n";
+        if (after_text.find("alpha") != std::string::npos) {
+            return fail(process, 162,
+                        "find-replace left an unreplaced 'alpha' in the "
+                        "document");
+        }
+        if (after_text.find("omega") == std::string::npos) {
+            return fail(process, 163,
+                        "find-replace did not insert the replacement "
+                        "text");
+        }
+
+        TerminateProcess(process.hProcess, 0);
+        WaitForSingleObject(process.hProcess, 2000);
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+        return 0;
+    }
+    if (sdm_modals_mode) {
+        // Drive Search, Replace and Apply Style through the real SDM
+        // modal loop with direct Win32 injection (WM_SETTEXT / BM_SETCHECK
+        // / WM_COMMAND), never simulated typing into the dialog. Bounded
+        // waits on dialog close and owner re-enable are the deadlock
+        // guard: a stuck confirm prompt, a hung ChangeAll, or a modal
+        // that never returns fails this test instead of hanging ctest.
+        DWORD ignored_process_id = 0;
+        const DWORD thread_id =
+            GetWindowThreadProcessId(main_window, &ignored_process_id);
+        const HWND pane = find_descendant_by_class(main_window, L"OpusWwd");
+        if (pane == nullptr) {
+            return fail(process, 170,
+                        "sdm-modals test could not find the document pane");
+        }
+        if (!make_foreground_and_focus(main_window, pane, thread_id)) {
+            return fail(process, 171,
+                        "sdm-modals test could not focus the document pane");
+        }
+        if (!post_pane_text(process.hProcess, thread_id, pane,
+                            L"alpha beta alpha gamma")) {
+            return fail(process, 172,
+                        "sdm-modals test could not type its paragraph");
+        }
+        Sleep(500);
+        const std::string baseline = read_pane_bytes(pane);
+        std::cerr << "sdm-modals baseline='" << baseline << "'\n";
+        if (baseline.find("alpha") == std::string::npos ||
+            baseline.find("beta") == std::string::npos) {
+            return fail(process, 173,
+                        "sdm-modals typed text did not land in memory");
+        }
+
+        // Step 1: EditSearch. Place the caret at the start so Find runs
+        // forward through the whole paragraph instead of depending on wrap
+        // from the insertion point at the end.
+        if (!click_pane_origin(pane)) {
+            return fail(process, 174,
+                        "sdm-modals could not place the caret for Search");
+        }
+        Sleep(200);
+        if (!PostMessageW(main_window, kWmCommand, kEditSearch, 0)) {
+            return fail(process, 175, "could not send Edit Search");
+        }
+        const HWND search_dialog = wait_for_window(
+            process.hProcess, process.dwProcessId, L"OpusSdmDialog",
+            L"Search", 5000);
+        if (search_dialog == nullptr) {
+            return fail(process, 176, "Search dialog did not appear");
+        }
+        const HWND search_field = wait_for_dlg_item(
+            process.hProcess, search_dialog, kTmcSearchTextId, 3000);
+        if (search_field == nullptr) {
+            std::cerr << "sdm-modals Search dialog tree dump:\n";
+            dump_dialog_tree_diagnostic(search_dialog);
+            return fail(process, 177,
+                        "Search dialog is missing the search field");
+        }
+        wait_query_equals(process.hProcess, pane, 85, kTmcSearchReady, 2000);
+        SendMessageA(search_field, WM_SETTEXT, 0,
+                     reinterpret_cast<LPARAM>("beta"));
+        char search_readback[64] = {};
+        read_control_text_ansi(search_field, search_readback,
+                               static_cast<int>(std::size(search_readback)));
+        std::cerr << "sdm-modals Search field='" << search_readback << "'\n";
+        if (lstrcmpA(search_readback, "beta") != 0) {
+            return fail(process, 178,
+                        "sdm-modals could not set the Search field");
+        }
+        if (!submit_sdm_ok(process.hProcess, process.dwProcessId,
+                           search_dialog, main_window)) {
+            return fail(process, 179,
+                        "Search dialog did not finish -- modal loop stuck");
+        }
+        Sleep(300);
+        const LRESULT found_first =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 0, 0);
+        const LRESULT found_lim =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 1, 0);
+        std::string found_text;
+        for (LRESULT cp = found_first; cp < found_lim; ++cp) {
+            const LRESULT byte_value =
+                SendMessageW(pane, kWmOpusX64QuerySelection, 69, cp);
+            if (byte_value == -1) {
+                break;
+            }
+            found_text.push_back(static_cast<char>(byte_value));
+        }
+        std::cerr << "sdm-modals Search selection=[" << found_first << ","
+                  << found_lim << ") '" << found_text << "'\n";
+        if (found_text != "beta") {
+            return fail(process, 180,
+                        "Search did not select the in-memory match");
+        }
+
+        // Step 2: EditReplace. Home to cp0 so WReplaceCore sets vfNoWrap
+        // (selCur.cpFirst == cp0) and ChangeAll does not put up the
+        // "continue search from beginning?" message box.
+        if (!make_foreground_and_focus(main_window, pane, thread_id)) {
+            return fail(process, 181,
+                        "sdm-modals could not restore focus for Replace");
+        }
+        if (!PostMessageW(pane, WM_KEYDOWN, VK_HOME, 1) ||
+            !PostMessageW(pane, WM_KEYUP, VK_HOME, 0xC0000001)) {
+            return fail(process, 181,
+                        "sdm-modals could not send Home for Replace");
+        }
+        if (!wait_insertion_at(process.hProcess, pane, 0, 2000)) {
+            std::cerr << "sdm-modals caret after Home first="
+                      << SendMessageW(pane, kWmOpusX64QuerySelection, 0, 0)
+                      << " lim="
+                      << SendMessageW(pane, kWmOpusX64QuerySelection, 1, 0)
+                      << '\n';
+            return fail(process, 181,
+                        "sdm-modals could not place an insertion point at "
+                        "cp0 before Replace");
+        }
+        if (!PostMessageW(main_window, kWmCommand, kEditReplace, 0)) {
+            return fail(process, 182, "could not send Edit Replace");
+        }
+        const HWND replace_dialog = wait_for_window(
+            process.hProcess, process.dwProcessId, L"OpusSdmDialog",
+            L"Replace", 5000);
+        if (replace_dialog == nullptr) {
+            return fail(process, 183, "Replace dialog did not appear");
+        }
+        const HWND replace_search = wait_for_dlg_item(
+            process.hProcess, replace_dialog, kTmcSearchTextId, 3000);
+        const HWND replace_field =
+            GetDlgItem(replace_dialog, kTmcReplaceTextId);
+        const HWND confirm_check =
+            GetDlgItem(replace_dialog, kTmcSearchConfirmId);
+        if (replace_search == nullptr || replace_field == nullptr ||
+            confirm_check == nullptr) {
+            std::cerr << "sdm-modals Replace dialog tree dump:\n";
+            dump_dialog_tree_diagnostic(replace_dialog);
+            return fail(process, 184,
+                        "Replace dialog is missing an expected control");
+        }
+        wait_query_equals(process.hProcess, pane, 85, kTmcSearchReady, 2000);
+        SendMessageA(replace_search, WM_SETTEXT, 0,
+                     reinterpret_cast<LPARAM>("alpha"));
+        SendMessageA(replace_field, WM_SETTEXT, 0,
+                     reinterpret_cast<LPARAM>("omega"));
+        set_native_checkbox(confirm_check, false);
+        char replace_search_readback[64] = {};
+        char replace_readback[64] = {};
+        read_control_text_ansi(
+            replace_search, replace_search_readback,
+            static_cast<int>(std::size(replace_search_readback)));
+        read_control_text_ansi(replace_field, replace_readback,
+                               static_cast<int>(std::size(replace_readback)));
+        std::cerr << "sdm-modals Replace search='" << replace_search_readback
+                  << "' replace='" << replace_readback << "'\n";
+        if (lstrcmpA(replace_search_readback, "alpha") != 0 ||
+            lstrcmpA(replace_readback, "omega") != 0) {
+            return fail(process, 185,
+                        "sdm-modals could not set the Replace fields");
+        }
+        if (!complete_replace_modal(process.hProcess, process.dwProcessId,
+                                    replace_dialog, main_window)) {
+            log_process_windows(process.dwProcessId);
+            return fail(process, 186,
+                        "Replace dialog did not finish -- possibly stuck "
+                        "on a per-match confirm prompt");
+        }
+        Sleep(300);
+        const std::string after_replace = read_pane_bytes(pane);
+        std::cerr << "sdm-modals after replace='" << after_replace << "'\n";
+        if (after_replace.find("alpha") != std::string::npos) {
+            return fail(process, 187,
+                        "Replace left an unreplaced 'alpha' in memory");
+        }
+        if (after_replace.find("omega") == std::string::npos ||
+            after_replace.find("beta") == std::string::npos) {
+            return fail(process, 188,
+                        "Replace did not write the expected in-memory text");
+        }
+
+        // Step 3: FormatStyles (Apply Style). Inject the style name
+        // into the combo; do not open the dropdown with the mouse --
+        // that path is already known not to work under Wine/Xvfb
+        // (opus_word1_font_typing_test / choose_combo_item_with_mouse).
+        if (!make_foreground_and_focus(main_window, pane, thread_id) ||
+            !click_pane_origin(pane)) {
+            return fail(process, 189,
+                        "sdm-modals could not restore caret for Styles");
+        }
+        Sleep(200);
+        const LRESULT stc_before =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 86, 0);
+        if (!PostMessageW(main_window, kWmCommand, kFormatStyles, 0)) {
+            return fail(process, 190, "could not send Format Styles");
+        }
+        const HWND style_dialog = wait_for_window(
+            process.hProcess, process.dwProcessId, L"OpusSdmDialog",
+            L"Apply Style", 5000);
+        if (style_dialog == nullptr) {
+            log_process_windows(process.dwProcessId);
+            return fail(process, 191, "Apply Style dialog did not appear");
+        }
+        const HWND style_combo = wait_for_dlg_item(
+            process.hProcess, style_dialog, kTmcApplyStyleId, 3000);
+        if (style_combo == nullptr) {
+            std::cerr << "sdm-modals Apply Style dialog tree dump:\n";
+            dump_dialog_tree_diagnostic(style_dialog);
+            return fail(process, 192,
+                        "Apply Style dialog is missing the style combo");
+        }
+        const LRESULT heading_index = SendMessageA(
+            style_combo, CB_FINDSTRINGEXACT, static_cast<WPARAM>(-1),
+            reinterpret_cast<LPARAM>("heading 1"));
+        if (heading_index != CB_ERR) {
+            SendMessageA(style_combo, CB_SETCURSEL,
+                         static_cast<WPARAM>(heading_index), 0);
+        }
+        SendMessageA(style_combo, WM_SETTEXT, 0,
+                     reinterpret_cast<LPARAM>("heading 1"));
+        SendMessageW(style_dialog, kWmCommand,
+                     MAKEWPARAM(kTmcApplyStyleId, CBN_EDITCHANGE),
+                     reinterpret_cast<LPARAM>(style_combo));
+        char style_readback[64] = {};
+        read_control_text_ansi(style_combo, style_readback,
+                               static_cast<int>(std::size(style_readback)));
+        std::cerr << "sdm-modals style combo='" << style_readback
+                  << "' headingIndex=" << heading_index << '\n';
+        if (lstrcmpA(style_readback, "heading 1") != 0) {
+            std::cerr << "sdm-modals Apply Style dialog tree dump:\n";
+            dump_dialog_tree_diagnostic(style_dialog);
+            return fail(process, 193,
+                        "sdm-modals could not set the style name");
+        }
+        if (!submit_sdm_ok(process.hProcess, process.dwProcessId,
+                           style_dialog, main_window)) {
+            return fail(process, 194,
+                        "Apply Style dialog did not finish -- modal loop "
+                        "stuck");
+        }
+        Sleep(300);
+        if (!make_foreground_and_focus(main_window, pane, thread_id) ||
+            !click_pane_origin(pane)) {
+            return fail(process, 195,
+                        "sdm-modals could not refocus the pane after "
+                        "Apply Style");
+        }
+        Sleep(200);
+        const LRESULT stc_after =
+            SendMessageW(pane, kWmOpusX64QuerySelection, 86, 0);
+        std::cerr << "sdm-modals pap.stc before=" << stc_before
+                  << " after=" << stc_after << '\n';
+        if (stc_after != kStcLev1) {
+            return fail(process, 196,
+                        "Apply Style did not set heading 1 on the "
+                        "in-memory paragraph");
+        }
+        const std::string after_style = read_pane_bytes(pane);
+        if (after_style.find("omega") == std::string::npos ||
+            after_style.find("beta") == std::string::npos) {
+            return fail(process, 197,
+                        "Apply Style clobbered the replaced in-memory text");
+        }
+        if (!window_is_responsive(process.hProcess, main_window)) {
+            return fail(process, 198,
+                        "sdm-modals left WORD1 hung after the modal loop");
+        }
+
+        TerminateProcess(process.hProcess, 0);
+        WaitForSingleObject(process.hProcess, 2000);
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
         return 0;
     }
     if (about_mode) {
