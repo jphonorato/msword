@@ -4599,8 +4599,9 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
     // way (no exit-code assertion) -- this brings the two-document path in
     // line with that precedent.
     DWORD exit_code = 0;
-    GetExitCodeProcess(process.hProcess, &exit_code);
-    std::cerr << "two-document File Exit: exit_code=" << exit_code
+    const BOOL got_exit_code = GetExitCodeProcess(process.hProcess, &exit_code);
+    std::cerr << "two-document File Exit: exit_code=" << (got_exit_code ? exit_code : -1)
+              << " (query " << (got_exit_code ? "ok" : "failed") << ")"
               << " mainWindowDestroyed=" << !IsWindow(main_window) << '\n';
     if (IsWindow(main_window)) {
         return fail(process, 12,
