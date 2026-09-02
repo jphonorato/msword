@@ -4591,21 +4591,36 @@ extern "C" int wmain(const int argument_count, wchar_t** arguments) {
     }
     // Wine's DLL-unload sequencing after a clean exit(0) can report exit
     // code 1 from GetExitCodeProcess despite the engine having exited
-    // cleanly -- see the long comment above wait_for_window() near the top
-    // of main() (~line 1326) and docs/port-linux/03-word1-startup-blocked-
-    // behavior.md. The exit code is not a reliable clean-teardown witness
-    // under Wine; the destroyed main window is. roundtrip_mode and
-    // rich_format_mode already treat "File Exit after a clean save" this
-    // way (no exit-code assertion) -- this brings the two-document path in
-    // line with that precedent.
+    // cleanly -- see docs/port-linux/03-word1-startup-blocked-behavior.md
+    // §16. The exit code alone is not a fully reliable clean-teardown
+    // witness under Wine, so this only tolerates that specific known
+    // quirk (0 or 1), not any exit code: a genuine crash-during-shutdown
+    // (e.g. 0xC0000005) still fails below, same as before. roundtrip_mode
+    // and rich_format_mode already tolerate this same 0/1 quirk for "File
+    // Exit after a clean save".
+    //
+    // The process handle can also signal slightly before wineserver
+    // finishes tearing down the window, so give window destruction a
+    // short bounded window to catch up rather than deciding on a single
+    // snapshot.
+    bool main_window_destroyed = !IsWindow(main_window);
+    for (int elapsed_ms = 0; !main_window_destroyed && elapsed_ms < 1000;
+         elapsed_ms += 50) {
+        Sleep(50);
+        main_window_destroyed = !IsWindow(main_window);
+    }
     DWORD exit_code = 0;
     const BOOL got_exit_code = GetExitCodeProcess(process.hProcess, &exit_code);
-    std::cerr << "two-document File Exit: exit_code=" << (got_exit_code ? exit_code : -1)
-              << " (query " << (got_exit_code ? "ok" : "failed") << ")"
-              << " mainWindowDestroyed=" << !IsWindow(main_window) << '\n';
-    if (IsWindow(main_window)) {
+    const bool exit_code_known_good =
+        got_exit_code && (exit_code == 0 || exit_code == 1);
+    std::cerr << "two-document File Exit: exit_code="
+              << (got_exit_code ? static_cast<long long>(exit_code) : -1LL)
+              << " (GetExitCodeProcess " << (got_exit_code ? "ok" : "failed") << ")"
+              << " mainWindowDestroyed=" << main_window_destroyed << '\n';
+    if (!exit_code_known_good || !main_window_destroyed) {
         return fail(process, 12,
-                    "two-document File Exit main window still exists");
+                    "two-document File Exit: exit code was not the known "
+                    "0/1 Wine quirk, or the main window still exists");
     }
 
     CloseHandle(process.hThread);
