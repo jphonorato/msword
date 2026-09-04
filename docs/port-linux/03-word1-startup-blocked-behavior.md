@@ -2248,6 +2248,70 @@ checkout's `WINWORD.INI`/`W95TEMP` were restored; nothing was
 committed on debian13. To resume, recreate a worktree off
 `origin/main` and start from the "Untested candidates" list above.
 
+### Follow-up (2026-09-04, this VPS): a concrete, verified path-length
+### cause for a related failure -- does not close the debian13 symptom
+### above, but resolves a second, cleanly-reproduced instance of "clean
+### checkout at a different path fails"
+
+**Symptom this time (different from above):** running the
+`word1_startup_blocked` label from a `git clone` at a deep scratch
+path (`/tmp/claude-1000/.../scratchpad/msword-clean`, not a worktree
+off `/home/pablo/msword`) failed `opus_word1_roundtrip_test` and
+`opus_word1_formatting_test` deterministically (reran `roundtrip_test`
+twice, same result both times) with a **different** dialog: a
+`Microsoft Word` message box reading `"Word could not prepare a
+temporary document file."`, not the `"Not a valid file name"`
+(`BadFilename`, `Opus/wordtech/error.c:556`) seen on debian13. This is
+a different string from a different code path -- **not proven to be
+the same bug as the debian13 symptom above** -- but it is the same
+*class* of failure (clean checkout at a different, longer absolute
+path fails; the long-lived `/home/pablo/msword` checkout passes the
+identical test every time) and it has a fully verified root cause,
+unlike the debian13 case.
+
+**Root cause, confirmed by direct code reading and arithmetic, not
+inference:** `"Word could not prepare a temporary document file."` is
+not an original-engine string -- it lives in the Winelib port's own
+Win95-style file-dialog shim, `make_win95_staging_path()`
+(`src/port/original/opus_sdm_runtime.cpp:177-211`). That function
+builds a scratch path from `GetModuleFileNameA()` (the running
+`WORD1.exe`'s own directory) plus `\W95TEMP\W95XXXX.DOC`, and rejects
+the result if `strlen(temporary) >= 120`
+(`opus_sdm_runtime.cpp:204-205`). That `120` is not an arbitrary port
+constant -- it matches the counted-string length cap in the adjacent
+`counted_path()` helper (`st_file[0] >= 120`, a Pascal-style
+one-byte-length field), which reads like a genuine Word 1.x
+fixed-size filename buffer. It was never a problem on real DOS/Win3.1
+paths; it becomes one on Linux build/CI paths that are much deeper
+than a DOS install ever was.
+
+Measured directly:
+
+```
+Z:\home\pablo\msword\bin\W95TEMP\W95XXXX.DOC                                          -- 44 chars, passes
+Z:\tmp\claude-1000\-home-pablo-msword\<uuid>\scratchpad\msword-clean\bin\W95TEMP\W95XXXX.DOC -- 122 chars, fails
+```
+
+122 >= 120 on every one of the 32 retry attempts inside
+`make_win95_staging_path()`, so it returns `false` every time, and the
+message box fires. This also plausibly explains why a `git worktree
+add` checkout (necessarily longer than the base checkout's path) could
+trip *some* length-sensitive check on debian13 too, though the exact
+mechanism there is `BadFilename` in `Opus/save.c` (engine code, not
+this port helper) and remains unconfirmed -- worth revisiting the
+debian13 case specifically for a length threshold inside `FValidFilename`
+/ the `Opus/save.c:1463,1658` `eidBadFilename` sites before assuming
+it is the identical bug.
+
+**Not something to "fix" by raising the `120`:** if it mirrors a real
+Word 1.x buffer size, changing it risks the project's byte-identical
+pagination/fidelity constraint for no clear benefit. The practical
+mitigation is procedural: keep working checkouts (and worktrees) at
+short paths -- avoid `/tmp/claude-*`-style deep scratch directories or
+long worktree names for anything that runs the `word1_startup_blocked`
+label. `/home/pablo/msword` (and short sibling worktree names) stay
+safely under the cap; this VPS's scratch clone did not.
+
 ## 15. `--print-preview`: `FPrinterOK()` gate blocks activation -- confirmed environment limitation, not a project bug
 
 **2026-09-02, this VPS (`vps`, Debian 13, matches `debian13`'s
